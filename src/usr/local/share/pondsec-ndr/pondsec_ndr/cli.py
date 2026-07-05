@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import time
 from typing import Any
 
 from pondsec_ndr.collectors.eve import EveCollector
@@ -18,7 +19,8 @@ from pondsec_ndr.detection.detectors import default_detectors
 from pondsec_ndr.diagnostics import diagnostics as diagnostics_payload
 from pondsec_ndr.diagnostics import self_test, service_status
 from pondsec_ndr.features.aggregator import aggregate_features
-from pondsec_ndr.models.manager import ModelError, download_model_artifacts, model_inventory
+from pondsec_ndr.models.manager import ModelError, download_model_artifacts, model_inventory, write_runtime_selftest
+from pondsec_ndr.models.runtime import MODEL_ID, SYNTHETIC_AI_VALIDATION_VECTOR, ModelRuntimeUnavailable, SaidimnIdsCnnRuntime
 from pondsec_ndr.response.engine import ResponseDenied, activate_block, propose_block_for_incident, remove_block, validate_ip_or_network
 from pondsec_ndr.response.pf import PFTableEnforcer
 from pondsec_ndr.service import PondSecService
@@ -93,6 +95,11 @@ def main(argv: list[str] | None = None) -> int:
     verify.add_argument("model_id", nargs="?")
     fetch = model_sub.add_parser("fetch")
     fetch.add_argument("model_id")
+    model_sub.add_parser("self-test")
+    validate_model_flow = model_sub.add_parser("validate-flow")
+    validate_model_flow.add_argument("--kind", choices=("attack", "benign"), default="attack")
+    validate_model_flow.add_argument("--source-ip", default=None)
+    validate_model_flow.add_argument("--device", default="igb0_vlan10")
 
     database = sub.add_parser("database")
     database_sub = database.add_subparsers(dest="database_command", required=True)
@@ -138,10 +145,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if not errors else 1
     if args.command == "model" and args.model_command in {"list", "verify"}:
         inventory = model_inventory(config.data_dir)
+        if args.model_command == "list":
+            emit({"items": inventory}, args.json)
+            return 0
         if args.model_command == "verify" and args.model_id:
             inventory = [item for item in inventory if item["model_id"] == args.model_id]
-        ok = all(item["status"] in {"installed", "catalog"} for item in inventory)
-        result = {"items": inventory} if args.model_command == "list" else {"status": "ok" if ok else "failed", "items": inventory}
+        ok = all(item["status"] in {"active", "installed", "catalog"} for item in inventory)
+        result = {"status": "ok" if ok else "failed", "items": inventory}
         emit(result, args.json)
         return 0 if ok else 1
     ensure_directories(config)
@@ -229,6 +239,12 @@ def dispatch(args: argparse.Namespace, config: Any, store: EventStore) -> tuple[
     if command == "model":
         if args.model_command == "fetch":
             return {"status": "ok", "manifest": download_model_artifacts(config.data_dir, args.model_id)}, 0
+        if args.model_command == "self-test":
+            payload = run_model_self_test(config)
+            return payload, 0 if payload["status"] == "ok" else 1
+        if args.model_command == "validate-flow":
+            payload = validate_model_flow(store, config, args.kind, args.source_ip, args.device)
+            return payload, 0 if payload["status"] in {"ok", "benign"} else 1
     if command == "database":
         if args.database_command == "migrate":
             store.migrate()
@@ -385,6 +401,101 @@ def validate_protection_suite(
         },
         "coverage": sorted(passed),
         "results": results,
+    }
+
+
+def run_model_self_test(config: Any) -> dict[str, Any]:
+    try:
+        runtime = SaidimnIdsCnnRuntime()
+        payload = runtime.self_test()
+    except ModelRuntimeUnavailable as exc:
+        payload = {
+            "status": "failed",
+            "model_id": MODEL_ID,
+            "error": str(exc),
+            "synthetic_ai_validation_vector": True,
+        }
+    write_runtime_selftest(config.data_dir, payload, MODEL_ID)
+    return payload
+
+
+def validate_model_flow(
+    store: EventStore,
+    config: Any,
+    kind: str,
+    source_ip: str | None,
+    device: str,
+) -> dict[str, Any]:
+    attack = kind == "attack"
+    source = source_ip or ("192.168.10.243" if attack else "192.168.10.244")
+    destination = "203.0.113.77" if attack else "198.51.100.244"
+    events = [_validation_flow_event_at(
+        _validation_timestamp(0),
+        source,
+        destination,
+        443,
+        device,
+        0,
+        bytes_out=18000 if attack else 1200,
+        bytes_in=1200 if attack else 1600,
+        reason="finished",
+    )]
+    features = store.score_features_against_baselines(
+        aggregate_features(events),
+        minimum_observations=config.detection.minimum_observations,
+    )
+    if attack:
+        for feature in features:
+            feature["cicids_vector"] = _pretrained_ai_validation_vector()
+
+    runtime = SaidimnIdsCnnRuntime()
+    started = time.perf_counter()
+    model_scores = runtime.score_features(features)
+    inference_duration_ms = round((time.perf_counter() - started) * 1000, 3)
+
+    pf = PFTableEnforcer()
+    pf_before = pf.test(source).as_dict()
+    active_before = source in store.active_block_sources()
+    detections = []
+    for detector in default_detectors():
+        detections.extend(detector.detect(events, features))
+    incidents = correlate_detections(detections)
+    for incident in incidents:
+        incident["title"] = f"[PondSec AI validation:{kind}] {incident['title']}"
+        incident["evidence"]["validation"] = {
+            "kind": kind,
+            "synthetic_ai_validation_vector": attack,
+            "production_path": "suricata_event_normalize_aggregate_model_detect_correlate_store",
+        }
+    inserted_events = store.insert_events(events)
+    store.insert_features(features)
+    inserted_detections = store.insert_detections(detections)
+    inserted_incidents = store.insert_incidents(incidents)
+    pf_after = pf.test(source).as_dict()
+    active_after = source in store.active_block_sources()
+    ai_detections = [item for item in detections if item["detector_id"] == "pondsec.pretrained_ids_model"]
+    return {
+        "status": "ok" if (attack and ai_detections and incidents) or (not attack and not ai_detections) else "failed",
+        "kind": kind,
+        "mode": config.mode,
+        "source_ip": source,
+        "destination_ip": destination,
+        "device": device,
+        "synthetic_ai_validation_vector": attack,
+        "live_traffic_claim": False,
+        "model_scores": model_scores,
+        "inference_duration_ms": inference_duration_ms,
+        "detections": ai_detections,
+        "incidents": incidents,
+        "inserted_events": inserted_events,
+        "inserted_detections": inserted_detections,
+        "inserted_incidents": inserted_incidents,
+        "pf_response_attempted": False,
+        "pf_source_blocked_before": bool(pf_before["ok"] or active_before),
+        "pf_source_blocked_after": bool(pf_after["ok"] or active_after),
+        "monitor_mode_no_block": config.mode == "monitor" and not (pf_after["ok"] or active_after),
+        "pf_before": pf_before,
+        "pf_after": pf_after,
     }
 
 
@@ -604,31 +715,7 @@ def _validation_scenarios() -> list[dict[str, Any]]:
 
 
 def _pretrained_ai_validation_vector() -> list[float]:
-    return [
-        227.1844482421875, 16145999.0, 3.5857882499694824, 11.17403507232666,
-        14.117317199707031, 17282.978515625, 484.5901794433594, 22.829853057861328,
-        142.24351501464844, 672.3494262695312, 1898.962890625, 22.85487937927246,
-        206.6375732421875, 35.887821197509766, 2712823.0, 152242.90625,
-        17221.9296875, 1605136.125, 7774913.5, 22882.142578125,
-        4880653.5, 79086.2578125, 825969.8125, 27841972.0,
-        2303605.5, 5838944.0, 727616.5625, 34425.2265625,
-        7213066.0, 753377.3125, 0.5452418327331543, 0.0360860638320446,
-        0.13400433957576752, 0.015980372205376625, 0.23819909989833832,
-        0.05332816392183304, 15728.1826171875, 1829.6553955078125,
-        11.846921920776367, 579.3692016601562, 182.05067443847656,
-        267.43658447265625, 380588.78125, 0.7424153089523315,
-        1.173059105873108, 0.11429675668478012, 0.23449653387069702,
-        0.5729040503501892, 0.42709505558013916, 0.09515353292226791,
-        0.25698569416999817, 0.8416632413864136, 310.20849609375,
-        168.6941680908203, 93.42359924316406, 3.1768205165863037,
-        3.2078676223754883, 0.3783320486545563, 1.545061707496643,
-        1.394691824913025, 1.7438603639602661, 0.4415431618690491,
-        1.5570331811904907, 832.3474731445312, 42.736473083496094,
-        21907.078125, 21875.353515625, 277.4992370605469,
-        30.088586807250977, 8.14010238647461, 98683.7421875,
-        2448.317626953125, 51958.64453125, 11043.4384765625,
-        6632003.0, 165594.03125, 5708666.5, 99280.1640625,
-    ]
+    return list(SYNTHETIC_AI_VALIDATION_VECTOR)
 
 
 def _validation_timestamp(offset_seconds: int) -> str:

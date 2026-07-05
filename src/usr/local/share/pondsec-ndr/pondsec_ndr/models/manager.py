@@ -11,7 +11,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from pondsec_ndr.models.runtime import DEFAULT_RUNTIME_PATH
+from pondsec_ndr.models.runtime import DEFAULT_RUNTIME_PATH, DEFAULT_RUNTIME_SHA256, MODEL_ID, RUNTIME_VERSION
 from pondsec_ndr.schema import FEATURE_SCHEMA_VERSION
 
 
@@ -137,6 +137,27 @@ def is_model_installed(data_dir: Path, model_id: str) -> bool:
     return bool(artifacts) and all(item["valid"] for item in artifacts)
 
 
+def runtime_selftest_path(data_dir: Path, model_id: str = MODEL_ID) -> Path:
+    return model_dir(data_dir) / model_id / "runtime-selftest.json"
+
+
+def write_runtime_selftest(data_dir: Path, payload: dict[str, Any], model_id: str = MODEL_ID) -> None:
+    path = runtime_selftest_path(data_dir, model_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, sort_keys=True)
+
+
+def read_runtime_selftest(data_dir: Path, model_id: str = MODEL_ID) -> dict[str, Any] | None:
+    path = runtime_selftest_path(data_dir, model_id)
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
 def download_model_artifacts(data_dir: Path, model_id: str, timeout: int = 120) -> dict[str, Any]:
     model = get_catalog_model(model_id)
     directory = model_dir(data_dir) / model_id
@@ -218,9 +239,20 @@ def model_inventory(data_dir: Path | None = None) -> list[dict[str, Any]]:
         if data_dir is not None:
             artifacts = installed_artifacts(data_dir, model["model_id"])
             installed = bool(artifacts) and all(item["valid"] for item in artifacts)
-        runtime_artifact = DEFAULT_RUNTIME_PATH if model["model_id"] == "saidimn-ids-cnn-cicids2017" else None
+        runtime_artifact = DEFAULT_RUNTIME_PATH if model["model_id"] == MODEL_ID else None
         runtime_installed = bool(runtime_artifact and runtime_artifact.exists())
-        installed = installed or runtime_installed
+        runtime_verification = read_runtime_selftest(data_dir, model["model_id"]) if data_dir is not None and runtime_installed else None
+        runtime_active = bool(
+            runtime_verification
+            and runtime_verification.get("status") == "ok"
+            and runtime_verification.get("model_checksum") == DEFAULT_RUNTIME_SHA256
+            and runtime_verification.get("model_version") == RUNTIME_VERSION
+        )
+        if runtime_installed and not runtime_active:
+            installed = False
+            model_status = "failed" if runtime_verification and runtime_verification.get("status") == "failed" else "unverified"
+        else:
+            model_status = "active" if runtime_active else ("installed" if installed else model["status"])
         inventory.append({
             "model_id": model["model_id"],
             "provider": model["provider"],
@@ -231,12 +263,13 @@ def model_inventory(data_dir: Path | None = None) -> list[dict[str, Any]]:
             "feature_schema_version": model["feature_schema_version"],
             "trained_on": model["trained_on"],
             "runtime": model["runtime"],
-            "status": "installed" if installed else model["status"],
+            "status": model_status,
             "preferred": model["preferred"],
-            "active": installed and model["preferred"],
+            "active": runtime_active and model["preferred"],
             "artifacts": artifacts,
             "runtime_artifact": str(runtime_artifact) if runtime_artifact else None,
             "runtime_installed": runtime_installed,
+            "runtime_verification": runtime_verification,
             "notes": model["notes"],
         })
     return inventory

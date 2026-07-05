@@ -292,15 +292,20 @@ class PretrainedIdsModelDetector(Detector):
                 attack_probability,
                 {
                     "model_id": score["model_id"],
+                    "model_version": score["model_version"],
+                    "model_checksum": score["model_checksum"],
                     "runtime_version": score["runtime_version"],
+                    "artifact_path": score["artifact_path"],
+                    "feature_schema_version": "1",
                     "attack_probability": round(attack_probability, 6),
                     "benign_probability": round(float(score["benign_probability"]), 6),
                     "attack_class": score["attack_class"],
                     "attack_class_probability": round(class_probability, 6),
+                    "feature_values": score["feature_values"],
                     "pretrained_model": True,
                 },
                 recommended_action="block",
-                model_version=MODEL_ID,
+                model_version=score["model_version"],
             ))
         return detections
 

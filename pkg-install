@@ -16,6 +16,10 @@ POST-INSTALL)
         pyver="$(python3 -c 'import sys; print(f"{sys.version_info.major}{sys.version_info.minor}")')"
         pkg install -y "py${pyver}-numpy" >/dev/null 2>&1 || true
     fi
+    if ! python3 -c "import numpy" >/dev/null 2>&1; then
+        echo "PondSec NDR requires NumPy for pretrained AI inference; install py${pyver}-numpy." >&2
+        exit 1
+    fi
     install -d -o root -g wheel -m 0755 /usr/local/etc/pondsec-ndr
     install -d -o pondsecndr -g pondsecndr -m 0750 /var/db/pondsec-ndr /var/log/pondsec-ndr /var/run/pondsec-ndr
     ;;
