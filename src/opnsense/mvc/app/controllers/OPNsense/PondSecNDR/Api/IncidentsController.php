@@ -20,11 +20,24 @@ class IncidentsController extends ApiControllerBase
 
     public function closeAction($id = null)
     {
-        return $this->notAvailable('incident close');
+        if (!$this->isSafeId($id)) {
+            $this->response->setStatusCode(400, 'Bad Request');
+            return ['status' => 'error', 'message' => 'invalid incident id'];
+        }
+        return $this->runBackendJson('incident_close ' . $id);
     }
 
     public function reopenAction($id = null)
     {
-        return $this->notAvailable('incident reopen');
+        if (!$this->isSafeId($id)) {
+            $this->response->setStatusCode(400, 'Bad Request');
+            return ['status' => 'error', 'message' => 'invalid incident id'];
+        }
+        return $this->runBackendJson('incident_reopen ' . $id);
+    }
+
+    private function isSafeId($id)
+    {
+        return is_string($id) && preg_match('/^[A-Za-z0-9._:-]{1,128}$/', $id);
     }
 }

@@ -7,13 +7,14 @@ import unittest
 
 from pondsec_ndr.cli import main as cli_main
 from pondsec_ndr.collectors.eve import EveCollector
-from pondsec_ndr.config import PondSecConfig
+from pondsec_ndr.config import PondSecConfig, ResponseConfig
 from pondsec_ndr.correlation import correlate_detections
 from pondsec_ndr.detection.detectors import BeaconingDetector, DNSTunnelingDetector, PortScanDetector
 from pondsec_ndr.features.aggregator import aggregate_features, shannon_entropy
 from pondsec_ndr.models.cicids_features import CICIDS2017_FEATURES, cicids_vector_from_feature
 from pondsec_ndr.models.manager import model_inventory
 from pondsec_ndr.normalizers.suricata import normalize_eve
+from pondsec_ndr.response.engine import ResponseDenied, is_protected_target, propose_block_for_incident
 from pondsec_ndr.service import PondSecService
 from pondsec_ndr.storage.database import EventStore
 
@@ -177,6 +178,60 @@ class BackendTests(unittest.TestCase):
             self.assertGreaterEqual(result["inserted_events"], 15)
             self.assertGreaterEqual(result["detections"], 1)
 
+    def test_response_engine_proposes_blocks_without_pf_side_effects(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            incident = {
+                "incident_id": "incident-response-test",
+                "title": "Response test",
+                "status": "open",
+                "risk_score": 80,
+                "severity": 8,
+                "confidence": 0.85,
+                "source_ip": "192.168.10.200",
+                "destination_ip": "1.1.1.1",
+                "category": "command_and_control",
+                "created_at": "2026-07-05T10:00:00+00:00",
+                "updated_at": "2026-07-05T10:00:00+00:00",
+                "evidence": {},
+                "risk_factors": [{"name": "test", "value": 80}],
+                "detection_ids": [],
+            }
+            store.insert_incidents([incident])
+            config = PondSecConfig(response=ResponseConfig(minimum_risk_score=50, minimum_confidence=50))
+            proposal = propose_block_for_incident(store, config, "incident-response-test", actor="test", duration_seconds=300)
+            self.assertEqual(proposal["status"], "proposed")
+            self.assertEqual(proposal["automatic"], 0)
+            self.assertEqual(store.list_rows("block_entries")[0]["source_ip"], "192.168.10.200")
+
+    def test_response_engine_denies_allowlisted_and_protected_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            incident = {
+                "incident_id": "incident-allowlist-test",
+                "title": "Allowlist test",
+                "status": "open",
+                "risk_score": 90,
+                "severity": 9,
+                "confidence": 0.95,
+                "source_ip": "192.168.10.210",
+                "destination_ip": "1.1.1.1",
+                "category": "reconnaissance",
+                "created_at": "2026-07-05T10:00:00+00:00",
+                "updated_at": "2026-07-05T10:00:00+00:00",
+                "evidence": {},
+                "risk_factors": [{"name": "test", "value": 90}],
+                "detection_ids": [],
+            }
+            store.insert_incidents([incident])
+            store.add_allowlist_entry("192.168.10.0/24", "admin network", actor="test")
+            config = PondSecConfig(response=ResponseConfig(minimum_risk_score=50, minimum_confidence=50))
+            with self.assertRaises(ResponseDenied):
+                propose_block_for_incident(store, config, "incident-allowlist-test", actor="test")
+            self.assertTrue(is_protected_target("127.0.0.1", config))
+
 
 class CliTests(unittest.TestCase):
     def test_cli_config_validate_accepts_json_flag_after_subcommand(self) -> None:
@@ -193,6 +248,28 @@ class CliTests(unittest.TestCase):
                 __import__("os").environ[key] = value
             try:
                 self.assertEqual(cli_main(["config", "validate", "--json"]), 0)
+            finally:
+                for key, value in old_env.items():
+                    if value is None:
+                        __import__("os").environ.pop(key, None)
+                    else:
+                        __import__("os").environ[key] = value
+
+    def test_cli_allowlist_add_accepts_json_flag_after_subcommand(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_env = dict()
+            for key, value in {
+                "PONDSEC_NDR_DATA_DIR": str(root / "db"),
+                "PONDSEC_NDR_LOG_DIR": str(root / "log"),
+                "PONDSEC_NDR_RUN_DIR": str(root / "run"),
+                "PONDSEC_NDR_CONFIG": str(root / "missing.json"),
+            }.items():
+                old_env[key] = __import__("os").environ.get(key)
+                __import__("os").environ[key] = value
+            try:
+                self.assertEqual(cli_main(["allowlist", "add", "192.168.10.0/24", "--json"]), 0)
+                self.assertEqual(cli_main(["allowlist", "list", "--json"]), 0)
             finally:
                 for key, value in old_env.items():
                     if value is None:

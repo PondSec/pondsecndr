@@ -18,6 +18,7 @@ from pondsec_ndr.diagnostics import diagnostics as diagnostics_payload
 from pondsec_ndr.diagnostics import self_test, service_status
 from pondsec_ndr.features.aggregator import aggregate_features
 from pondsec_ndr.models.manager import ModelError, download_model_artifacts, model_inventory
+from pondsec_ndr.response.engine import ResponseDenied, propose_block_for_incident, validate_ip_or_network
 from pondsec_ndr.service import PondSecService
 from pondsec_ndr.storage.database import EventStore
 
@@ -41,10 +42,43 @@ def main(argv: list[str] | None = None) -> int:
     dashboard_sub.add_parser("summary")
     dashboard_sub.add_parser("timeline")
 
-    for name in ("detections", "incidents", "hosts", "allowlist", "blocklist", "policies", "logs"):
+    for name in ("detections", "hosts", "policies", "logs"):
         section = sub.add_parser(name)
         section_sub = section.add_subparsers(dest="section_command", required=True)
         section_sub.add_parser("list")
+
+    incidents = sub.add_parser("incidents")
+    incidents_sub = incidents.add_subparsers(dest="section_command", required=True)
+    incidents_sub.add_parser("list")
+    close_incident = incidents_sub.add_parser("close")
+    close_incident.add_argument("incident_id")
+    reopen_incident = incidents_sub.add_parser("reopen")
+    reopen_incident.add_argument("incident_id")
+    false_positive = incidents_sub.add_parser("false-positive")
+    false_positive.add_argument("incident_id")
+
+    allowlist = sub.add_parser("allowlist")
+    allowlist_sub = allowlist.add_subparsers(dest="section_command", required=True)
+    allowlist_sub.add_parser("list")
+    allowlist_add = allowlist_sub.add_parser("add")
+    allowlist_add.add_argument("value")
+    allowlist_add.add_argument("--reason", default=None)
+    allowlist_add.add_argument("--expires-at", default=None)
+    allowlist_delete = allowlist_sub.add_parser("delete")
+    allowlist_delete.add_argument("allowlist_id")
+
+    blocklist = sub.add_parser("blocklist")
+    blocklist_sub = blocklist.add_subparsers(dest="section_command", required=True)
+    blocklist_sub.add_parser("list")
+    block_propose = blocklist_sub.add_parser("propose")
+    block_propose.add_argument("incident_id")
+    block_propose.add_argument("--duration-seconds", type=int, default=None)
+    block_activate = blocklist_sub.add_parser("activate")
+    block_activate.add_argument("block_id")
+    block_remove = blocklist_sub.add_parser("remove")
+    block_remove.add_argument("block_id")
+    block_remove.add_argument("--reason", default="manual removal")
+    blocklist_sub.add_parser("expire")
 
     interfaces = sub.add_parser("interfaces")
     interfaces_sub = interfaces.add_subparsers(dest="interfaces_command", required=True)
@@ -105,6 +139,8 @@ def main(argv: list[str] | None = None) -> int:
         result, exit_code = dispatch(args, config, store)
     except ModelError as exc:
         result, exit_code = {"status": "error", "message": str(exc)}, 2
+    except ResponseDenied as exc:
+        result, exit_code = {"status": "denied", "message": str(exc)}, 3
     emit(result, args.json)
     return exit_code
 
@@ -134,13 +170,37 @@ def dispatch(args: argparse.Namespace, config: Any, store: EventStore) -> tuple[
     if command == "detections":
         return {"items": _decode_rows(store.list_rows("detections"))}, 0
     if command == "incidents":
-        return {"items": _decode_rows(store.list_rows("incidents"))}, 0
+        if args.section_command == "list":
+            return {"items": _decode_rows(store.list_rows("incidents"))}, 0
+        status_map = {"close": "closed", "reopen": "open", "false-positive": "false_positive"}
+        changed = store.update_incident_status(args.incident_id, status_map[args.section_command], actor="cli")
+        return {"status": "ok" if changed else "not_found", "incident_id": args.incident_id}, 0 if changed else 1
     if command == "hosts":
         return {"items": _decode_rows(store.list_rows("hosts"))}, 0
     if command == "allowlist":
-        return {"items": _decode_rows(store.list_rows("allowlist_entries"))}, 0
+        if args.section_command == "list":
+            return {"items": _decode_rows(store.list_rows("allowlist_entries"))}, 0
+        if args.section_command == "add":
+            value = validate_ip_or_network(args.value)
+            return {"status": "ok", "item": store.add_allowlist_entry(value, args.reason, args.expires_at, actor="cli")}, 0
+        if args.section_command == "delete":
+            changed = store.remove_allowlist_entry(args.allowlist_id, actor="cli")
+            return {"status": "ok" if changed else "not_found", "allowlist_id": args.allowlist_id}, 0 if changed else 1
     if command == "blocklist":
-        return {"items": _decode_rows(store.list_rows("block_entries"))}, 0
+        if args.section_command == "list":
+            return {"items": _decode_rows(store.list_rows("block_entries"))}, 0
+        if args.section_command == "propose":
+            proposal = propose_block_for_incident(store, config, args.incident_id, actor="cli", duration_seconds=args.duration_seconds)
+            return {"status": "ok", "item": proposal, "pf_side_effects": "none"}, 0
+        if args.section_command == "activate":
+            changed = store.update_block_status(args.block_id, "active", actor="cli")
+            return {"status": "ok" if changed else "not_found", "block_id": args.block_id, "pf_side_effects": "none"}, 0 if changed else 1
+        if args.section_command == "remove":
+            changed = store.update_block_status(args.block_id, "removed", args.reason, actor="cli")
+            return {"status": "ok" if changed else "not_found", "block_id": args.block_id, "pf_side_effects": "none"}, 0 if changed else 1
+        if args.section_command == "expire":
+            expired = store.expire_block_entries(actor="cli")
+            return {"status": "ok", "expired": expired, "pf_side_effects": "none"}, 0
     if command == "policies":
         return {"items": _decode_rows(store.list_rows("policies"))}, 0
     if command == "logs":

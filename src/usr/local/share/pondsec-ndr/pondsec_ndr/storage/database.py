@@ -11,6 +11,7 @@ import pwd
 import grp
 import sqlite3
 from typing import Any, Iterator
+from uuid import uuid4
 
 
 SCHEMA_VERSION = 1
@@ -466,6 +467,138 @@ class EventStore:
                         (incident["risk_score"], incident["source_ip"], incident["source_ip"]),
                     )
             return conn.total_changes - before
+
+    def get_incident(self, incident_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM incidents WHERE incident_id = ?", (incident_id,)).fetchone()
+        if not row:
+            return None
+        item = dict(row)
+        item["evidence"] = json.loads(item.pop("evidence_json"))
+        item["risk_factors"] = json.loads(item.pop("risk_factors_json"))
+        return item
+
+    def update_incident_status(self, incident_id: str, status: str, actor: str = "system") -> bool:
+        if status not in {"open", "closed", "false_positive"}:
+            raise ValueError("invalid incident status")
+        with self.connect() as conn:
+            before = conn.total_changes
+            conn.execute("UPDATE incidents SET status = ?, updated_at = ? WHERE incident_id = ?", (status, now_iso(), incident_id))
+            changed = conn.total_changes - before
+            self._audit(conn, actor, f"incident.{status}", incident_id, {})
+            source = conn.execute("SELECT source_ip FROM incidents WHERE incident_id = ?", (incident_id,)).fetchone()
+            if source and source["source_ip"]:
+                conn.execute(
+                    "UPDATE hosts SET open_incidents = (SELECT count(*) FROM incidents WHERE status = 'open' AND source_ip = ?) WHERE ip = ?",
+                    (source["source_ip"], source["source_ip"]),
+                )
+            return changed > 0
+
+    def add_allowlist_entry(self, value: str, reason: str | None = None, expires_at: str | None = None, actor: str = "system") -> dict[str, Any]:
+        entry = {
+            "allowlist_id": str(uuid4()),
+            "value": value,
+            "reason": reason,
+            "created_at": now_iso(),
+            "expires_at": expires_at,
+        }
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT INTO allowlist_entries(allowlist_id, value, reason, created_at, expires_at) VALUES (?, ?, ?, ?, ?)",
+                (entry["allowlist_id"], entry["value"], entry["reason"], entry["created_at"], entry["expires_at"]),
+            )
+            conn.execute("UPDATE hosts SET allowlist_status = 'allowlisted' WHERE ip = ?", (value,))
+            self._audit(conn, actor, "allowlist.add", value, entry)
+        return entry
+
+    def remove_allowlist_entry(self, allowlist_id: str, actor: str = "system") -> bool:
+        with self.connect() as conn:
+            row = conn.execute("SELECT value FROM allowlist_entries WHERE allowlist_id = ?", (allowlist_id,)).fetchone()
+            before = conn.total_changes
+            conn.execute("DELETE FROM allowlist_entries WHERE allowlist_id = ?", (allowlist_id,))
+            changed = conn.total_changes - before
+            if row:
+                conn.execute("UPDATE hosts SET allowlist_status = 'none' WHERE ip = ?", (row["value"],))
+            self._audit(conn, actor, "allowlist.delete", allowlist_id, {"value": row["value"] if row else None})
+            return changed > 0
+
+    def allowlist_values(self) -> list[str]:
+        now = now_iso()
+        with self.connect() as conn:
+            rows = conn.execute("SELECT value FROM allowlist_entries WHERE expires_at IS NULL OR expires_at > ?", (now,)).fetchall()
+        return [row["value"] for row in rows]
+
+    def add_block_entry(self, entry: dict[str, Any], actor: str = "system") -> dict[str, Any]:
+        block_id = entry.get("block_id") or str(uuid4())
+        created_at = entry.get("created_at") or now_iso()
+        record = {
+            "block_id": block_id,
+            "incident_id": entry.get("incident_id"),
+            "source_ip": entry["source_ip"],
+            "destination": entry.get("destination"),
+            "reason": entry["reason"],
+            "risk_score": int(entry["risk_score"]),
+            "confidence": float(entry["confidence"]),
+            "policy_id": entry.get("policy_id"),
+            "created_at": created_at,
+            "expires_at": entry["expires_at"],
+            "created_by": entry.get("created_by") or actor,
+            "automatic": 1 if entry.get("automatic") else 0,
+            "status": entry.get("status", "proposed"),
+            "removal_reason": entry.get("removal_reason"),
+        }
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO block_entries(
+                    block_id, incident_id, source_ip, destination, reason, risk_score,
+                    confidence, policy_id, created_at, expires_at, created_by,
+                    automatic, status, removal_reason
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record["block_id"], record["incident_id"], record["source_ip"], record["destination"],
+                    record["reason"], record["risk_score"], record["confidence"], record["policy_id"],
+                    record["created_at"], record["expires_at"], record["created_by"], record["automatic"],
+                    record["status"], record["removal_reason"],
+                ),
+            )
+            if record["status"] in {"proposed", "active"}:
+                conn.execute("UPDATE hosts SET block_status = ? WHERE ip = ?", (record["status"], record["source_ip"]))
+            self._audit(conn, actor, f"block.{record['status']}", record["source_ip"], record)
+        return record
+
+    def update_block_status(self, block_id: str, status: str, removal_reason: str | None = None, actor: str = "system") -> bool:
+        if status not in {"proposed", "active", "removed", "expired", "rejected"}:
+            raise ValueError("invalid block status")
+        with self.connect() as conn:
+            row = conn.execute("SELECT source_ip FROM block_entries WHERE block_id = ?", (block_id,)).fetchone()
+            before = conn.total_changes
+            conn.execute(
+                "UPDATE block_entries SET status = ?, removal_reason = COALESCE(?, removal_reason) WHERE block_id = ?",
+                (status, removal_reason, block_id),
+            )
+            changed = conn.total_changes - before
+            if row:
+                host_status = status if status in {"proposed", "active"} else "none"
+                conn.execute("UPDATE hosts SET block_status = ? WHERE ip = ?", (host_status, row["source_ip"]))
+            self._audit(conn, actor, f"block.{status}", block_id, {"removal_reason": removal_reason})
+            return changed > 0
+
+    def expire_block_entries(self, actor: str = "system") -> int:
+        now = now_iso()
+        with self.connect() as conn:
+            rows = conn.execute("SELECT block_id FROM block_entries WHERE status IN ('proposed', 'active') AND expires_at <= ?", (now,)).fetchall()
+            for row in rows:
+                conn.execute("UPDATE block_entries SET status = 'expired', removal_reason = 'expired' WHERE block_id = ?", (row["block_id"],))
+                self._audit(conn, actor, "block.expired", row["block_id"], {})
+            return len(rows)
+
+    def _audit(self, conn: sqlite3.Connection, actor: str, action: str, target: str | None, detail: dict[str, Any]) -> None:
+        conn.execute(
+            "INSERT INTO audit_log(audit_id, timestamp, actor, action, target, detail_json) VALUES (?, ?, ?, ?, ?, ?)",
+            (str(uuid4()), now_iso(), actor, action, target, json.dumps(detail, sort_keys=True)),
+        )
 
     def set_health(self, status: str, pid: int | None, detail: dict[str, Any]) -> None:
         with self.connect() as conn:
