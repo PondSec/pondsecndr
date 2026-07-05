@@ -5,7 +5,10 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import json
+import os
 from pathlib import Path
+import pwd
+import grp
 import sqlite3
 from typing import Any, Iterator
 
@@ -263,6 +266,20 @@ class EventStore:
             raise
         finally:
             conn.close()
+            self._fix_ownership()
+
+    def _fix_ownership(self) -> None:
+        if os.geteuid() != 0:
+            return
+        try:
+            user = pwd.getpwnam("pondsecndr")
+            group = grp.getgrnam("pondsecndr")
+        except KeyError:
+            return
+        paths = [self.db_path, self.db_path.with_name(self.db_path.name + "-wal"), self.db_path.with_name(self.db_path.name + "-shm")]
+        for path in paths:
+            if path.exists():
+                os.chown(path, user.pw_uid, group.gr_gid)
 
     def migrate(self) -> None:
         with self.connect() as conn:

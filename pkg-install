@@ -8,7 +8,9 @@ POST-INSTALL)
         pw groupadd pondsecndr
     fi
     if ! pw user show pondsecndr >/dev/null 2>&1; then
-        pw useradd pondsecndr -g pondsecndr -d /nonexistent -s /usr/sbin/nologin -c "PondSec NDR service user"
+        pw useradd pondsecndr -g pondsecndr -d /var/db/pondsec-ndr -s /usr/sbin/nologin -c "PondSec NDR service user"
+    else
+        pw usermod pondsecndr -d /var/db/pondsec-ndr -s /usr/sbin/nologin
     fi
     install -d -o root -g wheel -m 0755 /usr/local/etc/pondsec-ndr
     install -d -o pondsecndr -g pondsecndr -m 0750 /var/db/pondsec-ndr /var/log/pondsec-ndr /var/run/pondsec-ndr
