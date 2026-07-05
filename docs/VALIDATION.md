@@ -104,3 +104,70 @@ Follow-up validation target:
 - `pondsec-ndrctl protection validate --json` must produce a port-scan detection, incident, response proposal, PF table activation, and PF verification.
 - The configd action `configctl pondsecndr protection_validate` must return the same proof path.
 - The PF block table is OPNsense `virusprot`, which is already referenced by an active `block drop ... from <virusprot> to any` rule on the target firewall.
+
+## 2026-07-05: Authenticated GUI and Auto-Prevent Validation
+
+Target firewall:
+
+- Host: `HWFirewall01.internal`
+- Address: `192.168.99.2`
+- OPNsense mode after validation: `prevent`
+- PondSec response mode after validation: `automatic_blocking=1`, `manual_confirmation=0`
+- Response thresholds after validation: `minimum_risk_score=70`, `minimum_confidence=75`
+- Monitored devices: `re0`, `igb0_vlan10`, `igb0_vlan20`, `pppoe0`
+- Management devices excluded/protected: `igb0`, `wg1`
+
+Authenticated WebGUI route validation:
+
+- A temporary admin-only test user was created for browser validation and removed after testing.
+- The temporary user removal was verified, and the dedicated `pondsecndr` service user was restored after OPNsense local group sync removed it.
+- The package installer was hardened to keep `pondsecndr` on fixed system UID/GID `1988`, below the OPNsense-managed local user/group synchronization range.
+- `pondsec_ndr` service status after cleanup: `healthy`, running as `pondsecndr`.
+- Suricata EVE access after cleanup: `status=ok`, checked by service-user probe.
+- All authenticated PondSec UI pages resolved to concrete PondSec content and did not show `Page not found`:
+  - `/ui/pondsecndr/dashboard`
+  - `/ui/pondsecndr/incidents`
+  - `/ui/pondsecndr/detections`
+  - `/ui/pondsecndr/hosts`
+  - `/ui/pondsecndr/traffic_analytics`
+  - `/ui/pondsecndr/interfaces`
+  - `/ui/pondsecndr/policies`
+  - `/ui/pondsecndr/models`
+  - `/ui/pondsecndr/allowlist`
+  - `/ui/pondsecndr/blocklist`
+  - `/ui/pondsecndr/service`
+  - `/ui/pondsecndr/logs`
+  - `/ui/pondsecndr/diagnostics`
+  - `/ui/pondsecndr/settings`
+  - `/ui/pondsecndr/about`
+
+Auto-prevent validation command:
+
+```sh
+pondsec-ndrctl protection validate-suite --duration-seconds 600 --remove-after --json
+```
+
+Validation result:
+
+- Suite status: `ok`
+- Mode: `prevent`
+- Automatic blocking: `true`
+- Every scenario produced the expected detection, incident, PF add, PF verify, and cleanup removal.
+
+Scenario coverage:
+
+| Scenario | Expected behavior | Detector proof | Source | Risk | PF verified | Cleanup |
+|---|---|---|---|---:|---|---|
+| `pretrained_ai_model_inference_vlan10` | Synthetic AI validation vector classified as attack | `pondsec.pretrained_ids_model` | `192.168.10.243` | 86 | yes | removed |
+| `wan_attack_prevention` | WAN reconnaissance/port scan against DMZ | `pondsec.portscan`, `pondsec.vertical_scan` | `203.0.113.241` | 75 | yes | removed |
+| `beaconing_vlan10` | Periodic C2-style beaconing from VLAN10 | `pondsec.beaconing` | `192.168.10.241` | 81 | yes | removed |
+| `lateral_movement_vlan20` | Internal SMB/RDP fan-out from VLAN20 | `pondsec.lateral_movement` | `192.168.20.241` | 87 | yes | removed |
+| `dns_tunneling_dmz` | High-entropy NXDOMAIN DNS tunneling from DMZ | `pondsec.dns_tunneling` | `192.168.30.241` | 82 | yes | removed |
+| `data_exfiltration_vlan10` | Large asymmetric upload from VLAN10 | `pondsec.data_exfiltration` | `192.168.10.242` | 97 | yes | removed |
+| `unknown_zero_day_baseline_anomaly` | Baseline anomaly without a signature | `pondsec.host_baseline_anomaly` | `192.168.20.242` | 81 | yes | removed |
+
+Important scope:
+
+- `pretrained_ai_model_inference_vlan10` still uses the synthetic AI validation vector. It proves runtime and pipeline wiring, not live zero-day detection quality.
+- The suite does prove the automatic prevent path: configured `prevent` mode, detection, incident, response proposal, PF add, PF verification, and cleanup.
+- A separate active external TEST-NET validation block remained present for `203.0.113.250` in PF table `virusprot` after the suite as a time-limited proof of a live block entry.

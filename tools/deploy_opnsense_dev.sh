@@ -63,12 +63,12 @@ sudo cp -p "$STAGE/src/usr/local/etc/inc/plugins.inc.d/pondsecndr.inc" /usr/loca
 if [ -d /var/log/suricata ]; then
     sudo sh -c "getfacl /var/log/suricata /var/log/suricata/eve.json > \"$BACKUP/suricata-acl-before.txt\" 2>/dev/null || true"
     sudo setfacl -m u:pondsecndr:xaRcs::allow /var/log/suricata || true
-    if [ -f /var/log/suricata/eve.json ]; then
+    if sudo test -f /var/log/suricata/eve.json; then
         sudo chgrp pondsecndr /var/log/suricata/eve.json
         sudo chmod 640 /var/log/suricata/eve.json
         sudo setfacl -m u:pondsecndr:raRcs::allow /var/log/suricata/eve.json || true
     fi
-    if [ -f /etc/newsyslog.conf.d/suricata ]; then
+    if sudo test -f /etc/newsyslog.conf.d/suricata; then
         sudo mkdir -p "$BACKUP/etc/newsyslog.conf.d"
         sudo cp -p /etc/newsyslog.conf.d/suricata "$BACKUP/etc/newsyslog.conf.d/suricata"
         sudo sed -i "" -E "s#^(/var/log/suricata/eve\\.json[[:space:]]+)root:wheel([[:space:]]+640[[:space:]])#\\1root:pondsecndr\\2#" /etc/newsyslog.conf.d/suricata

@@ -4,13 +4,35 @@ set -eu
 
 case "$2" in
 POST-INSTALL)
+    service_uid=1988
+    service_gid=1988
     if ! pw group show pondsecndr >/dev/null 2>&1; then
-        pw groupadd pondsecndr
+        if pw group show -g "${service_gid}" >/dev/null 2>&1; then
+            echo "PondSec NDR requires free service GID ${service_gid}; it is already in use." >&2
+            exit 1
+        fi
+        pw groupadd pondsecndr -g "${service_gid}"
+    elif [ "$(pw group show pondsecndr | awk -F: '{print $3}')" != "${service_gid}" ]; then
+        if pw group show -g "${service_gid}" >/dev/null 2>&1; then
+            echo "PondSec NDR requires free service GID ${service_gid}; it is already in use." >&2
+            exit 1
+        fi
+        pw groupmod pondsecndr -g "${service_gid}"
     fi
     if ! pw user show pondsecndr >/dev/null 2>&1; then
-        pw useradd pondsecndr -g pondsecndr -d /var/db/pondsec-ndr -s /usr/sbin/nologin -c "PondSec NDR service user"
+        if pw user show -u "${service_uid}" >/dev/null 2>&1; then
+            echo "PondSec NDR requires free service UID ${service_uid}; it is already in use." >&2
+            exit 1
+        fi
+        pw useradd pondsecndr -u "${service_uid}" -g pondsecndr -d /var/db/pondsec-ndr -s /usr/sbin/nologin -c "PondSec NDR service user"
+    elif [ "$(pw user show pondsecndr | awk -F: '{print $3}')" != "${service_uid}" ]; then
+        if pw user show -u "${service_uid}" >/dev/null 2>&1; then
+            echo "PondSec NDR requires free service UID ${service_uid}; it is already in use." >&2
+            exit 1
+        fi
+        pw usermod pondsecndr -u "${service_uid}" -g pondsecndr -d /var/db/pondsec-ndr -s /usr/sbin/nologin
     else
-        pw usermod pondsecndr -d /var/db/pondsec-ndr -s /usr/sbin/nologin
+        pw usermod pondsecndr -g pondsecndr -d /var/db/pondsec-ndr -s /usr/sbin/nologin
     fi
     if ! python3 -c "import numpy" >/dev/null 2>&1; then
         pyver="$(python3 -c 'import sys; print(f"{sys.version_info.major}{sys.version_info.minor}")')"
