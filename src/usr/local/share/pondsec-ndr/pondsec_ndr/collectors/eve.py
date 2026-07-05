@@ -50,12 +50,19 @@ class EveCollector:
 
     def read_once(self, max_lines: int = 1000) -> tuple[list[dict[str, Any]], CollectorStats]:
         stats = CollectorStats()
-        if not self.eve_path.exists():
+        try:
+            file_stat = self.eve_path.stat()
+        except FileNotFoundError:
             stats.last_error = f"EVE file does not exist: {self.eve_path}"
+            return [], stats
+        except PermissionError:
+            stats.last_error = f"EVE file is not readable by pondsec-ndr: {self.eve_path}"
+            return [], stats
+        except OSError as exc:
+            stats.last_error = f"EVE file cannot be inspected: {exc}"
             return [], stats
 
         state = self._load_offset()
-        file_stat = self.eve_path.stat()
         inode = int(file_stat.st_ino)
         offset = int(state.get("offset") or 0)
         if state.get("inode") != inode or file_stat.st_size < offset:

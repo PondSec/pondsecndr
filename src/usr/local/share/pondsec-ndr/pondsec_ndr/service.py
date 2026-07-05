@@ -51,7 +51,13 @@ class PondSecService:
         self.install_signal_handlers()
         self._write_health("healthy")
         while not self.stop_requested:
-            self.run_once()
+            try:
+                self.run_once()
+            except Exception as exc:
+                message = f"service loop error: {exc}"
+                self.counters["last_collector_errors"] = ([message] + self.counters["last_collector_errors"])[:5]
+                self.logger.exception(message, extra={"component": "service", "event": "loop_error", "error_code": "service_loop_error"})
+                self._write_health("degraded", {"last_error": message})
             time.sleep(interval)
         self._write_health("stopped")
 
