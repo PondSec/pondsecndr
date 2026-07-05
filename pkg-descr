@@ -1,0 +1,4 @@
+PondSec NDR is a behavioral Network Detection and Response plugin for
+OPNsense. It collects firewall-visible telemetry such as Suricata EVE JSON,
+normalizes metadata, stores it locally, runs deterministic detectors, and
+prepares incident and response workflows with fail-open defaults.

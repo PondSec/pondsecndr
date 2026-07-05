@@ -1,0 +1,19 @@
+<menu>
+    <PondSecNDR VisibleName="PondSec NDR" order="75" cssClass="fa fa-shield">
+        <Dashboard VisibleName="Dashboard" url="/ui/pondsecndr/dashboard"/>
+        <Incidents VisibleName="Incidents" url="/ui/pondsecndr/incidents"/>
+        <Detections VisibleName="Detections" url="/ui/pondsecndr/detections"/>
+        <Hosts VisibleName="Hosts" url="/ui/pondsecndr/hosts"/>
+        <TrafficAnalytics VisibleName="Traffic Analytics" url="/ui/pondsecndr/traffic_analytics"/>
+        <Interfaces VisibleName="Interfaces" url="/ui/pondsecndr/interfaces"/>
+        <Policies VisibleName="Policies" url="/ui/pondsecndr/policies"/>
+        <Models VisibleName="Models" url="/ui/pondsecndr/models"/>
+        <Allowlist VisibleName="Allowlist" url="/ui/pondsecndr/allowlist"/>
+        <Blocklist VisibleName="Blocklist" url="/ui/pondsecndr/blocklist"/>
+        <Service VisibleName="Service" url="/ui/pondsecndr/service"/>
+        <Logs VisibleName="Logs" url="/ui/pondsecndr/logs"/>
+        <Diagnostics VisibleName="Diagnostics" url="/ui/pondsecndr/diagnostics"/>
+        <Settings VisibleName="Settings" url="/ui/pondsecndr/settings"/>
+        <About VisibleName="About" url="/ui/pondsecndr/about"/>
+    </PondSecNDR>
+</menu>

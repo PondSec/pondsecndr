@@ -1,0 +1,242 @@
+<model>
+    <mount>//OPNsense/pondsecndr</mount>
+    <description>PondSec NDR configuration</description>
+    <items>
+        <general>
+            <enabled type="BooleanField">
+                <default>0</default>
+                <Required>Y</Required>
+            </enabled>
+            <mode type="OptionField">
+                <default>monitor</default>
+                <Required>Y</Required>
+                <OptionValues>
+                    <monitor>monitor</monitor>
+                    <alert>alert</alert>
+                    <interactive>interactive</interactive>
+                    <prevent>prevent</prevent>
+                </OptionValues>
+            </mode>
+            <risk_threshold type="IntegerField">
+                <default>70</default>
+                <MinimumValue>1</MinimumValue>
+                <MaximumValue>100</MaximumValue>
+                <Required>Y</Required>
+            </risk_threshold>
+            <max_event_rate type="IntegerField">
+                <default>5000</default>
+                <MinimumValue>1</MinimumValue>
+                <MaximumValue>100000</MaximumValue>
+                <Required>Y</Required>
+            </max_event_rate>
+            <retention_days type="IntegerField">
+                <default>30</default>
+                <MinimumValue>1</MinimumValue>
+                <MaximumValue>3650</MaximumValue>
+                <Required>Y</Required>
+            </retention_days>
+            <max_database_mb type="IntegerField">
+                <default>1024</default>
+                <MinimumValue>64</MinimumValue>
+                <MaximumValue>1048576</MaximumValue>
+                <Required>Y</Required>
+            </max_database_mb>
+            <privacy_mode type="BooleanField">
+                <default>1</default>
+                <Required>Y</Required>
+            </privacy_mode>
+            <anonymize_storage type="BooleanField">
+                <default>0</default>
+                <Required>Y</Required>
+            </anonymize_storage>
+            <debug_logging type="BooleanField">
+                <default>0</default>
+                <Required>Y</Required>
+            </debug_logging>
+            <fail_open type="BooleanField">
+                <default>1</default>
+                <Required>Y</Required>
+            </fail_open>
+            <timezone type="TextField">
+                <default>UTC</default>
+                <Required>Y</Required>
+            </timezone>
+            <language type="OptionField">
+                <default>en</default>
+                <Required>Y</Required>
+                <OptionValues>
+                    <en>English</en>
+                    <de>Deutsch</de>
+                </OptionValues>
+            </language>
+            <suricata_eve_path type="TextField">
+                <default>/var/log/suricata/eve.json</default>
+                <Required>Y</Required>
+            </suricata_eve_path>
+        </general>
+        <interfaces>
+            <monitored type="TextField">
+                <Required>N</Required>
+            </monitored>
+            <direction type="OptionField">
+                <default>both</default>
+                <Required>Y</Required>
+                <OptionValues>
+                    <ingress>ingress</ingress>
+                    <egress>egress</egress>
+                    <both>both</both>
+                </OptionValues>
+            </direction>
+            <internal type="TextField">
+                <Required>N</Required>
+            </internal>
+            <wan type="TextField">
+                <Required>N</Required>
+            </wan>
+            <management type="TextField">
+                <Required>N</Required>
+            </management>
+            <excluded_interfaces type="TextField">
+                <Required>N</Required>
+            </excluded_interfaces>
+            <excluded_networks type="TextField">
+                <Required>N</Required>
+            </excluded_networks>
+            <excluded_hosts type="TextField">
+                <Required>N</Required>
+            </excluded_hosts>
+        </interfaces>
+        <detection>
+            <suricata_events type="BooleanField">
+                <default>1</default>
+                <Required>Y</Required>
+            </suricata_events>
+            <dns_analysis type="BooleanField">
+                <default>1</default>
+                <Required>Y</Required>
+            </dns_analysis>
+            <tls_analysis type="BooleanField">
+                <default>1</default>
+                <Required>Y</Required>
+            </tls_analysis>
+            <http_metadata type="BooleanField">
+                <default>1</default>
+                <Required>Y</Required>
+            </http_metadata>
+            <portscan type="BooleanField">
+                <default>1</default>
+                <Required>Y</Required>
+            </portscan>
+            <lateral_movement type="BooleanField">
+                <default>1</default>
+                <Required>Y</Required>
+            </lateral_movement>
+            <beaconing type="BooleanField">
+                <default>1</default>
+                <Required>Y</Required>
+            </beaconing>
+            <dns_tunneling type="BooleanField">
+                <default>1</default>
+                <Required>Y</Required>
+            </dns_tunneling>
+            <exfiltration type="BooleanField">
+                <default>1</default>
+                <Required>Y</Required>
+            </exfiltration>
+            <unusual_destinations type="BooleanField">
+                <default>1</default>
+                <Required>Y</Required>
+            </unusual_destinations>
+            <unusual_services type="BooleanField">
+                <default>1</default>
+                <Required>Y</Required>
+            </unusual_services>
+            <unusual_internal type="BooleanField">
+                <default>1</default>
+                <Required>Y</Required>
+            </unusual_internal>
+            <machine_learning type="BooleanField">
+                <default>0</default>
+                <Required>Y</Required>
+            </machine_learning>
+            <learning_phase_observations type="IntegerField">
+                <default>1000</default>
+                <MinimumValue>10</MinimumValue>
+                <MaximumValue>10000000</MaximumValue>
+                <Required>Y</Required>
+            </learning_phase_observations>
+            <minimum_observations type="IntegerField">
+                <default>50</default>
+                <MinimumValue>1</MinimumValue>
+                <MaximumValue>1000000</MaximumValue>
+                <Required>Y</Required>
+            </minimum_observations>
+            <minimum_incident_confidence type="IntegerField">
+                <default>75</default>
+                <MinimumValue>1</MinimumValue>
+                <MaximumValue>100</MaximumValue>
+                <Required>Y</Required>
+            </minimum_incident_confidence>
+        </detection>
+        <response>
+            <automatic_blocking type="BooleanField">
+                <default>0</default>
+                <Required>Y</Required>
+            </automatic_blocking>
+            <minimum_confidence type="IntegerField">
+                <default>95</default>
+                <MinimumValue>1</MinimumValue>
+                <MaximumValue>100</MaximumValue>
+                <Required>Y</Required>
+            </minimum_confidence>
+            <minimum_risk_score type="IntegerField">
+                <default>90</default>
+                <MinimumValue>1</MinimumValue>
+                <MaximumValue>100</MaximumValue>
+                <Required>Y</Required>
+            </minimum_risk_score>
+            <default_block_seconds type="IntegerField">
+                <default>3600</default>
+                <MinimumValue>60</MinimumValue>
+                <MaximumValue>604800</MaximumValue>
+                <Required>Y</Required>
+            </default_block_seconds>
+            <max_block_seconds type="IntegerField">
+                <default>86400</default>
+                <MinimumValue>60</MinimumValue>
+                <MaximumValue>2592000</MaximumValue>
+                <Required>Y</Required>
+            </max_block_seconds>
+            <max_concurrent_blocks type="IntegerField">
+                <default>100</default>
+                <MinimumValue>0</MinimumValue>
+                <MaximumValue>100000</MaximumValue>
+                <Required>Y</Required>
+            </max_concurrent_blocks>
+            <block_external type="BooleanField">
+                <default>0</default>
+                <Required>Y</Required>
+            </block_external>
+            <isolate_internal type="BooleanField">
+                <default>0</default>
+                <Required>Y</Required>
+            </isolate_internal>
+            <manual_confirmation type="BooleanField">
+                <default>1</default>
+                <Required>Y</Required>
+            </manual_confirmation>
+            <protect_management_networks type="BooleanField">
+                <default>1</default>
+                <Required>Y</Required>
+            </protect_management_networks>
+            <forbid_block_on_service_error type="BooleanField">
+                <default>1</default>
+                <Required>Y</Required>
+            </forbid_block_on_service_error>
+            <enforce_allowlist type="BooleanField">
+                <default>1</default>
+                <Required>Y</Required>
+            </enforce_allowlist>
+        </response>
+    </items>
+</model>

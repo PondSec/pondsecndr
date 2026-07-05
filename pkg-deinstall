@@ -1,0 +1,13 @@
+#!/bin/sh
+
+set -eu
+
+case "$2" in
+DEINSTALL)
+    if service pondsec_ndr onestatus >/dev/null 2>&1; then
+        service pondsec_ndr onestop || true
+    fi
+    ;;
+esac
+
+exit 0

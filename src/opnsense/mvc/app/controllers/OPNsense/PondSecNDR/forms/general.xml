@@ -1,0 +1,247 @@
+<form>
+    <field>
+        <id>pondsecndr.general.enabled</id>
+        <label>Enable PondSec NDR</label>
+        <type>checkbox</type>
+    </field>
+    <field>
+        <id>pondsecndr.general.mode</id>
+        <label>Operating mode</label>
+        <type>dropdown</type>
+    </field>
+    <field>
+        <id>pondsecndr.general.risk_threshold</id>
+        <label>Global risk threshold</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.general.max_event_rate</id>
+        <label>Maximum event rate</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.general.retention_days</id>
+        <label>Retention days</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.general.max_database_mb</id>
+        <label>Maximum database size MB</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.general.privacy_mode</id>
+        <label>Privacy mode</label>
+        <type>checkbox</type>
+    </field>
+    <field>
+        <id>pondsecndr.general.anonymize_storage</id>
+        <label>Anonymized storage</label>
+        <type>checkbox</type>
+    </field>
+    <field>
+        <id>pondsecndr.general.debug_logging</id>
+        <label>Debug logging</label>
+        <type>checkbox</type>
+    </field>
+    <field>
+        <id>pondsecndr.general.fail_open</id>
+        <label>Fail open</label>
+        <type>checkbox</type>
+    </field>
+    <field>
+        <id>pondsecndr.general.timezone</id>
+        <label>Timezone</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.general.language</id>
+        <label>Language</label>
+        <type>dropdown</type>
+    </field>
+    <field>
+        <id>pondsecndr.general.suricata_eve_path</id>
+        <label>Suricata EVE path</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.interfaces.monitored</id>
+        <label>Monitored interfaces</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.interfaces.direction</id>
+        <label>Direction</label>
+        <type>dropdown</type>
+    </field>
+    <field>
+        <id>pondsecndr.interfaces.internal</id>
+        <label>Internal interfaces</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.interfaces.wan</id>
+        <label>WAN interfaces</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.interfaces.management</id>
+        <label>Management interfaces</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.interfaces.excluded_interfaces</id>
+        <label>Excluded interfaces</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.interfaces.excluded_networks</id>
+        <label>Excluded networks</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.interfaces.excluded_hosts</id>
+        <label>Excluded hosts</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.detection.suricata_events</id>
+        <label>Suricata events</label>
+        <type>checkbox</type>
+    </field>
+    <field>
+        <id>pondsecndr.detection.dns_analysis</id>
+        <label>DNS analysis</label>
+        <type>checkbox</type>
+    </field>
+    <field>
+        <id>pondsecndr.detection.tls_analysis</id>
+        <label>TLS analysis</label>
+        <type>checkbox</type>
+    </field>
+    <field>
+        <id>pondsecndr.detection.http_metadata</id>
+        <label>HTTP metadata analysis</label>
+        <type>checkbox</type>
+    </field>
+    <field>
+        <id>pondsecndr.detection.portscan</id>
+        <label>Port scan detection</label>
+        <type>checkbox</type>
+    </field>
+    <field>
+        <id>pondsecndr.detection.lateral_movement</id>
+        <label>Lateral movement detection</label>
+        <type>checkbox</type>
+    </field>
+    <field>
+        <id>pondsecndr.detection.beaconing</id>
+        <label>Beaconing detection</label>
+        <type>checkbox</type>
+    </field>
+    <field>
+        <id>pondsecndr.detection.dns_tunneling</id>
+        <label>DNS tunneling detection</label>
+        <type>checkbox</type>
+    </field>
+    <field>
+        <id>pondsecndr.detection.exfiltration</id>
+        <label>Exfiltration detection</label>
+        <type>checkbox</type>
+    </field>
+    <field>
+        <id>pondsecndr.detection.unusual_destinations</id>
+        <label>Unusual destinations</label>
+        <type>checkbox</type>
+    </field>
+    <field>
+        <id>pondsecndr.detection.unusual_services</id>
+        <label>Unusual services</label>
+        <type>checkbox</type>
+    </field>
+    <field>
+        <id>pondsecndr.detection.unusual_internal</id>
+        <label>Unusual internal connections</label>
+        <type>checkbox</type>
+    </field>
+    <field>
+        <id>pondsecndr.detection.machine_learning</id>
+        <label>Machine learning</label>
+        <type>checkbox</type>
+    </field>
+    <field>
+        <id>pondsecndr.detection.learning_phase_observations</id>
+        <label>Learning phase observations</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.detection.minimum_observations</id>
+        <label>Minimum observations</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.detection.minimum_incident_confidence</id>
+        <label>Minimum incident confidence</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.response.automatic_blocking</id>
+        <label>Automatic blocking</label>
+        <type>checkbox</type>
+    </field>
+    <field>
+        <id>pondsecndr.response.minimum_confidence</id>
+        <label>Minimum response confidence</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.response.minimum_risk_score</id>
+        <label>Minimum response risk score</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.response.default_block_seconds</id>
+        <label>Default block seconds</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.response.max_block_seconds</id>
+        <label>Maximum block seconds</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.response.max_concurrent_blocks</id>
+        <label>Maximum concurrent blocks</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.response.block_external</id>
+        <label>Block external addresses</label>
+        <type>checkbox</type>
+    </field>
+    <field>
+        <id>pondsecndr.response.isolate_internal</id>
+        <label>Isolate internal hosts</label>
+        <type>checkbox</type>
+    </field>
+    <field>
+        <id>pondsecndr.response.manual_confirmation</id>
+        <label>Manual confirmation</label>
+        <type>checkbox</type>
+    </field>
+    <field>
+        <id>pondsecndr.response.protect_management_networks</id>
+        <label>Protect management networks</label>
+        <type>checkbox</type>
+    </field>
+    <field>
+        <id>pondsecndr.response.forbid_block_on_service_error</id>
+        <label>Forbid blocking on service error</label>
+        <type>checkbox</type>
+    </field>
+    <field>
+        <id>pondsecndr.response.enforce_allowlist</id>
+        <label>Enforce allowlist</label>
+        <type>checkbox</type>
+    </field>
+</form>
