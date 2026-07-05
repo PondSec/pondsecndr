@@ -1,3 +1,4 @@
 #!/bin/sh
 export PYTHONPATH="/usr/local/share/pondsec-ndr${PYTHONPATH:+:${PYTHONPATH}}"
+export PYTHONDONTWRITEBYTECODE=1
 exec /usr/local/bin/python3 -m pondsec_ndr.cli "$@"
