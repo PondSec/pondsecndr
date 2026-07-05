@@ -223,3 +223,74 @@ Important scope:
 - `pretrained_ai_model_inference_vlan10` still uses the synthetic AI validation vector. It proves runtime and pipeline wiring, not live zero-day detection quality.
 - The suite does prove the automatic prevent path: configured `prevent` mode, detection, incident, response proposal, PF add, PF verification, and cleanup.
 - A separate active external TEST-NET validation block remained present for `203.0.113.250` in PF table `virusprot` after the suite as a time-limited proof of a live block entry.
+
+## 2026-07-05: Live VLAN10 Filterlog Detection and PF Fallback Hardening
+
+Target firewall:
+
+- Host: `HWFirewall01.internal`
+- Address: `192.168.99.2`
+- Mode: `prevent`
+- Monitored devices: `re0`, `igb0_vlan10`, `igb0_vlan20`, `pppoe0`
+- Admin protection: `192.168.10.20` and `10.66.66.2` were allowlisted/protected before live testing.
+
+Why this change was required:
+
+- Suricata on the target firewall runs in OPNsense `divert` mode, and the VLAN10 pass rule did not divert all VLAN10 traffic to Suricata.
+- PF/filterlog did contain the blocked VLAN10-to-DMZ scan events.
+- PondSec now ingests OPNsense filterlog `block` events as internal flow events via `raw_source=opnsense_filterlog`.
+- Filterlog `pass` events are intentionally not ingested by this collector because outbound NAT pass logs can use the firewall WAN address as source. Suricata remains the source for allowed flow telemetry.
+
+Validation artifacts:
+
+- First live proof directory on Mac: `reports/evidence/20260705T214733Z-vlan10-filterlog-portscan-proof`
+- Hardened block-only proof directory on Mac: `reports/evidence/20260705T215753Z-vlan10-blockonly-portscan-proof`
+- Local regression suite after hardening: `30` tests passed with `ResourceWarning` treated as an error.
+
+Validated results:
+
+| Check | Result |
+|---|---:|
+| Filterlog readable by service user | passed |
+| Filterlog collector appears in service health | passed (`collector_sources.opnsense_filterlog`) |
+| Live VLAN10 scan routed outside VPN | passed (`en0` route during test) |
+| Live PF block events ingested | passed (`raw_source=opnsense_filterlog`) |
+| Port scan detection created | passed (`pondsec.portscan`) |
+| Vertical scan detection created | passed (`pondsec.vertical_scan`) |
+| Incident created for live VLAN10 scan | passed (`source_ip=192.168.10.20`, `destination_ip=192.168.30.3`) |
+| Admin Mac not blocked by PF | passed |
+| Admin VPN IP not blocked by PF | passed |
+| CrowdSec admin allowlist intact | passed |
+| PF add/test/delete works through configd fallback | passed as unprivileged `pondsecndr` |
+| `configctl Execute error` on negative PF test handled as failure | passed |
+| Baseline-only anomaly does not auto-block | passed |
+| Self-WAN false-positive block removed | passed (`80.153.171.185` not in `virusprot`) |
+| Nextcloud false-positive block removed | passed (`192.168.20.115` not in `virusprot`) |
+| Service health after fixes | passed (`healthy`, no collector or response errors) |
+
+Live detection examples from the block-only proof:
+
+- `pondsec.portscan`: `source_ip=192.168.10.20`, `failed_connections=146`, `unique_ports=76`
+- `pondsec.vertical_scan`: `source_ip=192.168.10.20`, `destination_ip=192.168.30.3`, `unique_ports=76`
+- Fresh live incident: `Reconnaissance from 192.168.10.20`, `risk_score=85`, `confidence=0.98`
+
+Auto-prevent proof after PF fallback hardening:
+
+- Active PF table: `virusprot`
+- Active external auto-blocks after validation:
+  - `172.236.201.181`, incident `08bb4703-4031-5ed7-9386-e7d78fe3ba10`, category `reconnaissance`
+  - `23.94.252.207`, incident `5b695cbd-b33a-5eb3-921a-89b1feff7c07`, category `signature`
+- Admin/self critical IPs verified not blocked:
+  - `192.168.10.20`
+  - `10.66.66.2`
+  - `80.153.171.185`
+  - `192.168.20.115`
+
+Safety changes made from the live findings:
+
+- PF/filterlog collector accepts only `block` events and ignores short/non-L4/pass lines without parser errors.
+- `pondsecndr` gets ACL read access to `/var/log/filter/latest.log` at service prestart.
+- PF table mutation falls back to fixed OPNsense configd actions when the daemon lacks direct `/dev/pf` write permission.
+- Response logic reuses an existing active source block instead of creating duplicate active PF entries.
+- Baseline-only host anomalies require manual confirmation for blocking; they still create detections and incidents.
+- Expected safety denials such as protected source, allowlist, and low threshold are no longer shown as service response errors.

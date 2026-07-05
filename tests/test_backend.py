@@ -11,6 +11,7 @@ import unittest
 import pondsec_ndr.diagnostics as diagnostics_mod
 from pondsec_ndr.cli import main as cli_main
 from pondsec_ndr.collectors.eve import EveCollector
+from pondsec_ndr.collectors.filterlog import FilterLogCollector, normalize_filterlog_line
 from pondsec_ndr.config import PondSecConfig, ResponseConfig
 from pondsec_ndr.correlation import correlate_detections
 from pondsec_ndr.detection.detectors import BeaconingDetector, DNSTunnelingDetector, PortScanDetector, SuricataAlertAdapter
@@ -95,6 +96,72 @@ class BackendTests(unittest.TestCase):
         detections = PortScanDetector().detect(events, features)
         self.assertTrue(any(item["detector_id"] == "pondsec.portscan" for item in detections))
         self.assertGreaterEqual(detections[0]["confidence"], 0.8)
+
+    def test_filterlog_block_lines_feed_portscan_detection(self) -> None:
+        def filterlog_line(port: int) -> str:
+            return (
+                "<134>1 2026-07-05T23:35:53+02:00 HWFirewall01.internal filterlog 92957 - "
+                "[meta sequenceId=\"127149\"] "
+                f"161,,,caea0fd1aafabc0f78ce7311d238342c,igb0_vlan10,match,block,in,4,0x0,,255,0,0,DF,6,tcp,64,"
+                f"192.168.10.20,192.168.30.3,65393,{port},0,SEC"
+            )
+
+        event = normalize_filterlog_line(filterlog_line(202))
+        self.assertIsNotNone(event)
+        assert event is not None
+        self.assertEqual(event["raw_source"], "opnsense_filterlog")
+        self.assertEqual(event["source"]["interface"], "igb0_vlan10")
+        self.assertEqual(event["destination"]["port"], 202)
+        self.assertEqual(event["metadata"]["flow_reason"], "reject")
+
+        events = [normalize_filterlog_line(filterlog_line(20 + index)) for index in range(15)]
+        normalized = [event for event in events if event is not None]
+        features = aggregate_features(normalized)
+        detections = PortScanDetector().detect(normalized, features)
+        self.assertTrue(any(item["detector_id"] == "pondsec.portscan" for item in detections))
+
+    def test_filterlog_collector_starts_at_end_and_tracks_new_lines(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            log = root / "filter.log"
+            offset = root / "offset.json"
+            log.write_text(
+                "<134>1 2026-07-05T23:35:53+02:00 HWFirewall01.internal filterlog 92957 - "
+                "[meta sequenceId=\"1\"] "
+                "161,,,tracker,igb0_vlan10,match,block,in,4,0x0,,255,0,0,DF,6,tcp,64,"
+                "192.168.10.20,192.168.30.3,65393,22,0,SEC\n",
+                encoding="utf-8",
+            )
+            events, stats = FilterLogCollector(log, offset).read_once(max_lines=100)
+            self.assertEqual(events, [])
+            self.assertEqual(stats.read_lines, 0)
+
+            with log.open("a", encoding="utf-8") as handle:
+                handle.write(
+                    "<134>1 2026-07-05T23:35:54+02:00 HWFirewall01.internal filterlog 92957 - "
+                    "[meta sequenceId=\"2\"] "
+                    "161,,,tracker,igb0_vlan10,match,block,in,4,0x0,,255,0,0,DF,6,tcp,64,"
+                    "192.168.10.20,192.168.30.3,65394,23,0,SEC\n"
+                )
+            events, stats = FilterLogCollector(log, offset).read_once(max_lines=100)
+            self.assertEqual(len(events), 1)
+            self.assertEqual(stats.accepted_events, 1)
+
+    def test_filterlog_short_lines_are_ignored_without_parser_error(self) -> None:
+        line = (
+            "<134>1 2026-07-05T23:35:53+02:00 HWFirewall01.internal filterlog 92957 - "
+            "[meta sequenceId=\"127149\"] 161,,,tracker,igb0_vlan10,match,block,in,4"
+        )
+        self.assertIsNone(normalize_filterlog_line(line))
+
+    def test_filterlog_pass_lines_are_not_ingested(self) -> None:
+        line = (
+            "<134>1 2026-07-05T23:48:21+02:00 HWFirewall01.internal filterlog 92957 - "
+            "[meta sequenceId=\"130536\"] "
+            "157,,,tracker,igb0_vlan10,match,pass,in,4,0x2,0,64,0,0,DF,17,udp,1228,"
+            "192.168.10.128,17.248.213.70,53202,443,1208"
+        )
+        self.assertIsNone(normalize_filterlog_line(line))
 
     def test_beaconing_detector_finds_periodic_connections(self) -> None:
         events = [
@@ -288,6 +355,64 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(proposal["automatic"], 0)
             self.assertEqual(store.list_rows("block_entries")[0]["source_ip"], "192.168.10.200")
 
+    def test_response_engine_reuses_existing_active_source_block(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            now = "2026-07-05T10:00:00+00:00"
+            config = PondSecConfig(response=ResponseConfig(minimum_risk_score=50, minimum_confidence=50))
+            first = {
+                "incident_id": "incident-source-reuse-1",
+                "title": "First incident",
+                "status": "open",
+                "risk_score": 90,
+                "severity": 9,
+                "confidence": 0.95,
+                "source_ip": "203.0.113.201",
+                "destination_ip": "192.168.30.3",
+                "category": "reconnaissance",
+                "created_at": now,
+                "updated_at": now,
+                "evidence": {},
+                "risk_factors": [{"name": "test", "value": 90}],
+                "detection_ids": [],
+            }
+            second = dict(first, incident_id="incident-source-reuse-2", title="Second incident")
+            store.insert_incidents([first, second])
+            proposal = propose_block_for_incident(store, config, "incident-source-reuse-1", actor="test")
+            store.update_block_status(proposal["block_id"], "active", actor="test")
+            reused = propose_block_for_incident(store, config, "incident-source-reuse-2", actor="test")
+            self.assertEqual(reused["block_id"], proposal["block_id"])
+            self.assertEqual(len(store.list_rows("block_entries")), 1)
+
+    def test_service_auto_response_skips_baseline_only_anomaly(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = PondSecConfig(
+                enabled=True,
+                mode="prevent",
+                data_dir=root / "db",
+                log_dir=root / "log",
+                run_dir=root / "run",
+                response=ResponseConfig(automatic_blocking=True, manual_confirmation=False, isolate_internal=True),
+            )
+            service = PondSecService(config)
+            incident = {
+                "incident_id": "baseline-only-incident",
+                "source_ip": "192.168.20.115",
+                "risk_score": 90,
+                "confidence": 0.95,
+                "evidence": {"detections": [{"detector_id": "pondsec.host_baseline_anomaly"}]},
+            }
+            actions = service._auto_response([incident])
+            self.assertEqual(actions[0]["status"], "skipped")
+            self.assertEqual(service.store.list_rows("block_entries"), [])
+
+    def test_service_expected_response_denials_do_not_pollute_error_state(self) -> None:
+        self.assertTrue(PondSecService._is_expected_response_denial("source IP is protected"))
+        self.assertTrue(PondSecService._is_expected_response_denial("incident risk score is below response threshold"))
+        self.assertFalse(PondSecService._is_expected_response_denial("PF table add failed: permission denied"))
+
     def test_response_engine_activates_and_removes_pf_table_blocks(self) -> None:
         commands: list[list[str]] = []
 
@@ -327,6 +452,45 @@ class BackendTests(unittest.TestCase):
             removal = remove_block(store, proposal["block_id"], "test cleanup", actor="test", enforcer=enforcer)
             self.assertEqual(removal["status"], "ok")
             self.assertIn(["/sbin/pfctl", "-t", "virusprot", "-T", "delete", "203.0.113.250"], commands)
+
+    def test_pf_enforcer_falls_back_to_configd_on_permission_denied(self) -> None:
+        commands: list[list[str]] = []
+
+        def fake_runner(command: list[str]) -> subprocess.CompletedProcess[str]:
+            commands.append(command)
+            if command[:2] == ["/sbin/pfctl", "-t"]:
+                return subprocess.CompletedProcess(command, 1, "", "pfctl: /dev/pf: Permission denied")
+            if command[:3] == ["/usr/local/sbin/configctl", "pondsecndr", "pf_table"]:
+                payload = {
+                    "status": "ok",
+                    "pf_result": {
+                        "table": "virusprot",
+                        "target": "203.0.113.9",
+                        "command": command[3],
+                        "returncode": 0,
+                        "stdout": "1/1 addresses processed",
+                        "stderr": "",
+                        "ok": True,
+                    },
+                }
+                return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+            return subprocess.CompletedProcess(command, 1, "", "unexpected command")
+
+        result = PFTableEnforcer(runner=fake_runner).add("203.0.113.9")
+        self.assertTrue(result.ok)
+        self.assertEqual(result.command, "configctl:add")
+        self.assertIn(["/usr/local/sbin/configctl", "pondsecndr", "pf_table", "add", "203.0.113.9"], commands)
+
+    def test_pf_enforcer_treats_configd_execute_error_as_failure(self) -> None:
+        def fake_runner(command: list[str]) -> subprocess.CompletedProcess[str]:
+            if command[:2] == ["/sbin/pfctl", "-t"]:
+                return subprocess.CompletedProcess(command, 1, "", "pfctl: /dev/pf: Permission denied")
+            return subprocess.CompletedProcess(command, 0, "Execute error", "")
+
+        result = PFTableEnforcer(runner=fake_runner).test("203.0.113.10")
+        self.assertFalse(result.ok)
+        self.assertEqual(result.command, "configctl:test")
+        self.assertEqual(result.returncode, 1)
 
     def test_response_engine_denies_allowlisted_and_protected_targets(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -11,6 +11,7 @@ import time
 from typing import Any
 
 from pondsec_ndr.collectors.eve import EveCollector
+from pondsec_ndr.collectors.filterlog import FilterLogCollector
 from pondsec_ndr.config import PondSecConfig, ensure_directories, load_config
 from pondsec_ndr.correlation import correlate_detections
 from pondsec_ndr.detection.detectors import default_detectors
@@ -69,11 +70,25 @@ class PondSecService:
             queue_limit=min(self.config.max_event_rate, 100000),
         )
         events, stats = collector.read_once(max_lines=max_lines)
+        filter_stats = None
+        filterlog_path = Path("/var/log/filter/latest.log")
+        if filterlog_path.exists():
+            filter_collector = FilterLogCollector(
+                filterlog_path,
+                self.config.data_dir / "collector_offsets" / "opnsense_filterlog.json",
+                queue_limit=min(self.config.max_event_rate, 100000),
+            )
+            filter_events, filter_stats = filter_collector.read_once(max_lines=max_lines)
+            events.extend(filter_events)
         events = self._filter_events(events)
-        self.counters["parser_errors"] += stats.parser_errors
-        self.counters["queue_drops"] += stats.queue_drops
-        if stats.last_error:
-            self.counters["last_collector_errors"] = ([stats.last_error] + self.counters["last_collector_errors"])[:5]
+        parser_errors = stats.parser_errors + (filter_stats.parser_errors if filter_stats else 0)
+        normalization_errors = stats.normalization_errors + (filter_stats.normalization_errors if filter_stats else 0)
+        queue_drops = stats.queue_drops + (filter_stats.queue_drops if filter_stats else 0)
+        self.counters["parser_errors"] += parser_errors
+        self.counters["queue_drops"] += queue_drops
+        for error in (stats.last_error, filter_stats.last_error if filter_stats else None):
+            if error:
+                self.counters["last_collector_errors"] = ([error] + self.counters["last_collector_errors"])[:5]
 
         inserted_events = self.store.insert_events(events)
         features = self.store.score_features_against_baselines(
@@ -100,9 +115,11 @@ class PondSecService:
         status = "healthy"
         if stats.last_error and not events:
             status = "degraded"
+        if filter_stats and filter_stats.last_error and not events:
+            status = "degraded"
         self._write_health(status, {
-            "read_lines": stats.read_lines,
-            "accepted_events": stats.accepted_events,
+            "read_lines": stats.read_lines + (filter_stats.read_lines if filter_stats else 0),
+            "accepted_events": stats.accepted_events + (filter_stats.accepted_events if filter_stats else 0),
             "inserted_events": inserted_events,
             "inserted_detections": inserted_detections,
             "inserted_incidents": inserted_incidents,
@@ -110,13 +127,20 @@ class PondSecService:
             "baseline_updates": baseline_updates,
             "cleanup_deleted": cleaned,
             "parser_errors": self.counters["parser_errors"],
-            "normalization_errors": stats.normalization_errors,
+            "normalization_errors": normalization_errors,
             "queue_drops": self.counters["queue_drops"],
-            "rotation_detected": stats.rotation_detected,
+            "rotation_detected": stats.rotation_detected or (filter_stats.rotation_detected if filter_stats else False),
+            "collector_sources": {
+                "suricata_eve": asdict(stats),
+                "opnsense_filterlog": asdict(filter_stats) if filter_stats else None,
+            },
         })
         return {
             "status": status,
-            "collector": asdict(stats),
+            "collector": {
+                "suricata_eve": asdict(stats),
+                "opnsense_filterlog": asdict(filter_stats) if filter_stats else None,
+            },
             "inserted_events": inserted_events,
             "detections": inserted_detections,
             "incidents": inserted_incidents,
@@ -148,6 +172,15 @@ class PondSecService:
             incident_id = incident.get("incident_id")
             if not incident_id:
                 continue
+            if self._requires_manual_response(incident):
+                actions.append({
+                    "incident_id": incident_id,
+                    "source_ip": incident.get("source_ip"),
+                    "status": "skipped",
+                    "reason": "baseline-only anomaly requires manual confirmation",
+                    "mode": self.config.mode,
+                })
+                continue
             try:
                 proposal = propose_block_for_incident(
                     self.store,
@@ -175,7 +208,8 @@ class PondSecService:
                 actions.append(action)
             except ResponseDenied as exc:
                 message = f"{incident_id}: {exc}"
-                self.counters["last_response_errors"] = ([message] + self.counters["last_response_errors"])[:5]
+                if not self._is_expected_response_denial(str(exc)):
+                    self.counters["last_response_errors"] = ([message] + self.counters["last_response_errors"])[:5]
                 actions.append({"incident_id": incident_id, "status": "denied", "reason": str(exc)})
             except Exception as exc:
                 message = f"{incident_id}: response error: {exc}"
@@ -183,6 +217,23 @@ class PondSecService:
                 self.logger.exception(message, extra={"component": "response", "event": "auto_response_error", "error_code": "auto_response_error"})
                 actions.append({"incident_id": incident_id, "status": "error", "reason": str(exc)})
         return actions
+
+    @staticmethod
+    def _requires_manual_response(incident: dict[str, Any]) -> bool:
+        detections = incident.get("evidence", {}).get("detections", [])
+        detector_ids = {item.get("detector_id") for item in detections if isinstance(item, dict)}
+        return detector_ids == {"pondsec.host_baseline_anomaly"}
+
+    @staticmethod
+    def _is_expected_response_denial(reason: str) -> bool:
+        return reason in {
+            "source IP is protected",
+            "source IP is allowlisted",
+            "incident risk score is below response threshold",
+            "incident confidence is below response threshold",
+            "automatic internal isolation is disabled",
+            "automatic external blocking is disabled",
+        }
 
     def _write_health(self, status: str, detail: dict[str, Any] | None = None) -> None:
         payload = {

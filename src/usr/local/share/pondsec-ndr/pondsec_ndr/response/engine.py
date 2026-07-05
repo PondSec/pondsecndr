@@ -92,6 +92,9 @@ def propose_block_for_incident(
     existing = store.existing_response_block(incident_id, source_ip)
     if existing:
         return existing
+    existing_for_source = store.existing_response_block(None, source_ip)
+    if existing_for_source:
+        return existing_for_source
 
     duration = duration_seconds or config.response.default_block_seconds
     duration = min(duration, config.response.max_block_seconds)

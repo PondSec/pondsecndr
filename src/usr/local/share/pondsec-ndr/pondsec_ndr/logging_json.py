@@ -37,7 +37,9 @@ def configure_logging(log_dir: Path, debug: bool = False) -> logging.Logger:
     log_dir.mkdir(parents=True, exist_ok=True)
     logger = logging.getLogger("pondsec_ndr")
     logger.setLevel(logging.DEBUG if debug else logging.INFO)
-    logger.handlers.clear()
+    for existing in list(logger.handlers):
+        logger.removeHandler(existing)
+        existing.close()
     handler = RotatingFileHandler(log_dir / "pondsec-ndr.log", maxBytes=10 * 1024 * 1024, backupCount=5)
     handler.setFormatter(JsonFormatter())
     logger.addHandler(handler)

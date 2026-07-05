@@ -85,6 +85,13 @@ def main(argv: list[str] | None = None) -> int:
     block_remove.add_argument("--reason", default="manual removal")
     blocklist_sub.add_parser("expire")
 
+    pf = sub.add_parser("pf")
+    pf_sub = pf.add_subparsers(dest="pf_command", required=True)
+    pf_table = pf_sub.add_parser("table-op")
+    pf_table.add_argument("operation", choices=("add", "delete", "test"))
+    pf_table.add_argument("target")
+    pf_sub.add_parser("rule-present")
+
     interfaces = sub.add_parser("interfaces")
     interfaces_sub = interfaces.add_subparsers(dest="interfaces_command", required=True)
     interfaces_sub.add_parser("list")
@@ -237,6 +244,19 @@ def dispatch(args: argparse.Namespace, config: Any, store: EventStore) -> tuple[
                 if source_ip not in store.active_block_sources():
                     removed.append(enforcer.delete(source_ip).as_dict())
             return {"status": "ok", "expired": expired, "pf_removed": removed}, 0
+    if command == "pf":
+        enforcer = PFTableEnforcer(allow_configctl=False)
+        if args.pf_command == "rule-present":
+            present = enforcer.rule_present()
+            return {"status": "ok" if present else "failed", "rule_present": present, "table": enforcer.table}, 0 if present else 1
+        target = validate_ip_or_network(args.target)
+        if args.operation == "add":
+            result = enforcer.add(target)
+        elif args.operation == "delete":
+            result = enforcer.delete(target)
+        else:
+            result = enforcer.test(target)
+        return {"status": "ok" if result.ok else "failed", "pf_result": result.as_dict()}, 0 if result.ok else 1
     if command == "policies":
         return {"items": _decode_rows(store.list_rows("policies"))}, 0
     if command == "logs":
