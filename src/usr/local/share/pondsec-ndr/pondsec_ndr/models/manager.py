@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
+import subprocess
+import time
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -33,28 +36,28 @@ MODEL_CATALOG: dict[str, dict[str, Any]] = {
             {
                 "name": "cnn1d_binary.pth",
                 "url": "https://huggingface.co/saidimn/ids-cnn-cicids2017/resolve/main/cnn1d_binary.pth",
-                "sha256": "0fdc478c0bce4ed0e514023ca8db9ae13617430467d91c46d072aa3b56e222ee",
+                "sha256": "e006a6e86b7d05f1e97046522d19c02b8eac159096f5a3002ee2934a2e26e206",
                 "size": 900418,
                 "role": "binary_classifier"
             },
             {
                 "name": "cnn1d_attacks_only.pth",
                 "url": "https://huggingface.co/saidimn/ids-cnn-cicids2017/resolve/main/cnn1d_attacks_only.pth",
-                "sha256": "997a4724bfa6a8915de129fac597362e2df9b36aa3ae4577fdf353dff30e351b",
+                "sha256": "f26410d597d8ced01ee015ee23979ca1598dfeff434067313216ff70289a2a59",
                 "size": 1970386,
                 "role": "attack_classifier"
             },
             {
                 "name": "scaler.pkl",
                 "url": "https://huggingface.co/saidimn/ids-cnn-cicids2017/resolve/main/scaler.pkl",
-                "sha256": "61384def8823e6b59aab863cd16d8d6f45185b0bda2e658a7ade9723acd59e5d",
+                "sha256": "4968219cf473023279d1820a7cde79c3db3caa219c8f1afc8a29d9951f167c3a",
                 "size": 2455,
                 "role": "feature_scaler"
             },
             {
                 "name": "label_encoder_attacks.pkl",
                 "url": "https://huggingface.co/saidimn/ids-cnn-cicids2017/resolve/main/label_encoder_attacks.pkl",
-                "sha256": "1616c99b7c5185c7e926d893636bf9e15cc95a29f390e97108edd375f2184074",
+                "sha256": "3da642b0e425704932e5c150588226e55a1f064153e6e6240c89b4a54e5fd35a",
                 "size": 695,
                 "role": "attack_label_encoder"
             }
@@ -141,17 +144,22 @@ def download_model_artifacts(data_dir: Path, model_id: str, timeout: int = 120) 
     for artifact in model.get("artifacts", []):
         path = directory / artifact["name"]
         tmp = path.with_suffix(path.suffix + ".tmp")
-        with urllib.request.urlopen(artifact["url"], timeout=timeout) as response:
-            with tmp.open("wb") as handle:
-                while True:
-                    chunk = response.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    handle.write(chunk)
-        checksum = sha256_file(tmp)
-        if checksum != artifact["sha256"]:
+        checksum = ""
+        size = 0
+        for attempt in range(3):
             tmp.unlink(missing_ok=True)
-            raise ModelError(f"checksum mismatch for {artifact['name']}")
+            _download_url(artifact["url"], tmp, timeout)
+            checksum = sha256_file(tmp)
+            size = tmp.stat().st_size
+            if checksum == artifact["sha256"] and size == artifact["size"]:
+                break
+            time.sleep(1 + attempt)
+        if checksum != artifact["sha256"] or size != artifact["size"]:
+            tmp.unlink(missing_ok=True)
+            raise ModelError(
+                f"checksum mismatch for {artifact['name']}: got sha256={checksum} size={size}, "
+                f"expected sha256={artifact['sha256']} size={artifact['size']}"
+            )
         tmp.replace(path)
         downloaded.append({"name": artifact["name"], "sha256": checksum, "path": str(path)})
     manifest = {
@@ -164,6 +172,41 @@ def download_model_artifacts(data_dir: Path, model_id: str, timeout: int = 120) 
     with (directory / "pondsec-manifest.json").open("w", encoding="utf-8") as handle:
         json.dump(manifest, handle, indent=2, sort_keys=True)
     return manifest
+
+
+def _download_url(url: str, target: Path, timeout: int) -> None:
+    curl = shutil.which("curl")
+    if curl:
+        result = subprocess.run(
+            [curl, "-L", "--fail", "--retry", "3", "--retry-all-errors", "--max-time", str(timeout), "-o", str(target), url],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            return
+        raise ModelError(f"curl download failed: {result.stderr.strip()}")
+
+    fetch = shutil.which("fetch")
+    if fetch:
+        result = subprocess.run(
+            [fetch, "-q", "-o", str(target), url],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        if result.returncode == 0:
+            return
+        raise ModelError(f"fetch download failed: {result.stderr.strip()}")
+
+    with urllib.request.urlopen(url, timeout=timeout) as response:
+        with target.open("wb") as handle:
+            while True:
+                chunk = response.read(64 * 1024)
+                if not chunk:
+                    break
+                handle.write(chunk)
 
 
 def model_inventory(data_dir: Path | None = None) -> list[dict[str, Any]]:
