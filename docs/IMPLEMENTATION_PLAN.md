@@ -44,6 +44,7 @@ Deliverables:
 - Beaconing and DNS tunneling.
 - Suricata alert adapter.
 - Explainable risk scoring.
+- External pretrained IDS model catalog and feature mapping.
 
 ## Phase 4: Models and Learning Phase
 
@@ -56,6 +57,7 @@ Deliverables:
 - Model metadata, checksum verification, compatibility checks.
 - Safe model activation and rollback.
 - Optional anomaly model when FreeBSD packaging is verified.
+- Optional PyTorch worker for verified external pretrained CICIDS2017 models.
 
 ## Phase 5: Correlation and Incidents
 

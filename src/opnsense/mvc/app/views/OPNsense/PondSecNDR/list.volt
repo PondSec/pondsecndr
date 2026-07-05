@@ -30,8 +30,32 @@ $(function() {
 });
 </script>
 
-<div class="content-box">
+<style>
+.pondsec-pagehead {
+    background: #17212f;
+    color: #f7fbff;
+    border-radius: 6px;
+    padding: 14px 16px;
+    margin-bottom: 14px;
+}
+.pondsec-pagehead h2 {
+    margin: 0;
+    font-size: 22px;
+    font-weight: 600;
+}
+.pondsec-tablebox {
+    background: #ffffff;
+    border: 1px solid #d8dee6;
+    border-radius: 6px;
+    padding: 12px;
+}
+</style>
+
+<div class="pondsec-pagehead">
     <h2>{{ lang._(title) }}</h2>
+</div>
+
+<div class="pondsec-tablebox">
     <div class="table-responsive">
         <table id="pondsec_table" class="table table-striped">
             <tbody><tr><td>{{ lang._('Loading') }}</td></tr></tbody>

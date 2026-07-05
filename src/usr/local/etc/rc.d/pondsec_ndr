@@ -1,0 +1,20 @@
+#!/bin/sh
+
+# PROVIDE: pondsec_ndr
+# REQUIRE: LOGIN
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="pondsec_ndr"
+rcvar="pondsec_ndr_enable"
+command="/usr/local/sbin/pondsec-ndr"
+pidfile="/var/run/pondsec-ndr/pondsec-ndr.pid"
+procname="/usr/local/bin/python3"
+command_args=">> /var/log/pondsec-ndr/pondsec-ndr-service.log 2>&1 & echo $! > ${pidfile}"
+required_dirs="/usr/local/etc/pondsec-ndr /var/db/pondsec-ndr /var/log/pondsec-ndr /var/run/pondsec-ndr"
+
+load_rc_config "$name"
+: ${pondsec_ndr_enable:="NO"}
+
+run_rc_command "$1"

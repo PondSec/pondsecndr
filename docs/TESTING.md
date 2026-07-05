@@ -15,6 +15,7 @@ The test suite covers:
 - DNS tunneling heuristics.
 - Incident correlation and risk scoring.
 - SQLite migration and dashboard queries.
+- External pretrained model catalog and CICIDS2017 feature vector mapping.
 - CLI health and configuration validation.
 
 ## Command

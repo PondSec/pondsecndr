@@ -1,0 +1,3 @@
+#!/bin/sh
+export PYTHONPATH="/usr/local/share/pondsec-ndr${PYTHONPATH:+:${PYTHONPATH}}"
+exec /usr/local/bin/python3 -m pondsec_ndr.cli run "$@"

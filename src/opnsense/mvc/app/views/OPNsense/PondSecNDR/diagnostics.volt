@@ -15,7 +15,20 @@ $(function() {
 });
 </script>
 
-<div class="content-box">
+<style>
+.pondsec-diag {
+    background: #ffffff;
+    border: 1px solid #d8dee6;
+    border-radius: 6px;
+    padding: 14px;
+}
+.pondsec-diag pre {
+    background: #f6f8fb;
+    border: 1px solid #d8dee6;
+}
+</style>
+
+<div class="pondsec-diag">
     <button class="btn btn-primary" id="selfTestAct" data-endpoint="/api/pondsecndr/diagnostics/self_test" data-label="{{ lang._('Self-test') }}"></button>
     <h3>{{ lang._('Diagnostics') }}</h3>
     <pre id="diagnostics">{{ lang._('Loading') }}</pre>

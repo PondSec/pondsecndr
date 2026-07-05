@@ -18,6 +18,7 @@ This repository currently contains the first production-oriented foundation:
 - Suricata EVE JSON collector and normalizer
 - SQLite event store with migrations, WAL mode, retention hooks, and dashboard queries
 - Initial port scan, horizontal scan, vertical scan, DNS tunneling, beaconing, lateral movement, exfiltration, TLS fingerprint, and Suricata alert detectors
+- External pretrained IDS model catalog with verified checksums for MIT-licensed CICIDS2017 models
 - Unit tests using synthetic events only
 
 Automatic blocking is disabled by default. The default operating mode is `monitor`.
@@ -82,6 +83,13 @@ Run a local one-shot replay with synthetic EVE data:
 ```sh
 PYTHONPATH=src/usr/local/share/pondsec-ndr \
 python3 -m pondsec_ndr.cli replay tests/fixtures/suricata_eve_sample.jsonl --json
+```
+
+List external pretrained IDS models:
+
+```sh
+PYTHONPATH=src/usr/local/share/pondsec-ndr \
+python3 -m pondsec_ndr.cli model list --json
 ```
 
 ## OPNsense Installation Status

@@ -72,7 +72,7 @@ Detectors implement a common interface and return versioned detection results. I
 
 ### Machine Learning Engine
 
-The ML engine is prepared but intentionally conservative. It keeps training and inference separate, tracks model metadata and checksums, and rejects unsafe or incompatible model artifacts. No external pickle artifact is trusted.
+The ML engine is prepared around external pretrained IDS models. It keeps training and inference separate, tracks model metadata and checksums, and rejects unsafe or incompatible model artifacts. Pickle/joblib artifacts from model repositories are downloaded only with checksum verification and are not deserialized by the root service.
 
 ### Correlation Engine
 
@@ -158,7 +158,7 @@ No large ML/runtime dependency is added in the first foundation.
 ## Open Decisions
 
 - Final FreeBSD package dependency name for Python 3 on target OPNsense releases.
-- Whether model inference should use a compact native implementation or an optional packaged runtime.
+- Whether verified external model inference should use an optional PyTorch worker, ONNX conversion, or a compact native runtime on OPNsense.
 - Exact PF table integration strategy for prevent mode.
 - Final dashboard charting pattern after testing inside the OPNsense UI.
 - Upstream placement in the OPNsense plugins tree category.
