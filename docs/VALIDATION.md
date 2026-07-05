@@ -296,3 +296,11 @@ Safety changes made from the live findings:
 - Response logic reuses an existing active source block instead of creating duplicate active PF entries.
 - Baseline-only host anomalies require manual confirmation for blocking; they still create detections and incidents.
 - Expected safety denials such as protected source, allowlist, and low threshold are no longer shown as service response errors.
+
+System service registration proof after the production deploy:
+
+- `configctl service list` includes `PondSec NDR`.
+- Service name: `pondsec_ndr`.
+- Status message: `pondsec_ndr is running as pid 67494.`
+- This confirms the plugin service is visible to the OPNsense service inventory
+  used by **System: Diagnostics: Services**.
