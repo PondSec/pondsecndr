@@ -17,7 +17,10 @@ The test suite covers:
 - SQLite migration and dashboard queries.
 - External pretrained model catalog and CICIDS2017 feature vector mapping.
 - Verified external model download with SHA-256 checks in a temporary directory.
+- Safe response proposal, allowlist denial, protected target denial, and no-PF-side-effect block workflow.
 - CLI health and configuration validation.
+
+See [VALIDATION.md](VALIDATION.md) for firewall-level validation results.
 
 ## Command
 

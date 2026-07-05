@@ -98,6 +98,8 @@ The plugin is laid out like an OPNsense plugin and is intended to build as `os-p
 
 See [docs/OPNSENSE_INSTALLATION.md](docs/OPNSENSE_INSTALLATION.md) and [docs/PACKAGING.md](docs/PACKAGING.md).
 
+Firewall-level validation notes are tracked in [docs/VALIDATION.md](docs/VALIDATION.md).
+
 ## Roadmap
 
 - Phase 1: plugin skeleton, menu, ACL, settings, service control, dashboard, healthcheck
