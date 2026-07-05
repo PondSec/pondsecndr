@@ -44,6 +44,16 @@ Validation results:
 - Proposed block activation/removal: passed with `pf_side_effects: none`.
 - Incident close/reopen through configd: passed.
 
+Post-validation production state:
+
+- Test EVE path was removed from active configuration.
+- Active configuration points to `/var/log/suricata/eve.json`.
+- Synthetic validation database was backed up on the firewall and active DB was reset.
+- Service remains running as `pondsecndr`.
+- Because the target firewall currently has no readable Suricata EVE file, service health correctly reports `degraded`.
+- Dashboard reports empty real data rather than synthetic records.
+- Fail-open behavior was preserved; no PF tables were modified.
+
 Important safety state:
 
 - Default operating mode remains `monitor`.
