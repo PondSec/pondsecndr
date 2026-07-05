@@ -119,4 +119,4 @@ class PondSecService:
         }
         if detail:
             payload.update(detail)
-        self.store.set_health(status, os.getpid(), payload)
+        self.store.set_health(status, None if status == "stopped" else os.getpid(), payload)
