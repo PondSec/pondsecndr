@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import pwd
 import tempfile
 import unittest
 
+import pondsec_ndr.diagnostics as diagnostics_mod
 from pondsec_ndr.cli import main as cli_main
 from pondsec_ndr.collectors.eve import EveCollector
 from pondsec_ndr.config import PondSecConfig, ResponseConfig
 from pondsec_ndr.correlation import correlate_detections
-from pondsec_ndr.detection.detectors import BeaconingDetector, DNSTunnelingDetector, PortScanDetector
+from pondsec_ndr.detection.detectors import BeaconingDetector, DNSTunnelingDetector, PortScanDetector, SuricataAlertAdapter
+from pondsec_ndr.diagnostics import eve_access_status
 from pondsec_ndr.features.aggregator import aggregate_features, shannon_entropy
 from pondsec_ndr.models.cicids_features import CICIDS2017_FEATURES, cicids_vector_from_feature
 from pondsec_ndr.models.manager import model_inventory
@@ -121,6 +125,33 @@ class BackendTests(unittest.TestCase):
         detections = DNSTunnelingDetector().detect(events, features)
         self.assertEqual(len(detections), 1)
 
+    def test_suricata_drop_event_is_imported_as_signature_detection(self) -> None:
+        event = normalize_eve({
+            "timestamp": "2026-07-05T12:21:17.149193+0200",
+            "flow_id": 1485206591406768,
+            "event_type": "drop",
+            "src_ip": "13.89.125.229",
+            "src_port": 56922,
+            "dest_ip": "192.168.30.3",
+            "dest_port": 443,
+            "proto": "TCP",
+            "drop": {"len": 52, "syn": True, "ack": False, "reason": "rules"},
+            "alert": {
+                "action": "blocked",
+                "gid": 1,
+                "signature_id": 2403313,
+                "rev": 109952,
+                "signature": "ET CINS Active Threat Intelligence Poor Reputation IP group 14",
+                "category": "Misc Attack",
+                "severity": 2,
+            },
+        })
+        self.assertEqual(event["event_type"], "drop")
+        self.assertEqual(event["metadata"]["drop_reason"], "rules")
+        detection = [item for item in SuricataAlertAdapter().detect([event], []) if item["detector_id"] == "pondsec.suricata_drop"]
+        self.assertEqual(len(detection), 1)
+        self.assertEqual(detection[0]["evidence"]["suricata_action"], "blocked")
+
     def test_store_migration_inserts_events_and_dashboard_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = EventStore(Path(tmp) / "pondsec-ndr.db")
@@ -177,6 +208,33 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(result["status"], "healthy")
             self.assertGreaterEqual(result["inserted_events"], 15)
             self.assertGreaterEqual(result["detections"], 1)
+
+    def test_eve_access_status_checks_service_user_read_permission(self) -> None:
+        current_user = pwd.getpwuid(os.getuid()).pw_name
+        with tempfile.TemporaryDirectory() as tmp:
+            eve = Path(tmp) / "eve.json"
+            eve.write_text(json.dumps(flow_event("2026-07-05T10:00:00+00:00", "192.168.10.93", "198.51.100.93", 443)), encoding="utf-8")
+            config = PondSecConfig(suricata_eve_path=str(eve))
+            readable = eve_access_status(config, service_user=current_user)
+            self.assertEqual(readable["status"], "ok")
+            eve.chmod(0)
+            unreadable = eve_access_status(config, service_user=current_user)
+            self.assertEqual(unreadable["status"], "failed")
+            self.assertFalse(unreadable["readable"])
+
+    def test_eve_access_status_trusts_actual_service_user_probe_for_acls(self) -> None:
+        current_user = pwd.getpwuid(os.getuid()).pw_name
+        original_probe = diagnostics_mod._actual_read_probe
+        original_ancestor = diagnostics_mod._ancestor_access
+        try:
+            diagnostics_mod._actual_read_probe = lambda _path, _user: {"attempted": True, "readable": True, "returncode": 0}
+            diagnostics_mod._ancestor_access = lambda _path, _uid, _groups: {"ok": False, "path": str(_path)}
+            status = diagnostics_mod.eve_access_status(PondSecConfig(suricata_eve_path="/var/log/suricata/eve.json"), service_user=current_user)
+            self.assertEqual(status["status"], "ok")
+            self.assertEqual(status["checked_by"], "service-user-probe")
+        finally:
+            diagnostics_mod._actual_read_probe = original_probe
+            diagnostics_mod._ancestor_access = original_ancestor
 
     def test_response_engine_proposes_blocks_without_pf_side_effects(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

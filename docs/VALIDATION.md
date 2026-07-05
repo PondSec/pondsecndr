@@ -37,6 +37,7 @@ Validation results:
 - Incidents generated: reconnaissance and command-and-control.
 - Dashboard summary returns real database data.
 - Diagnostics returns DB, model, queue, parser, and PF table status.
+- Diagnostics reports `eve_access`, including service-user readability of the configured EVE source.
 - configd actions for dashboard, detections, incidents, models, allowlist, blocklist, and block expiry: passed.
 - Allowlist safety gate: passed.
 - Default response threshold gate: passed.
@@ -51,6 +52,7 @@ Post-validation production state:
 - Synthetic validation database was backed up on the firewall and active DB was reset.
 - Service remains running as `pondsecndr`.
 - Because the target firewall currently has no readable Suricata EVE file, service health correctly reports `degraded`.
+- The expected production remediation is to enable Suricata EVE JSON output and grant the unprivileged `pondsecndr` user read/traverse access to `/var/log/suricata/eve.json` without running PondSec NDR as root.
 - Dashboard reports empty real data rather than synthetic records.
 - Fail-open behavior was preserved; no PF tables were modified.
 
@@ -66,3 +68,29 @@ Known validation gap:
 - GitHub push is currently blocked by network redirection from `github.com` to `rtap.zenarmor.net`.
 - Full package build inside the upstream OPNsense plugins tree is not yet completed.
 - Browser-level GUI click testing requires an authenticated OPNsense web session.
+
+## 2026-07-05: Production EVE Ingest Enabled
+
+The target firewall already had Suricata running and an active EVE file at
+`/var/log/suricata/eve.json`, but the log directory and file were only readable
+by `root:wheel`. Production telemetry was enabled without running PondSec NDR as
+root:
+
+- Added a FreeBSD ACL that lets `pondsecndr` traverse `/var/log/suricata`.
+- Changed the active `eve.json` group to `pondsecndr` and mode to `640`.
+- Added a file ACL that lets `pondsecndr` read the active EVE file.
+- Updated `/etc/newsyslog.conf.d/suricata` so future `eve.json` rotations use `root:pondsecndr` with mode `640`.
+- Backups were written under `/root/pondsec-ndr-suricata-acl-before-20260705184058.txt` and `/root/pondsec-ndr-newsyslog-suricata-before-20260705184058`.
+
+Validation results after the change:
+
+- `pondsec-ndrctl diagnostics self-test --json`: `status=ok`.
+- `eve_access`: `status=ok`, `checked_by=service-user-probe`, `readable=true`.
+- Service status: `healthy`, running as `pondsecndr`.
+- Database integrity: `ok`, schema version `1`.
+- Dashboard: real Suricata data, not synthetic fixtures.
+- Observed real data: 16 events in the last 24 hours, 12 signature detections, 11 open incidents, 1 critical incident.
+- Replay against the real EVE file parsed Suricata `drop` records and produced `pondsec.suricata_drop` detections without touching the production database.
+- configd actions validated: `health`, `diagnostics`, `dashboard_summary`, `selftest`, `detections`, and `incidents`.
+- Operating mode remained `monitor`; automatic blocking remained disabled.
+- PF table mutation remained disabled; diagnostics reported no `PONDSEC_NDR_*` tables.

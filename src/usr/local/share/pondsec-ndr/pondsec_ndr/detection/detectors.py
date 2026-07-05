@@ -277,21 +277,31 @@ class SuricataAlertAdapter(Detector):
     def detect(self, events: list[dict[str, Any]], features: list[dict[str, Any]]) -> list[dict[str, Any]]:
         detections = []
         for event in events:
-            if event.get("event_type") != "alert":
+            event_type = event.get("event_type")
+            if event_type not in {"alert", "drop"}:
                 continue
             metadata = event.get("metadata", {})
+            if not metadata.get("signature_id"):
+                continue
             severity = int(metadata.get("severity") or 3)
+            is_drop = event_type == "drop"
             detections.append(make_detection(
-                self.detector_id,
+                "pondsec.suricata_drop" if is_drop else self.detector_id,
                 "signature",
                 metadata.get("signature") or "Suricata alert",
-                "Known signature alert imported from Suricata EVE.",
+                "Known dropped traffic imported from Suricata EVE." if is_drop else "Known signature alert imported from Suricata EVE.",
                 event.get("source", {}).get("ip"),
                 event.get("destination", {}).get("ip"),
                 max(4, min(10, 11 - severity)),
                 0.9,
                 0.0,
-                {"signature_id": metadata.get("signature_id"), "category": metadata.get("category"), "suricata_severity": severity},
+                {
+                    "signature_id": metadata.get("signature_id"),
+                    "category": metadata.get("category"),
+                    "suricata_severity": severity,
+                    "suricata_action": metadata.get("action"),
+                    "drop_reason": metadata.get("drop_reason"),
+                },
             ))
         return detections
 

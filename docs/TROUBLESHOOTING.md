@@ -15,11 +15,32 @@ Verify the runtime directories exist and are writable by the service user.
 
 ## No Events
 
-Check the configured Suricata EVE path and permissions. If Suricata log rotation occurred, inspect collector offsets:
+Check the configured Suricata EVE path and permissions. The service runs as the
+dedicated `pondsecndr` user, so a root-readable EVE file is not enough. The
+service user must be able to traverse the Suricata log directory and read the
+configured EVE file.
 
 ```sh
-pondsec-ndrctl diagnostics
+pondsec-ndrctl diagnostics --json
+pondsec-ndrctl diagnostics self-test --json
+sudo -u pondsecndr test -r /var/log/suricata/eve.json
 ```
+
+On FreeBSD/OPNsense systems without `sudo -u`, use `su` for the same check:
+
+```sh
+su -m pondsecndr -c 'test -r /var/log/suricata/eve.json'
+```
+
+If `/var/log/suricata` is only accessible to `root:wheel`, grant the least
+privilege needed through the log-reading group or an ACL. Do not run PondSec NDR
+as root just to read EVE telemetry.
+
+For a persistent OPNsense setup, the active EVE file should be readable by the
+`pondsecndr` group and the Suricata newsyslog entry should rotate it as
+`root:pondsecndr` with mode `640`.
+
+If Suricata log rotation occurred, inspect collector offsets with diagnostics.
 
 ## Dashboard Empty
 

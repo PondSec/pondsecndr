@@ -9,7 +9,7 @@ from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
 
-SUPPORTED_EVE_TYPES = {"flow", "alert", "dns", "tls", "http", "fileinfo", "anomaly", "stats"}
+SUPPORTED_EVE_TYPES = {"flow", "alert", "drop", "dns", "tls", "http", "fileinfo", "anomaly", "stats"}
 FEATURE_SCHEMA_VERSION = "1"
 EVENT_SCHEMA_VERSION = 1
 

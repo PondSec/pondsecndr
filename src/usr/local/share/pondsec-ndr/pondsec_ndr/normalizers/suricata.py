@@ -113,6 +113,20 @@ def _alert_metadata(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _drop_metadata(raw: dict[str, Any]) -> dict[str, Any]:
+    drop = raw.get("drop") or {}
+    metadata = _alert_metadata(raw)
+    metadata.update({
+        "drop_reason": drop.get("reason"),
+        "packet_length": drop.get("len"),
+        "tcp_syn": drop.get("syn"),
+        "tcp_ack": drop.get("ack"),
+        "tcp_rst": drop.get("rst"),
+        "tcp_fin": drop.get("fin"),
+    })
+    return metadata
+
+
 def normalize_eve(raw: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise NormalizationError("event is not an object")
@@ -149,6 +163,8 @@ def normalize_eve(raw: dict[str, Any]) -> dict[str, Any]:
         metadata.update(_http_metadata(raw))
     elif event_type == "alert":
         metadata.update(_alert_metadata(raw))
+    elif event_type == "drop":
+        metadata.update(_drop_metadata(raw))
     elif event_type == "fileinfo":
         info = raw.get("fileinfo") or {}
         metadata.update({"filename_seen": bool(info.get("filename")), "size": info.get("size"), "state": info.get("state")})

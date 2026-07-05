@@ -17,7 +17,8 @@ ssh "$TARGET" 'set -eu
 STAGE=/tmp/pondsec-ndr-stage
 BACKUP=/root/pondsec-ndr-backup-$(date +%Y%m%d%H%M%S)
 rm -rf "$STAGE"
-mkdir -p "$STAGE" "$BACKUP"
+mkdir -p "$STAGE"
+sudo mkdir -p "$BACKUP"
 tar -xzf /tmp/pondsec-ndr-deploy.tgz -C "$STAGE"
 
 sudo service pondsec_ndr onestop >/dev/null 2>&1 || true
@@ -57,6 +58,21 @@ sudo cp -Rp "$STAGE/src/usr/local/share/pondsec-ndr" /usr/local/share/pondsec-nd
 sudo cp -p "$STAGE/src/usr/local/sbin/pondsec-ndr" "$STAGE/src/usr/local/sbin/pondsec-ndrctl" /usr/local/sbin/
 sudo cp -p "$STAGE/src/usr/local/etc/rc.d/pondsec_ndr" /usr/local/etc/rc.d/pondsec_ndr
 
+if [ -d /var/log/suricata ]; then
+    sudo sh -c "getfacl /var/log/suricata /var/log/suricata/eve.json > \"$BACKUP/suricata-acl-before.txt\" 2>/dev/null || true"
+    sudo setfacl -m u:pondsecndr:xaRcs::allow /var/log/suricata || true
+    if [ -f /var/log/suricata/eve.json ]; then
+        sudo chgrp pondsecndr /var/log/suricata/eve.json
+        sudo chmod 640 /var/log/suricata/eve.json
+        sudo setfacl -m u:pondsecndr:raRcs::allow /var/log/suricata/eve.json || true
+    fi
+    if [ -f /etc/newsyslog.conf.d/suricata ]; then
+        sudo mkdir -p "$BACKUP/etc/newsyslog.conf.d"
+        sudo cp -p /etc/newsyslog.conf.d/suricata "$BACKUP/etc/newsyslog.conf.d/suricata"
+        sudo sed -i "" -E "s#^(/var/log/suricata/eve\\.json[[:space:]]+)root:wheel([[:space:]]+640[[:space:]])#\\1root:pondsecndr\\2#" /etc/newsyslog.conf.d/suricata
+    fi
+fi
+
 sudo find \
     /usr/local/opnsense/mvc/app/controllers/OPNsense/PondSecNDR \
     /usr/local/opnsense/mvc/app/models/OPNsense/PondSecNDR \
@@ -80,5 +96,7 @@ sudo find /usr/local/share/pondsec-ndr -type f -name "*.py" -exec chmod 644 {} +
 sudo chown -R pondsecndr:pondsecndr /var/db/pondsec-ndr /var/log/pondsec-ndr /var/run/pondsec-ndr
 
 sudo service configd restart
+sudo service pondsec_ndr onestart >/dev/null
+sudo service pondsec_ndr onestatus || true
 echo "backup=$BACKUP"
 '
