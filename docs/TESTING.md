@@ -16,6 +16,7 @@ The test suite covers:
 - Incident correlation and risk scoring.
 - SQLite migration and dashboard queries.
 - External pretrained model catalog and CICIDS2017 feature vector mapping.
+- Verified external model download with SHA-256 checks in a temporary directory.
 - CLI health and configuration validation.
 
 ## Command

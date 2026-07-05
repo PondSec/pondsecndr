@@ -68,7 +68,7 @@ PondSec NDR follows fail-open behavior. A service error must not interrupt firew
 
 Sensitive payloads such as HTTP bodies, credentials, cookies, authorization headers, full query strings, and file contents are not stored by default.
 
-See [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) and [docs/PRIVACY.md](docs/PRIVACY.md).
+See [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md), [docs/PRIVACY.md](docs/PRIVACY.md), and [docs/EXTERNAL_MODELS.md](docs/EXTERNAL_MODELS.md).
 
 ## Development
 
