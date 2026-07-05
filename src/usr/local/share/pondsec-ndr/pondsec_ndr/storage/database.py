@@ -17,6 +17,12 @@ from uuid import uuid4
 SCHEMA_VERSION = 1
 
 
+def _stable_set_value(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+
+
 SCHEMA = [
     """
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -351,7 +357,7 @@ class EventStore:
             if port is not None:
                 item["ports"].add(port)
             if fingerprint:
-                item["fingerprints"].add(fingerprint)
+                item["fingerprints"].add(_stable_set_value(fingerprint))
         for ip, item in by_host.items():
             row = conn.execute("SELECT known_destinations_json, known_ports_json, known_tls_fingerprints_json, first_seen FROM hosts WHERE ip = ?", (ip,)).fetchone()
             if row:

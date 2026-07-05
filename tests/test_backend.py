@@ -21,6 +21,7 @@ from pondsec_ndr.models.manager import model_inventory
 from pondsec_ndr.normalizers.suricata import normalize_eve
 from pondsec_ndr.response.engine import ResponseDenied, activate_block, is_protected_target, propose_block_for_incident, remove_block
 from pondsec_ndr.response.pf import PFTableEnforcer
+from pondsec_ndr.sensor import eve_types_from_suricata_yaml, patch_suricata_yaml_text, required_eve_types
 from pondsec_ndr.service import PondSecService
 from pondsec_ndr.storage.database import EventStore
 
@@ -164,6 +165,28 @@ class BackendTests(unittest.TestCase):
             self.assertIn("metrics", summary)
             self.assertGreaterEqual(summary["metrics"]["events_last_24h"], 0)
             self.assertEqual(store.check()["status"], "ok")
+
+    def test_store_canonicalizes_structured_tls_fingerprints(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            event = normalize_eve({
+                "timestamp": "2026-07-05T10:00:00+00:00",
+                "event_type": "tls",
+                "src_ip": "192.168.10.81",
+                "src_port": 51515,
+                "dest_ip": "203.0.113.81",
+                "dest_port": 443,
+                "proto": "TCP",
+                "tls": {
+                    "sni": "example.test",
+                    "ja3": {"hash": "abc123", "string": "771,4865-4866"},
+                },
+            })
+            self.assertEqual(store.insert_events([event]), 1)
+            host = store.list_rows("hosts")[0]
+            fingerprints = json.loads(host["known_tls_fingerprints_json"])
+            self.assertEqual(fingerprints, ['{"hash":"abc123","string":"771,4865-4866"}'])
 
     def test_correlation_creates_explainable_incident(self) -> None:
         events = [
@@ -331,6 +354,32 @@ class BackendTests(unittest.TestCase):
             with self.assertRaises(ResponseDenied):
                 propose_block_for_incident(store, config, "incident-allowlist-test", actor="test")
             self.assertTrue(is_protected_target("127.0.0.1", config))
+
+    def test_sensor_patch_adds_flow_and_dns_to_first_eve_log(self) -> None:
+        original = """outputs:
+  - eve-log:
+      enabled: yes
+      types:
+        - alert:
+             tagged-packets: yes
+        - drop:
+            alerts: yes
+
+  - stats:
+      enabled: yes
+"""
+        patched, changed, added = patch_suricata_yaml_text(original, ["alert", "drop", "flow", "dns"])
+        self.assertTrue(changed)
+        self.assertEqual(added, ["flow", "dns"])
+        self.assertEqual(eve_types_from_suricata_yaml(patched)[:4], ["flow", "dns", "alert", "drop"])
+        patched_again, changed_again, added_again = patch_suricata_yaml_text(patched, ["alert", "drop", "flow", "dns"])
+        self.assertFalse(changed_again)
+        self.assertEqual(added_again, [])
+        self.assertEqual(patched_again, patched)
+
+    def test_required_eve_types_include_behavior_and_metadata_sources(self) -> None:
+        config = PondSecConfig()
+        self.assertEqual(required_eve_types(config), ["alert", "drop", "flow", "dns", "http", "tls"])
 
 
 class CliTests(unittest.TestCase):

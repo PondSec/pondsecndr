@@ -141,6 +141,58 @@ Authenticated WebGUI route validation:
   - `/ui/pondsecndr/settings`
   - `/ui/pondsecndr/about`
 
+## 2026-07-05: Pretrained AI Runtime End-to-End Proof on Firewall
+
+Target firewall:
+
+- Host: `HWFirewall01.internal`
+- Address: `192.168.99.2`
+- Evidence directory on firewall: `/tmp/pondsec-ai-e2e-20260705T212826Z`
+- Monitor-mode API proof directory on firewall: `/tmp/pondsec-monitor-api-proof-20260705T212938Z`
+
+Important scope:
+
+- The optimized `attack_probability=0.995789` vector is a synthetic AI validation vector and only proves that the installed NumPy runtime, manifest, checksum, feature schema, detector, storage, and incident correlation path work end to end.
+- It is not a claim of real-world detection quality.
+- Live-traffic detection quality must only be claimed for real Suricata EVE flows that traverse the full pipeline.
+
+Validated results:
+
+| Check | Result |
+|---|---:|
+| On firewall installed | passed |
+| NumPy available | passed (`numpy 2.4.6`) |
+| Model artifact present | passed (`saidimn_ids_cnn_cicids2017.npz`) |
+| Runtime artifact SHA-256 correct | passed (`51bec93ec2c8ac9a480fcef8694852792a8869a817b07d1cef11a2f1fd62c45b`) |
+| Manifest present | passed (`feature_count=78`, `runtime=pondsec-numpy-cnn1d`) |
+| Runtime loaded | passed |
+| Model self-test passed before restart | passed |
+| Service restart passed | passed |
+| Model self-test passed after restart | passed |
+| Synthetic AI validation detection created | passed (`detector_id=pondsec.pretrained_ids_model`) |
+| Synthetic AI validation incident created | passed |
+| Detection contains model name/version/checksum | passed (`saidimn-ids-cnn-cicids2017`, `pondsec-numpy-cnn1d-v1`) |
+| Detection contains feature schema version | passed (`1`) |
+| Detection contains attack probability and predicted class | passed (`0.995789`, `Bot`) |
+| Detection contains feature values | passed (`78` CICIDS-style values) |
+| Monitor mode did not block in PF | passed (`pf_source_blocked_after=false`) |
+| Dashboard API | passed (`configctl pondsecndr dashboard_summary`) |
+| Detections API | passed (`configctl pondsecndr detections`) |
+| Incidents API | passed (`configctl pondsecndr incidents`) |
+| Attack inference duration | passed (`53.17 ms`) |
+| Attack validation max RSS | passed (`47628 KB`) |
+| Self-test max RSS | passed (`46432 KB`) |
+| Service RSS after validation | passed (`48356 KB`) |
+| Benign validation score | passed (`attack_probability=0.020657`, no AI detection) |
+
+Post-fix service-health validation:
+
+- Deployed storage fix for structured TLS fingerprints that previously caused `TypeError: unhashable type: 'dict'`.
+- Local regression tests: `21` passed.
+- Firewall process after deploy: `pondsec_ndr` running as `pondsecndr`, PID `25354`.
+- Dashboard after deploy: `service_status=healthy`, `operating_mode=prevent`, `last_collector_errors=[]`, `last_response_errors=[]`, `active_model_version=saidimn-ids-cnn-cicids2017`.
+- Fresh service log scan after deploy: no new `loop_error`, `unhashable`, or database readonly errors.
+
 Auto-prevent validation command:
 
 ```sh

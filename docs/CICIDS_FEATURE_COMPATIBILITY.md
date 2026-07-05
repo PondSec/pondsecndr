@@ -6,6 +6,14 @@ Important scope: Suricata EVE JSON does not expose every packet-level field that
 
 ## Compatibility Table
 
+Summary:
+
+- Direct from Suricata EVE: 6 features.
+- Exactly calculated from Suricata counters: 15 features.
+- Approximated from aggregate EVE metadata: 2 features.
+- Set to explicit default value `0`: 27 features.
+- Currently unavailable from normal Suricata EVE flow records: 28 features.
+
 | # | CICIDS2017 feature | PondSec source | Status |
 |---:|---|---|---|
 | 1 | Destination Port | `dest_port` from Suricata EVE | Direct |

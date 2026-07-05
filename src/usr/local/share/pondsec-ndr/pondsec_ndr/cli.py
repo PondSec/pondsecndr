@@ -23,6 +23,7 @@ from pondsec_ndr.models.manager import ModelError, download_model_artifacts, mod
 from pondsec_ndr.models.runtime import MODEL_ID, SYNTHETIC_AI_VALIDATION_VECTOR, ModelRuntimeUnavailable, SaidimnIdsCnnRuntime
 from pondsec_ndr.response.engine import ResponseDenied, activate_block, propose_block_for_incident, remove_block, validate_ip_or_network
 from pondsec_ndr.response.pf import PFTableEnforcer
+from pondsec_ndr.sensor import harden_sensor, sensor_status
 from pondsec_ndr.service import PondSecService
 from pondsec_ndr.storage.database import EventStore
 
@@ -109,6 +110,12 @@ def main(argv: list[str] | None = None) -> int:
     config_cmd = sub.add_parser("config")
     config_sub = config_cmd.add_subparsers(dest="config_command", required=True)
     config_sub.add_parser("validate")
+
+    sensor = sub.add_parser("sensor")
+    sensor_sub = sensor.add_subparsers(dest="sensor_command", required=True)
+    sensor_sub.add_parser("status")
+    sensor_harden = sensor_sub.add_parser("harden")
+    sensor_harden.add_argument("--restart-suricata", action="store_true")
 
     protection = sub.add_parser("protection")
     protection_sub = protection.add_subparsers(dest="protection_command", required=True)
@@ -251,6 +258,13 @@ def dispatch(args: argparse.Namespace, config: Any, store: EventStore) -> tuple[
             return {"status": "ok", "schema_version": 1}, 0
         payload = store.check()
         return payload, 0 if payload["status"] == "ok" else 1
+    if command == "sensor":
+        if args.sensor_command == "status":
+            payload = sensor_status(config)
+            return payload, 0 if payload["status"] == "ok" else 1
+        if args.sensor_command == "harden":
+            payload = harden_sensor(config, restart_suricata=args.restart_suricata)
+            return payload, 0 if payload["status"] == "ok" else 1
     if command == "protection" and args.protection_command == "validate":
         payload = validate_protection_path(store, config, args.source_ip, args.destination_ip, args.duration_seconds, args.remove_after)
         return payload, 0 if payload["status"] == "ok" else 1

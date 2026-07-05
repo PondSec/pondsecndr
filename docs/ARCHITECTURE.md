@@ -137,8 +137,9 @@ The first implementation uses:
 - OPNsense MVC, configd, rc.d
 - Python 3 standard library
 - SQLite through Python `sqlite3`
+- NumPy for the exported pickle-free pretrained IDS runtime
 
-No large ML/runtime dependency is added in the first foundation.
+The privileged service path does not deserialize PyTorch, pickle, or joblib artifacts. Pretrained IDS inference uses a compact NumPy archive exported from verified upstream weights.
 
 ## Performance Risks
 
@@ -157,8 +158,8 @@ No large ML/runtime dependency is added in the first foundation.
 
 ## Open Decisions
 
-- Final FreeBSD package dependency name for Python 3 on target OPNsense releases.
-- Whether verified external model inference should use an optional PyTorch worker, ONNX conversion, or a compact native runtime on OPNsense.
+- Long-term packaging compatibility for Python/NumPy package names across future OPNsense releases.
+- Whether future higher-fidelity models should use an optional PyTorch worker, ONNX conversion, or the current compact native runtime pattern.
 - Automatic prevent-mode policy and helper design.
 - Final dashboard charting pattern after testing inside the OPNsense UI.
 - Upstream placement in the OPNsense plugins tree category.

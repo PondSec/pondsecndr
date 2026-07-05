@@ -39,8 +39,8 @@ These models are not loaded blindly:
 
 - Downloads are verified with SHA-256 checksums.
 - Pickle/joblib artifacts are not deserialized by the root service.
-- Runtime loading is restricted to an optional unprivileged ML worker.
-- The model output cannot automatically block traffic by itself.
+- Runtime loading for the preferred model uses the exported pickle-free NumPy artifact installed with the backend.
+- The model output is correlated into normal PondSec detections and incidents; response policy and allowlist/protected-network gates still decide whether any block is allowed.
 - PondSec maps normalized metadata to CICIDS2017-like feature vectors and marks unavailable packet-level fields as unavailable or zero instead of fabricating values.
 
 ## Current Implementation
@@ -50,5 +50,7 @@ The model manager exposes:
 - `pondsec-ndrctl model list`
 - `pondsec-ndrctl model verify`
 - `pondsec-ndrctl model fetch <model_id>`
+- `pondsec-ndrctl model self-test`
+- `pondsec-ndrctl model validate-flow --kind attack|benign`
 
-Full PyTorch inference on OPNsense remains gated behind target-box validation because the model artifacts require the same preprocessing pipeline and runtime support used during training.
+Full PyTorch inference on OPNsense remains out of the privileged service path. The validated runtime path is the NumPy CNN-1D export plus explicit checksum/manifest verification and a target-box self-test.

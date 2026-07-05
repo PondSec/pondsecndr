@@ -12,10 +12,27 @@ command="/usr/sbin/daemon"
 pidfile="/var/run/pondsec-ndr/pondsec-ndr.pid"
 procname="/usr/local/bin/python3"
 required_dirs="/usr/local/etc/pondsec-ndr /var/db/pondsec-ndr /var/log/pondsec-ndr /var/run/pondsec-ndr"
+start_precmd="${name}_prestart"
 
 load_rc_config "$name"
 : ${pondsec_ndr_enable:="NO"}
 : ${pondsec_ndr_user:="pondsecndr"}
 command_args="-f -H -p ${pidfile} -o /var/log/pondsec-ndr/pondsec-ndr-service.log /usr/local/sbin/pondsec-ndr"
+
+pondsec_ndr_prestart()
+{
+    if [ -d /var/log/suricata ]; then
+        chmod 750 /var/log/suricata 2>/dev/null || true
+        setfacl -m u:pondsecndr:xaRcs::allow /var/log/suricata 2>/dev/null || true
+        if [ -f /var/log/suricata/eve.json ]; then
+            chown root:pondsecndr /var/log/suricata/eve.json 2>/dev/null || true
+            chmod 640 /var/log/suricata/eve.json 2>/dev/null || true
+            setfacl -m u:pondsecndr:raRcs::allow /var/log/suricata/eve.json 2>/dev/null || true
+        fi
+    fi
+    if [ -f /etc/newsyslog.conf.d/suricata ]; then
+        sed -i "" -E "s#^(/var/log/suricata/eve\\.json[[:space:]]+)root:wheel([[:space:]]+640[[:space:]])#\\1root:pondsecndr\\2#" /etc/newsyslog.conf.d/suricata 2>/dev/null || true
+    fi
+}
 
 run_rc_command "$1"
