@@ -16,6 +16,6 @@ required_dirs="/usr/local/etc/pondsec-ndr /var/db/pondsec-ndr /var/log/pondsec-n
 load_rc_config "$name"
 : ${pondsec_ndr_enable:="NO"}
 : ${pondsec_ndr_user:="pondsecndr"}
-command_args="-p ${pidfile} -u ${pondsec_ndr_user} -o /var/log/pondsec-ndr/pondsec-ndr-service.log /usr/local/sbin/pondsec-ndr"
+command_args="-p ${pidfile} -o /var/log/pondsec-ndr/pondsec-ndr-service.log /usr/local/sbin/pondsec-ndr"
 
 run_rc_command "$1"
