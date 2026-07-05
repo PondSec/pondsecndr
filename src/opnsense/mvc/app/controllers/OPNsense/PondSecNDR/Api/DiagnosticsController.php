@@ -22,4 +22,9 @@ class DiagnosticsController extends ApiControllerBase
     {
         return $this->runBackendJson('protection_validate');
     }
+
+    public function protectionValidateSuiteAction()
+    {
+        return $this->runBackendJson('protection_validate_suite');
+    }
 }

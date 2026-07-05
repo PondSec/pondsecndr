@@ -788,6 +788,33 @@ class EventStore:
             rows = conn.execute(f"SELECT * FROM {table} ORDER BY {order} DESC LIMIT ?", (limit,)).fetchall()
         return [dict(row) for row in rows]
 
+    def telemetry_type_counts(self, hours: int = 24) -> dict[str, int]:
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT event_type, count(*) AS count
+                FROM events
+                WHERE timestamp >= ?
+                GROUP BY event_type
+                """,
+                (cutoff,),
+            ).fetchall()
+        return {row["event_type"]: int(row["count"]) for row in rows}
+
+    def baseline_summary(self) -> dict[str, Any]:
+        with self.connect() as conn:
+            total = int(conn.execute("SELECT count(*) FROM host_baselines").fetchone()[0])
+            established = int(conn.execute("SELECT count(*) FROM host_baselines WHERE observation_count >= 50").fetchone()[0])
+            learning = max(0, total - established)
+            max_observations = int(conn.execute("SELECT COALESCE(max(observation_count), 0) FROM host_baselines").fetchone()[0])
+        return {
+            "total_hosts": total,
+            "established_hosts": established,
+            "learning_hosts": learning,
+            "max_observations": max_observations,
+        }
+
     def dashboard_summary(self) -> dict[str, Any]:
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
         with self.connect() as conn:

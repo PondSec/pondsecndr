@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime
 import math
 from statistics import mean, pstdev
@@ -31,9 +31,12 @@ def _base_feature(source_ip: str) -> dict[str, Any]:
         "source_ip": source_ip,
         "flow_duration": 0,
         "packet_count": 0,
+        "packets_in": 0,
+        "packets_out": 0,
         "byte_count": 0,
         "bytes_in": 0,
         "bytes_out": 0,
+        "dominant_destination_port": 0,
         "upload_download_ratio": 0.0,
         "connections_10s": 0,
         "connections_60s": 0,
@@ -83,6 +86,7 @@ def aggregate_features(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         last = timestamps[-1] if timestamps else 0
         destinations = set()
         ports = set()
+        port_counter: Counter[int] = Counter()
         dns_names: list[str] = []
         nxdomain = 0
         http_methods: dict[str, int] = defaultdict(int)
@@ -96,6 +100,9 @@ def aggregate_features(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 destinations.add(dst)
             if dst_port is not None:
                 ports.add(dst_port)
+                port_counter[int(dst_port)] += 1
+            item["packets_in"] += int(metadata.get("packets_in") or 0)
+            item["packets_out"] += int(metadata.get("packets_out") or 0)
             item["bytes_in"] += int(metadata.get("bytes_in") or 0)
             item["bytes_out"] += int(metadata.get("bytes_out") or 0)
             item["byte_count"] += int(metadata.get("byte_count") or 0)
@@ -131,6 +138,8 @@ def aggregate_features(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         item["unique_ports_5m"] = len(ports)
         item["destination_count"] = len(destinations)
         item["port_count"] = len(ports)
+        if port_counter:
+            item["dominant_destination_port"] = port_counter.most_common(1)[0][0]
         item["upload_download_ratio"] = round(item["bytes_out"] / max(item["bytes_in"], 1), 4)
         item["dns_query_rate"] = round(len(dns_names) / duration, 4)
         item["dns_nxdomain_rate"] = round(nxdomain / max(len(dns_names), 1), 4)

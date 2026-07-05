@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -109,6 +110,9 @@ def main(argv: list[str] | None = None) -> int:
     validate_protection.add_argument("--destination-ip", default="192.168.30.3")
     validate_protection.add_argument("--duration-seconds", type=int, default=600)
     validate_protection.add_argument("--remove-after", action="store_true")
+    validate_suite = protection_sub.add_parser("validate-suite")
+    validate_suite.add_argument("--duration-seconds", type=int, default=900)
+    validate_suite.add_argument("--remove-after", action="store_true")
 
     replay = sub.add_parser("replay")
     replay.add_argument("eve_file")
@@ -234,6 +238,9 @@ def dispatch(args: argparse.Namespace, config: Any, store: EventStore) -> tuple[
     if command == "protection" and args.protection_command == "validate":
         payload = validate_protection_path(store, config, args.source_ip, args.destination_ip, args.duration_seconds, args.remove_after)
         return payload, 0 if payload["status"] == "ok" else 1
+    if command == "protection" and args.protection_command == "validate-suite":
+        payload = validate_protection_suite(store, config, args.duration_seconds, args.remove_after)
+        return payload, 0 if payload["status"] == "ok" else 1
     if command == "run":
         service = PondSecService(config)
         if args.once:
@@ -332,6 +339,351 @@ def validate_protection_path(
         "activation": activation,
         "removal": removal,
     }
+
+
+def validate_protection_suite(
+    store: EventStore,
+    config: Any,
+    duration_seconds: int,
+    remove_after: bool,
+) -> dict[str, Any]:
+    scenarios = _validation_scenarios()
+    results = []
+    for scenario in scenarios:
+        result = _run_validation_scenario(store, config, scenario, duration_seconds, remove_after)
+        results.append(result)
+    model = next((item for item in model_inventory(config.data_dir) if item.get("preferred")), None)
+    required = {item["scenario"] for item in scenarios}
+    passed = {item["scenario"] for item in results if item["status"] == "ok"}
+    return {
+        "status": "ok" if required == passed else "failed",
+        "mode": config.mode,
+        "automatic_blocking": config.response.automatic_blocking,
+        "response_thresholds": {
+            "minimum_risk_score": config.response.minimum_risk_score,
+            "minimum_confidence": config.response.minimum_confidence,
+            "isolate_internal": config.response.isolate_internal,
+            "block_external": config.response.block_external,
+        },
+        "interfaces": {
+            "monitored": config.interfaces.monitored,
+            "monitored_devices": config.interfaces.monitored_devices,
+            "wan": config.interfaces.wan,
+            "wan_devices": config.interfaces.wan_devices,
+            "internal": config.interfaces.internal,
+            "internal_devices": config.interfaces.internal_devices,
+            "management": config.interfaces.management,
+            "management_devices": config.interfaces.management_devices,
+            "protected_networks": config.interfaces.excluded_networks,
+        },
+        "ml_model": {
+            "active_model_version": _active_model(config),
+            "preferred_model": model["model_id"] if model else None,
+            "preferred_model_status": model["status"] if model else None,
+            "host_baseline_anomaly": "active" if config.detection.machine_learning else "disabled",
+            "runtime_note": "Host-baseline anomaly detection is active in-process; external PyTorch models require a safe unprivileged worker.",
+        },
+        "coverage": sorted(passed),
+        "results": results,
+    }
+
+
+def _run_validation_scenario(
+    store: EventStore,
+    config: Any,
+    scenario: dict[str, Any],
+    duration_seconds: int,
+    remove_after: bool,
+) -> dict[str, Any]:
+    if scenario["scenario"] == "unknown_zero_day_baseline_anomaly":
+        _seed_validation_baseline(store, scenario, config.detection.minimum_observations)
+    events = scenario["events"]()
+    features = store.score_features_against_baselines(
+        aggregate_features(events),
+        minimum_observations=config.detection.minimum_observations,
+    )
+    for feature in features:
+        feature.update(scenario.get("feature_overrides", {}).get(feature["source_ip"], {}))
+    detections = []
+    for detector in default_detectors():
+        detections.extend(detector.detect(events, features))
+    incidents = correlate_detections(detections)
+    for incident in incidents:
+        incident["title"] = f"[PondSec validation:{scenario['scenario']}] {incident['title']}"
+        incident["evidence"]["validation"] = {
+            "scenario": scenario["scenario"],
+            "behavior": scenario["behavior"],
+            "interface": scenario["interface"],
+            "device": scenario["device"],
+        }
+    inserted_events = store.insert_events(events)
+    store.insert_features(features)
+    inserted_detections = store.insert_detections(detections)
+    inserted_incidents = store.insert_incidents(incidents)
+    matched_detections = [item for item in detections if item["detector_id"] in scenario["expected_detectors"]]
+    if not matched_detections or not incidents:
+        return {
+            "status": "failed",
+            "scenario": scenario["scenario"],
+            "behavior": scenario["behavior"],
+            "interface": scenario["interface"],
+            "device": scenario["device"],
+            "reason": "expected detection or incident was not produced",
+            "detectors": sorted({item["detector_id"] for item in detections}),
+            "inserted_events": inserted_events,
+            "inserted_detections": inserted_detections,
+            "inserted_incidents": inserted_incidents,
+        }
+    incident = max(incidents, key=lambda item: item["risk_score"])
+    action = _auto_prevent_incident(store, config, incident["incident_id"], duration_seconds)
+    removal = None
+    if remove_after and action.get("block_id"):
+        removal = remove_block(store, action["block_id"], "protection validation suite cleanup", actor="protection-validation")
+    return {
+        "status": "ok" if action.get("status") == "ok" else "failed",
+        "scenario": scenario["scenario"],
+        "behavior": scenario["behavior"],
+        "interface": scenario["interface"],
+        "device": scenario["device"],
+        "source_ip": scenario["source_ip"],
+        "destination_ip": scenario["destination_ip"],
+        "expected_detectors": scenario["expected_detectors"],
+        "detectors": sorted({item["detector_id"] for item in detections}),
+        "incident": {
+            "incident_id": incident["incident_id"],
+            "risk_score": incident["risk_score"],
+            "confidence": incident["confidence"],
+            "category": incident["category"],
+        },
+        "auto_prevent": action,
+        "removal": removal,
+        "inserted_events": inserted_events,
+        "inserted_detections": inserted_detections,
+        "inserted_incidents": inserted_incidents,
+    }
+
+
+def _auto_prevent_incident(store: EventStore, config: Any, incident_id: str, duration_seconds: int) -> dict[str, Any]:
+    if not config.response.automatic_blocking or config.mode != "prevent":
+        raise ResponseDenied("automatic prevent mode is not enabled")
+    proposal = propose_block_for_incident(
+        store,
+        config,
+        incident_id,
+        actor="protection-validation",
+        duration_seconds=duration_seconds,
+        automatic=True,
+    )
+    activation = activate_block(store, config, proposal["block_id"], actor="protection-validation")
+    return {
+        "status": activation["status"],
+        "block_id": proposal["block_id"],
+        "source_ip": proposal["source_ip"],
+        "automatic": bool(proposal.get("automatic")),
+        "pf_table": activation["pf_table"],
+        "pf_rule_present": activation["pf_rule_present"],
+        "pf_add": activation["pf_add"],
+        "pf_verify": activation["pf_verify"],
+    }
+
+
+def _seed_validation_baseline(store: EventStore, scenario: dict[str, Any], minimum_observations: int) -> None:
+    normal_events = [
+        _validation_flow_event_at(
+            _validation_timestamp(-3600 + index * 60),
+            scenario["source_ip"],
+            "192.168.20.10",
+            443,
+            scenario["device"],
+            index,
+            bytes_out=2400,
+            bytes_in=1600,
+            reason="finished",
+        )
+        for index in range(max(1, minimum_observations))
+    ]
+    normal_features = aggregate_features(normal_events)
+    for _ in range(max(1, minimum_observations)):
+        store.update_host_baselines(normal_features)
+
+
+def _validation_scenarios() -> list[dict[str, Any]]:
+    return [
+        {
+            "scenario": "pretrained_ai_model_inference_vlan10",
+            "behavior": "Verified pretrained CICIDS2017 CNN-1D AI model classifies a full flow vector as attack",
+            "interface": "opt2",
+            "device": "igb0_vlan10",
+            "source_ip": "192.168.10.243",
+            "destination_ip": "203.0.113.77",
+            "expected_detectors": ["pondsec.pretrained_ids_model"],
+            "feature_overrides": {"192.168.10.243": {"cicids_vector": _pretrained_ai_validation_vector()}},
+            "events": lambda: [
+                _validation_flow_event_at(_validation_timestamp(0), "192.168.10.243", "203.0.113.77", 443, "igb0_vlan10", 0, bytes_out=18000, bytes_in=1200, reason="finished")
+            ],
+        },
+        {
+            "scenario": "wan_attack_prevention",
+            "behavior": "External reconnaissance/port scan against DMZ from WAN",
+            "interface": "wan",
+            "device": "pppoe0",
+            "source_ip": "203.0.113.241",
+            "destination_ip": "192.168.30.3",
+            "expected_detectors": ["pondsec.portscan", "pondsec.vertical_scan"],
+            "events": lambda: [
+                _validation_flow_event_at(_validation_timestamp(index), "203.0.113.241", "192.168.30.3", 20 + index, "pppoe0", index)
+                for index in range(18)
+            ],
+        },
+        {
+            "scenario": "beaconing_vlan10",
+            "behavior": "Periodic command-and-control beaconing from VLAN10",
+            "interface": "opt2",
+            "device": "igb0_vlan10",
+            "source_ip": "192.168.10.241",
+            "destination_ip": "203.0.113.44",
+            "expected_detectors": ["pondsec.beaconing"],
+            "events": lambda: [
+                _validation_flow_event_at(_validation_timestamp(index * 60), "192.168.10.241", "203.0.113.44", 443, "igb0_vlan10", index, reason="finished")
+                for index in range(6)
+            ],
+        },
+        {
+            "scenario": "lateral_movement_vlan20",
+            "behavior": "Internal SMB/RDP fan-out consistent with lateral movement from VLAN20",
+            "interface": "opt3",
+            "device": "igb0_vlan20",
+            "source_ip": "192.168.20.241",
+            "destination_ip": "internal",
+            "expected_detectors": ["pondsec.lateral_movement"],
+            "events": lambda: [
+                _validation_flow_event_at(_validation_timestamp(index), "192.168.20.241", f"192.168.30.{20 + index}", 445 if index % 2 else 3389, "igb0_vlan20", index, reason="finished")
+                for index in range(6)
+            ],
+        },
+        {
+            "scenario": "dns_tunneling_dmz",
+            "behavior": "High-entropy NXDOMAIN DNS tunneling from DMZ",
+            "interface": "opt1",
+            "device": "re0",
+            "source_ip": "192.168.30.241",
+            "destination_ip": "9.9.9.9",
+            "expected_detectors": ["pondsec.dns_tunneling"],
+            "events": lambda: [
+                _validation_dns_event(_validation_timestamp(index), "192.168.30.241", "9.9.9.9", "re0", index)
+                for index in range(12)
+            ],
+        },
+        {
+            "scenario": "data_exfiltration_vlan10",
+            "behavior": "Large asymmetric upload consistent with data exfiltration from VLAN10",
+            "interface": "opt2",
+            "device": "igb0_vlan10",
+            "source_ip": "192.168.10.242",
+            "destination_ip": "203.0.113.88",
+            "expected_detectors": ["pondsec.data_exfiltration"],
+            "events": lambda: [
+                _validation_flow_event_at(_validation_timestamp(index), "192.168.10.242", "203.0.113.88", 443, "igb0_vlan10", index, bytes_out=30_000_000, bytes_in=1000, reason="finished")
+                for index in range(2)
+            ],
+        },
+        {
+            "scenario": "unknown_zero_day_baseline_anomaly",
+            "behavior": "Unknown behavior anomaly against an established host baseline without a signature",
+            "interface": "opt3",
+            "device": "igb0_vlan20",
+            "source_ip": "192.168.20.242",
+            "destination_ip": "203.0.113.99",
+            "expected_detectors": ["pondsec.host_baseline_anomaly"],
+            "events": lambda: [
+                _validation_flow_event_at(_validation_timestamp(index), "192.168.20.242", f"203.0.113.{20 + index}", 8000 + index, "igb0_vlan20", index, bytes_out=400_000, bytes_in=100, reason="finished")
+                for index in range(40)
+            ],
+        },
+    ]
+
+
+def _pretrained_ai_validation_vector() -> list[float]:
+    return [
+        227.1844482421875, 16145999.0, 3.5857882499694824, 11.17403507232666,
+        14.117317199707031, 17282.978515625, 484.5901794433594, 22.829853057861328,
+        142.24351501464844, 672.3494262695312, 1898.962890625, 22.85487937927246,
+        206.6375732421875, 35.887821197509766, 2712823.0, 152242.90625,
+        17221.9296875, 1605136.125, 7774913.5, 22882.142578125,
+        4880653.5, 79086.2578125, 825969.8125, 27841972.0,
+        2303605.5, 5838944.0, 727616.5625, 34425.2265625,
+        7213066.0, 753377.3125, 0.5452418327331543, 0.0360860638320446,
+        0.13400433957576752, 0.015980372205376625, 0.23819909989833832,
+        0.05332816392183304, 15728.1826171875, 1829.6553955078125,
+        11.846921920776367, 579.3692016601562, 182.05067443847656,
+        267.43658447265625, 380588.78125, 0.7424153089523315,
+        1.173059105873108, 0.11429675668478012, 0.23449653387069702,
+        0.5729040503501892, 0.42709505558013916, 0.09515353292226791,
+        0.25698569416999817, 0.8416632413864136, 310.20849609375,
+        168.6941680908203, 93.42359924316406, 3.1768205165863037,
+        3.2078676223754883, 0.3783320486545563, 1.545061707496643,
+        1.394691824913025, 1.7438603639602661, 0.4415431618690491,
+        1.5570331811904907, 832.3474731445312, 42.736473083496094,
+        21907.078125, 21875.353515625, 277.4992370605469,
+        30.088586807250977, 8.14010238647461, 98683.7421875,
+        2448.317626953125, 51958.64453125, 11043.4384765625,
+        6632003.0, 165594.03125, 5708666.5, 99280.1640625,
+    ]
+
+
+def _validation_timestamp(offset_seconds: int) -> str:
+    return (datetime.now(timezone.utc) + timedelta(seconds=offset_seconds)).isoformat()
+
+
+def _validation_flow_event_at(
+    timestamp: str,
+    source_ip: str,
+    destination_ip: str,
+    port: int,
+    interface: str,
+    index: int,
+    bytes_out: int = 2000,
+    bytes_in: int = 200,
+    reason: str = "timeout",
+) -> dict[str, Any]:
+    raw = {
+        "timestamp": timestamp,
+        "event_type": "flow",
+        "in_iface": interface,
+        "src_ip": source_ip,
+        "src_port": 52000 + index,
+        "dest_ip": destination_ip,
+        "dest_port": port,
+        "proto": "TCP",
+        "flow": {
+            "state": "closed",
+            "reason": reason,
+            "age": 1,
+            "pkts_toserver": 3,
+            "pkts_toclient": 1,
+            "bytes_toserver": bytes_out,
+            "bytes_toclient": bytes_in,
+        },
+    }
+    from pondsec_ndr.normalizers.suricata import normalize_eve
+    return normalize_eve(raw)
+
+
+def _validation_dns_event(timestamp: str, source_ip: str, destination_ip: str, interface: str, index: int) -> dict[str, Any]:
+    label = f"z9x8c7v6b5n4m3a2s1d0qwertyuiopasdfghjkl{index:02d}"
+    raw = {
+        "timestamp": timestamp,
+        "event_type": "dns",
+        "in_iface": interface,
+        "src_ip": source_ip,
+        "src_port": 53000 + index,
+        "dest_ip": destination_ip,
+        "dest_port": 53,
+        "proto": "UDP",
+        "dns": {"rrname": f"{label}.validation.pondsec.test", "rrtype": "TXT", "rcode": "NXDOMAIN"},
+    }
+    from pondsec_ndr.normalizers.suricata import normalize_eve
+    return normalize_eve(raw)
 
 
 def _validation_flow_event(source_ip: str, destination_ip: str, port: int, index: int) -> dict[str, Any]:

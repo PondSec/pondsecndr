@@ -50,6 +50,8 @@ def _flow_metadata(raw: dict[str, Any]) -> dict[str, Any]:
         "flow_state": flow.get("state"),
         "flow_reason": flow.get("reason"),
         "duration": flow.get("age"),
+        "packets_out": flow.get("pkts_toserver") or 0,
+        "packets_in": flow.get("pkts_toclient") or 0,
         "packet_count": (flow.get("pkts_toserver") or 0) + (flow.get("pkts_toclient") or 0),
         "bytes_in": flow.get("bytes_toclient") or 0,
         "bytes_out": flow.get("bytes_toserver") or 0,

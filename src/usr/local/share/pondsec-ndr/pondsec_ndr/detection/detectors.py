@@ -8,6 +8,7 @@ from typing import Any
 
 from pondsec_ndr.detection.base import Detector, make_detection
 from pondsec_ndr.features.aggregator import shannon_entropy
+from pondsec_ndr.models.runtime import MODEL_ID, ModelRuntimeUnavailable, SaidimnIdsCnnRuntime
 from pondsec_ndr.schema import is_private_ip
 
 
@@ -250,6 +251,60 @@ class HostBaselineAnomalyDetector(Detector):
         return detections
 
 
+class PretrainedIdsModelDetector(Detector):
+    detector_id = "pondsec.pretrained_ids_model"
+    _runtime: SaidimnIdsCnnRuntime | None = None
+    _unavailable: str | None = None
+
+    @classmethod
+    def _get_runtime(cls) -> SaidimnIdsCnnRuntime | None:
+        if cls._runtime is not None:
+            return cls._runtime
+        if cls._unavailable is not None:
+            return None
+        try:
+            cls._runtime = SaidimnIdsCnnRuntime()
+        except ModelRuntimeUnavailable as exc:
+            cls._unavailable = str(exc)
+            return None
+        return cls._runtime
+
+    def detect(self, events: list[dict[str, Any]], features: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        runtime = self._get_runtime()
+        if runtime is None:
+            return []
+        detections = []
+        for score in runtime.score_features(features):
+            attack_probability = float(score["attack_probability"])
+            class_probability = float(score["attack_class_probability"])
+            if attack_probability < 0.55:
+                continue
+            confidence = max(attack_probability, min(0.95, class_probability))
+            detections.append(make_detection(
+                self.detector_id,
+                "machine_learning",
+                "Pretrained AI model classified traffic as attack",
+                "The verified CICIDS2017 CNN-1D pretrained model classified the flow feature vector as malicious.",
+                score["source_ip"],
+                None,
+                9 if attack_probability >= 0.85 else 7,
+                confidence,
+                attack_probability,
+                {
+                    "model_id": score["model_id"],
+                    "runtime_version": score["runtime_version"],
+                    "attack_probability": round(attack_probability, 6),
+                    "benign_probability": round(float(score["benign_probability"]), 6),
+                    "attack_class": score["attack_class"],
+                    "attack_class_probability": round(class_probability, 6),
+                    "pretrained_model": True,
+                },
+                recommended_action="block",
+                model_version=MODEL_ID,
+            ))
+        return detections
+
+
 class UnusualTlsFingerprintDetector(Detector):
     detector_id = "pondsec.unusual_tls_fingerprint"
 
@@ -345,6 +400,7 @@ def default_detectors() -> list[Detector]:
         VerticalScanDetector(),
         DNSTunnelingDetector(),
         BeaconingDetector(),
+        PretrainedIdsModelDetector(),
         HostBaselineAnomalyDetector(),
         UnusualDestinationDetector(),
         LateralMovementDetector(),

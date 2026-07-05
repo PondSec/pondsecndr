@@ -14,11 +14,16 @@
   "suricata_eve_path": "{{ OPNsense.pondsecndr.general.suricata_eve_path|default("/var/log/suricata/eve.json") }}",
   "interfaces": {
     "monitored": "{{ OPNsense.pondsecndr.interfaces.monitored|default("") }}",
+    "monitored_devices": "{{ helpers.physical_interfaces(OPNsense.pondsecndr.interfaces.monitored.split(','))|join(',') }}",
     "direction": "{{ OPNsense.pondsecndr.interfaces.direction|default("both") }}",
     "internal": "{{ OPNsense.pondsecndr.interfaces.internal|default("") }}",
+    "internal_devices": "{{ helpers.physical_interfaces(OPNsense.pondsecndr.interfaces.internal.split(','))|join(',') }}",
     "wan": "{{ OPNsense.pondsecndr.interfaces.wan|default("") }}",
+    "wan_devices": "{{ helpers.physical_interfaces(OPNsense.pondsecndr.interfaces.wan.split(','))|join(',') }}",
     "management": "{{ OPNsense.pondsecndr.interfaces.management|default("") }}",
+    "management_devices": "{{ helpers.physical_interfaces(OPNsense.pondsecndr.interfaces.management.split(','))|join(',') }}",
     "excluded_interfaces": "{{ OPNsense.pondsecndr.interfaces.excluded_interfaces|default("") }}",
+    "excluded_devices": "{{ helpers.physical_interfaces(OPNsense.pondsecndr.interfaces.excluded_interfaces.split(','))|join(',') }}",
     "excluded_networks": "{{ OPNsense.pondsecndr.interfaces.excluded_networks|default("") }}",
     "excluded_hosts": "{{ OPNsense.pondsecndr.interfaces.excluded_hosts|default("") }}"
   },

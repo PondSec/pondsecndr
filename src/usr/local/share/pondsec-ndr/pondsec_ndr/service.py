@@ -69,6 +69,7 @@ class PondSecService:
             queue_limit=min(self.config.max_event_rate, 100000),
         )
         events, stats = collector.read_once(max_lines=max_lines)
+        events = self._filter_events(events)
         self.counters["parser_errors"] += stats.parser_errors
         self.counters["queue_drops"] += stats.queue_drops
         if stats.last_error:
@@ -122,6 +123,22 @@ class PondSecService:
             "response_actions": response_actions,
             "baseline_updates": baseline_updates,
         }
+
+    def _filter_events(self, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        include = set(self.config.interfaces.monitored) | set(self.config.interfaces.monitored_devices)
+        exclude = set(self.config.interfaces.excluded_interfaces) | set(self.config.interfaces.excluded_devices)
+        direction = self.config.interfaces.direction
+        filtered = []
+        for event in events:
+            interface = event.get("source", {}).get("interface")
+            if interface and interface in exclude:
+                continue
+            if include and interface and interface not in include:
+                continue
+            if direction != "both" and event.get("direction") != direction:
+                continue
+            filtered.append(event)
+        return filtered
 
     def _auto_response(self, incidents: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not incidents or not self.config.response.automatic_blocking or self.config.mode not in {"interactive", "prevent"}:

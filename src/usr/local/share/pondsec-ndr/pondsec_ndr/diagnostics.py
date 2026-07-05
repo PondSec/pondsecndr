@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import importlib.metadata
+import importlib.util
 import os
 from pathlib import Path
 import pwd
@@ -41,6 +43,7 @@ def diagnostics(config: PondSecConfig, store: EventStore) -> dict[str, Any]:
     db = store.check()
     detail = health.get("detail") or {}
     eve_access = eve_access_status(config)
+    telemetry_counts = store.telemetry_type_counts()
     return {
         "status": health["status"],
         "pid": health["pid"],
@@ -62,6 +65,9 @@ def diagnostics(config: PondSecConfig, store: EventStore) -> dict[str, Any]:
         "last_response_errors": detail.get("last_response_errors", []),
         "pf_tables": _pf_tables_status(),
         "pf_blocking": _pf_blocking_status(),
+        "ml_runtime": _ml_runtime_status(config),
+        "host_baselines": store.baseline_summary(),
+        "tls_inspection": _tls_inspection_status(telemetry_counts),
     }
 
 
@@ -69,6 +75,8 @@ def self_test(config: PondSecConfig, store: EventStore) -> dict[str, Any]:
     errors = config.validate()
     db = store.check()
     eve_access = eve_access_status(config)
+    ml_runtime = _ml_runtime_status(config)
+    host_baselines = store.baseline_summary()
     if db["status"] != "ok":
         errors.append("database integrity check failed")
     if eve_access["status"] != "ok":
@@ -81,8 +89,13 @@ def self_test(config: PondSecConfig, store: EventStore) -> dict[str, Any]:
             "eve_access": eve_access["status"],
             "fail_open": config.fail_open,
             "response_side_effects": "time_limited_pf_table_on_activation",
+            "machine_learning": "ok" if config.detection.machine_learning else "disabled",
+            "host_baselines": "ok" if host_baselines["total_hosts"] >= 0 else "failed",
+            "pytorch_runtime": ml_runtime["pytorch_status"],
         },
         "eve_access": eve_access,
+        "ml_runtime": ml_runtime,
+        "host_baselines": host_baselines,
         "errors": errors,
     }
 
@@ -262,6 +275,47 @@ def _active_model(config: PondSecConfig) -> str | None:
         if model.get("active"):
             return model["model_id"]
     return None
+
+
+def _ml_runtime_status(config: PondSecConfig) -> dict[str, Any]:
+    inventory = model_inventory(config.data_dir)
+    preferred = next((item for item in inventory if item.get("preferred")), None)
+    torch_spec = importlib.util.find_spec("torch")
+    torch_version = None
+    if torch_spec is not None:
+        try:
+            torch_version = importlib.metadata.version("torch")
+        except importlib.metadata.PackageNotFoundError:
+            torch_version = "unknown"
+    return {
+        "status": "active" if config.detection.machine_learning else "disabled",
+        "host_baseline_anomaly": "active" if config.detection.machine_learning else "disabled",
+        "external_model_id": preferred["model_id"] if preferred else None,
+        "external_model_status": preferred["status"] if preferred else "missing",
+        "external_model_runtime": preferred["runtime"] if preferred else None,
+        "pytorch_available": torch_spec is not None,
+        "pytorch_status": "available" if torch_spec is not None else "unavailable",
+        "pytorch_version": torch_version,
+        "python_executable": os.sys.executable,
+        "runtime_boundary": "external pretrained models run only in an unprivileged audited worker",
+    }
+
+
+def _tls_inspection_status(telemetry_counts: dict[str, int]) -> dict[str, Any]:
+    http_events = int(telemetry_counts.get("http", 0))
+    tls_events = int(telemetry_counts.get("tls", 0))
+    if http_events:
+        status = "http_metadata_observed"
+    elif tls_events:
+        status = "tls_metadata_observed"
+    else:
+        status = "no_recent_tls_http_metadata"
+    return {
+        "status": status,
+        "http_events_24h": http_events,
+        "tls_events_24h": tls_events,
+        "note": "PondSec consumes decrypted HTTP metadata when Suricata or a proxy publishes it into telemetry.",
+    }
 
 
 def _pf_tables_status() -> dict[str, Any]:

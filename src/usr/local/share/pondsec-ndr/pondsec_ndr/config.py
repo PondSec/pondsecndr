@@ -51,11 +51,16 @@ def _csv(value: Any) -> list[str]:
 @dataclass(slots=True)
 class InterfaceConfig:
     monitored: list[str] = field(default_factory=list)
+    monitored_devices: list[str] = field(default_factory=list)
     direction: str = "both"
     internal: list[str] = field(default_factory=list)
+    internal_devices: list[str] = field(default_factory=list)
     wan: list[str] = field(default_factory=list)
+    wan_devices: list[str] = field(default_factory=list)
     management: list[str] = field(default_factory=list)
+    management_devices: list[str] = field(default_factory=list)
     excluded_interfaces: list[str] = field(default_factory=list)
+    excluded_devices: list[str] = field(default_factory=list)
     excluded_networks: list[str] = field(default_factory=list)
     excluded_hosts: list[str] = field(default_factory=list)
 
@@ -126,8 +131,8 @@ class PondSecConfig:
             errors.append(f"invalid direction: {self.interfaces.direction}")
         if not self.fail_open:
             errors.append("fail_open must remain enabled in the foundation release")
-        if self.mode == "prevent" and not self.response.manual_confirmation and self.response.minimum_confidence < 95:
-            errors.append("prevent mode requires high confidence or manual confirmation")
+        if self.mode == "prevent" and not self.response.manual_confirmation and self.response.minimum_confidence < 75:
+            errors.append("prevent mode without manual confirmation requires at least 75 percent confidence")
         if self.response.automatic_blocking and self.mode not in {"interactive", "prevent"}:
             errors.append("automatic blocking can only be enabled in interactive or prevent mode")
         if self.retention_days < 1:
@@ -172,11 +177,16 @@ def load_config(path: Path | None = None) -> PondSecConfig:
         suricata_eve_path=str(raw.get("suricata_eve_path", "/var/log/suricata/eve.json")),
         interfaces=InterfaceConfig(
             monitored=_csv(interfaces.get("monitored")),
+            monitored_devices=_csv(interfaces.get("monitored_devices")),
             direction=str(interfaces.get("direction", "both")).strip().lower(),
             internal=_csv(interfaces.get("internal")),
+            internal_devices=_csv(interfaces.get("internal_devices")),
             wan=_csv(interfaces.get("wan")),
+            wan_devices=_csv(interfaces.get("wan_devices")),
             management=_csv(interfaces.get("management")),
+            management_devices=_csv(interfaces.get("management_devices")),
             excluded_interfaces=_csv(interfaces.get("excluded_interfaces")),
+            excluded_devices=_csv(interfaces.get("excluded_devices")),
             excluded_networks=_csv(interfaces.get("excluded_networks")),
             excluded_hosts=_csv(interfaces.get("excluded_hosts")),
         ),

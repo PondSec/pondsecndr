@@ -12,6 +12,10 @@ POST-INSTALL)
     else
         pw usermod pondsecndr -d /var/db/pondsec-ndr -s /usr/sbin/nologin
     fi
+    if ! python3 -c "import numpy" >/dev/null 2>&1; then
+        pyver="$(python3 -c 'import sys; print(f"{sys.version_info.major}{sys.version_info.minor}")')"
+        pkg install -y "py${pyver}-numpy" >/dev/null 2>&1 || true
+    fi
     install -d -o root -g wheel -m 0755 /usr/local/etc/pondsec-ndr
     install -d -o pondsecndr -g pondsecndr -m 0750 /var/db/pondsec-ndr /var/log/pondsec-ndr /var/run/pondsec-ndr
     ;;

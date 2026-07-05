@@ -91,13 +91,19 @@ CICIDS2017_FEATURES = [
 
 
 def cicids_vector_from_feature(feature: dict[str, Any]) -> list[float]:
+    override = feature.get("cicids_vector")
+    if isinstance(override, list) and len(override) == len(CICIDS2017_FEATURES):
+        return [float(value) for value in override]
+
     duration = float(feature.get("flow_duration") or 0)
     packets = float(feature.get("packet_count") or 0)
+    packets_out = float(feature.get("packets_out") or 0)
+    packets_in = float(feature.get("packets_in") or 0)
     bytes_out = float(feature.get("bytes_out") or 0)
     bytes_in = float(feature.get("bytes_in") or 0)
     byte_count = float(feature.get("byte_count") or 0)
-    fwd_packets = max(1.0, packets * 0.5)
-    bwd_packets = max(1.0, packets - fwd_packets)
+    fwd_packets = max(1.0, packets_out or packets * 0.5)
+    bwd_packets = max(1.0, packets_in or packets - fwd_packets)
     flow_seconds = max(duration, 1.0)
     avg_packet = byte_count / max(packets, 1.0)
 

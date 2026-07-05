@@ -11,6 +11,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from pondsec_ndr.models.runtime import DEFAULT_RUNTIME_PATH
 from pondsec_ndr.schema import FEATURE_SCHEMA_VERSION
 
 
@@ -217,6 +218,9 @@ def model_inventory(data_dir: Path | None = None) -> list[dict[str, Any]]:
         if data_dir is not None:
             artifacts = installed_artifacts(data_dir, model["model_id"])
             installed = bool(artifacts) and all(item["valid"] for item in artifacts)
+        runtime_artifact = DEFAULT_RUNTIME_PATH if model["model_id"] == "saidimn-ids-cnn-cicids2017" else None
+        runtime_installed = bool(runtime_artifact and runtime_artifact.exists())
+        installed = installed or runtime_installed
         inventory.append({
             "model_id": model["model_id"],
             "provider": model["provider"],
@@ -231,6 +235,8 @@ def model_inventory(data_dir: Path | None = None) -> list[dict[str, Any]]:
             "preferred": model["preferred"],
             "active": installed and model["preferred"],
             "artifacts": artifacts,
+            "runtime_artifact": str(runtime_artifact) if runtime_artifact else None,
+            "runtime_installed": runtime_installed,
             "notes": model["notes"],
         })
     return inventory
