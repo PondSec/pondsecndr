@@ -290,6 +290,8 @@ Safety changes made from the live findings:
 
 - PF/filterlog collector accepts only `block` events and ignores short/non-L4/pass lines without parser errors.
 - `pondsecndr` gets ACL read access to `/var/log/filter/latest.log` at service prestart.
+- The filterlog directory also receives an inherited ACL so newly rotated OPNsense
+  filter logs remain readable by the unprivileged daemon after midnight rotation.
 - PF table mutation falls back to fixed OPNsense configd actions when the daemon lacks direct `/dev/pf` write permission.
 - Response logic reuses an existing active source block instead of creating duplicate active PF entries.
 - Baseline-only host anomalies require manual confirmation for blocking; they still create detections and incidents.

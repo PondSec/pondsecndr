@@ -42,6 +42,11 @@ For a persistent OPNsense setup, the active EVE file should be readable by the
 
 If Suricata log rotation occurred, inspect collector offsets with diagnostics.
 
+If the OPNsense filterlog collector reports permission errors after midnight
+rotation, restart PondSec NDR so its prestart hook reapplies ACLs to
+`/var/log/filter/latest.log` and the filterlog directory inheritance. The
+service runs unprivileged and should not be changed to root for log access.
+
 ## Dashboard Empty
 
 An empty dashboard is expected before events are ingested. The UI must not show fake metrics. Use `pondsec-ndrctl replay` with synthetic data for controlled testing.
