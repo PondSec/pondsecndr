@@ -11,6 +11,12 @@ $(function() {
             refreshDiagnostics();
         }
     });
+    $('#protectionValidateAct').SimpleActionButton({
+        onAction: function(data) {
+            $('#protectiontest').text(JSON.stringify(data, null, 2));
+            refreshDiagnostics();
+        }
+    });
     refreshDiagnostics();
 });
 </script>
@@ -30,8 +36,11 @@ $(function() {
 
 <div class="pondsec-diag">
     <button class="btn btn-primary" id="selfTestAct" data-endpoint="/api/pondsecndr/diagnostics/self_test" data-label="{{ lang._('Self-test') }}"></button>
+    <button class="btn btn-danger" id="protectionValidateAct" data-endpoint="/api/pondsecndr/diagnostics/protection_validate" data-label="{{ lang._('Validate protection') }}"></button>
     <h3>{{ lang._('Diagnostics') }}</h3>
     <pre id="diagnostics">{{ lang._('Loading') }}</pre>
     <h3>{{ lang._('Self-test result') }}</h3>
     <pre id="selftest">{{ lang._('No self-test result') }}</pre>
+    <h3>{{ lang._('Protection validation result') }}</h3>
+    <pre id="protectiontest">{{ lang._('No protection validation result') }}</pre>
 </div>

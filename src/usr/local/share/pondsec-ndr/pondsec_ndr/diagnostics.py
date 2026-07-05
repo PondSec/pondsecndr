@@ -13,6 +13,7 @@ from typing import Any
 
 from pondsec_ndr.config import PondSecConfig
 from pondsec_ndr.models.manager import model_inventory
+from pondsec_ndr.response.pf import PFTableEnforcer
 from pondsec_ndr.storage.database import EventStore
 
 DEFAULT_SERVICE_USER = os.environ.get("PONDSEC_NDR_SERVICE_USER", "pondsecndr")
@@ -60,6 +61,7 @@ def diagnostics(config: PondSecConfig, store: EventStore) -> dict[str, Any]:
         "last_ml_errors": detail.get("last_ml_errors", []),
         "last_response_errors": detail.get("last_response_errors", []),
         "pf_tables": _pf_tables_status(),
+        "pf_blocking": _pf_blocking_status(),
     }
 
 
@@ -78,7 +80,7 @@ def self_test(config: PondSecConfig, store: EventStore) -> dict[str, Any]:
             "database": db["status"],
             "eve_access": eve_access["status"],
             "fail_open": config.fail_open,
-            "response_side_effects": "none",
+            "response_side_effects": "time_limited_pf_table_on_activation",
         },
         "eve_access": eve_access,
         "errors": errors,
@@ -275,3 +277,12 @@ def _pf_tables_status() -> dict[str, Any]:
         return {"available": False, "tables": []}
     tables = [line.strip() for line in result.stdout.splitlines() if line.strip().startswith("PONDSEC_NDR_")]
     return {"available": result.returncode == 0, "tables": tables}
+
+
+def _pf_blocking_status() -> dict[str, Any]:
+    enforcer = PFTableEnforcer()
+    return {
+        "table": enforcer.table,
+        "rule_present": enforcer.rule_present(),
+        "mode": "active-table-enforcement",
+    }

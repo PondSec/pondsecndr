@@ -16,6 +16,7 @@ from pondsec_ndr.correlation import correlate_detections
 from pondsec_ndr.detection.detectors import default_detectors
 from pondsec_ndr.features.aggregator import aggregate_features
 from pondsec_ndr.logging_json import configure_logging
+from pondsec_ndr.response.engine import ResponseDenied, activate_block, propose_block_for_incident
 from pondsec_ndr.storage.database import EventStore
 
 
@@ -74,7 +75,10 @@ class PondSecService:
             self.counters["last_collector_errors"] = ([stats.last_error] + self.counters["last_collector_errors"])[:5]
 
         inserted_events = self.store.insert_events(events)
-        features = aggregate_features(events)
+        features = self.store.score_features_against_baselines(
+            aggregate_features(events),
+            minimum_observations=self.config.detection.minimum_observations,
+        )
         self.store.insert_features(features)
 
         detections: list[dict[str, Any]] = []
@@ -84,6 +88,9 @@ class PondSecService:
 
         incidents = correlate_detections(detections)
         inserted_incidents = self.store.insert_incidents(incidents)
+        anomalous_sources = {detection["source_ip"] for detection in detections if detection.get("source_ip")}
+        baseline_updates = self.store.update_host_baselines(features, skip_sources=anomalous_sources)
+        response_actions = self._auto_response(incidents)
         cleaned = self.store.cleanup(self.config.retention_days)
 
         self.counters["events"] += inserted_events
@@ -98,6 +105,8 @@ class PondSecService:
             "inserted_events": inserted_events,
             "inserted_detections": inserted_detections,
             "inserted_incidents": inserted_incidents,
+            "response_actions": response_actions,
+            "baseline_updates": baseline_updates,
             "cleanup_deleted": cleaned,
             "parser_errors": self.counters["parser_errors"],
             "normalization_errors": stats.normalization_errors,
@@ -110,7 +119,53 @@ class PondSecService:
             "inserted_events": inserted_events,
             "detections": inserted_detections,
             "incidents": inserted_incidents,
+            "response_actions": response_actions,
+            "baseline_updates": baseline_updates,
         }
+
+    def _auto_response(self, incidents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not incidents or not self.config.response.automatic_blocking or self.config.mode not in {"interactive", "prevent"}:
+            return []
+        actions: list[dict[str, Any]] = []
+        for incident in incidents:
+            incident_id = incident.get("incident_id")
+            if not incident_id:
+                continue
+            try:
+                proposal = propose_block_for_incident(
+                    self.store,
+                    self.config,
+                    incident_id,
+                    actor="auto-prevent",
+                    automatic=True,
+                )
+                action: dict[str, Any] = {
+                    "incident_id": incident_id,
+                    "source_ip": proposal.get("source_ip"),
+                    "block_id": proposal.get("block_id"),
+                    "mode": self.config.mode,
+                    "status": proposal.get("status"),
+                    "automatic": True,
+                }
+                if self.config.mode == "prevent" and proposal.get("status") != "active":
+                    activation = activate_block(self.store, self.config, proposal["block_id"], actor="auto-prevent")
+                    action["status"] = activation["status"]
+                    action["activation"] = {
+                        "pf_table": activation.get("pf_table"),
+                        "pf_rule_present": activation.get("pf_rule_present"),
+                        "pf_verify": activation.get("pf_verify"),
+                    }
+                actions.append(action)
+            except ResponseDenied as exc:
+                message = f"{incident_id}: {exc}"
+                self.counters["last_response_errors"] = ([message] + self.counters["last_response_errors"])[:5]
+                actions.append({"incident_id": incident_id, "status": "denied", "reason": str(exc)})
+            except Exception as exc:
+                message = f"{incident_id}: response error: {exc}"
+                self.counters["last_response_errors"] = ([message] + self.counters["last_response_errors"])[:5]
+                self.logger.exception(message, extra={"component": "response", "event": "auto_response_error", "error_code": "auto_response_error"})
+                actions.append({"incident_id": incident_id, "status": "error", "reason": str(exc)})
+        return actions
 
     def _write_health(self, status: str, detail: dict[str, Any] | None = None) -> None:
         payload = {

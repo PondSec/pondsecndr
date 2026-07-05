@@ -17,11 +17,12 @@ This repository currently contains the first production-oriented foundation:
 - Structured JSON logging, service health output, and CLI commands
 - Suricata EVE JSON collector and normalizer
 - SQLite event store with migrations, WAL mode, retention hooks, and dashboard queries
-- Initial port scan, horizontal scan, vertical scan, DNS tunneling, beaconing, lateral movement, exfiltration, TLS fingerprint, and Suricata alert detectors
+- Initial port scan, horizontal scan, vertical scan, DNS tunneling, beaconing, lateral movement, exfiltration, TLS fingerprint, Suricata alert, and Suricata drop detectors
+- Controlled PF table enforcement for validated blocklist activations
 - External pretrained IDS model catalog with verified checksums for MIT-licensed CICIDS2017 models
 - Unit tests using synthetic events only
 
-Automatic blocking is disabled by default. The default operating mode is `monitor`.
+Automatic blocking is disabled by default. The default operating mode is `monitor`; administrators can still validate the detect-and-block path with a controlled protection test.
 
 ## Supported Data Sources
 
@@ -29,6 +30,7 @@ The first collector supports Suricata EVE JSON event types:
 
 - `flow`
 - `alert`
+- `drop`
 - `dns`
 - `tls`
 - `http`
@@ -64,7 +66,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
 
 ## Security Model
 
-PondSec NDR follows fail-open behavior. A service error must not interrupt firewall packet forwarding. ML output alone must never create a permanent block. Prevent-mode response actions require policy approval, high confidence, protected-target checks, allowlist checks, and time-limited enforcement.
+PondSec NDR follows fail-open behavior. A service error must not interrupt firewall packet forwarding. ML output alone must never create a permanent block. Response actions require confidence/risk thresholds, protected-target checks, allowlist checks, and time-limited PF table enforcement.
 
 Sensitive payloads such as HTTP bodies, credentials, cookies, authorization headers, full query strings, and file contents are not stored by default.
 

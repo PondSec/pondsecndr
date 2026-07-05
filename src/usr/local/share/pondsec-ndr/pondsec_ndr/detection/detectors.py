@@ -218,6 +218,38 @@ class DataExfiltrationDetector(Detector):
         return detections
 
 
+class HostBaselineAnomalyDetector(Detector):
+    detector_id = "pondsec.host_baseline_anomaly"
+
+    def detect(self, events: list[dict[str, Any]], features: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        detections = []
+        for item in features:
+            deviation = float(item.get("baseline_deviation") or 0)
+            observations = int(item.get("baseline_observations") or 0)
+            if item.get("baseline_status") != "established" or deviation < 0.65:
+                continue
+            detections.append(make_detection(
+                self.detector_id,
+                "anomaly",
+                "Host baseline anomaly",
+                "Host behavior deviates from its established network baseline without requiring a signature match.",
+                item["source_ip"],
+                None,
+                8 if deviation >= 0.8 else 7,
+                min(0.97, 0.68 + deviation / 4),
+                deviation,
+                {
+                    "baseline_deviation": deviation,
+                    "baseline_observations": observations,
+                    "reasons": item.get("baseline_anomaly_reasons", []),
+                    "signature_required": False,
+                },
+                recommended_action="block",
+                model_version="pondsec-host-baseline-v1",
+            ))
+        return detections
+
+
 class UnusualTlsFingerprintDetector(Detector):
     detector_id = "pondsec.unusual_tls_fingerprint"
 
@@ -313,6 +345,7 @@ def default_detectors() -> list[Detector]:
         VerticalScanDetector(),
         DNSTunnelingDetector(),
         BeaconingDetector(),
+        HostBaselineAnomalyDetector(),
         UnusualDestinationDetector(),
         LateralMovementDetector(),
         DataExfiltrationDetector(),

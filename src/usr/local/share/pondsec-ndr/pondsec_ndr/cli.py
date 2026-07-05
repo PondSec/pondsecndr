@@ -18,7 +18,8 @@ from pondsec_ndr.diagnostics import diagnostics as diagnostics_payload
 from pondsec_ndr.diagnostics import self_test, service_status
 from pondsec_ndr.features.aggregator import aggregate_features
 from pondsec_ndr.models.manager import ModelError, download_model_artifacts, model_inventory
-from pondsec_ndr.response.engine import ResponseDenied, propose_block_for_incident, validate_ip_or_network
+from pondsec_ndr.response.engine import ResponseDenied, activate_block, propose_block_for_incident, remove_block, validate_ip_or_network
+from pondsec_ndr.response.pf import PFTableEnforcer
 from pondsec_ndr.service import PondSecService
 from pondsec_ndr.storage.database import EventStore
 
@@ -100,6 +101,14 @@ def main(argv: list[str] | None = None) -> int:
     config_cmd = sub.add_parser("config")
     config_sub = config_cmd.add_subparsers(dest="config_command", required=True)
     config_sub.add_parser("validate")
+
+    protection = sub.add_parser("protection")
+    protection_sub = protection.add_subparsers(dest="protection_command", required=True)
+    validate_protection = protection_sub.add_parser("validate")
+    validate_protection.add_argument("--source-ip", default="203.0.113.250")
+    validate_protection.add_argument("--destination-ip", default="192.168.30.3")
+    validate_protection.add_argument("--duration-seconds", type=int, default=600)
+    validate_protection.add_argument("--remove-after", action="store_true")
 
     replay = sub.add_parser("replay")
     replay.add_argument("eve_file")
@@ -191,16 +200,22 @@ def dispatch(args: argparse.Namespace, config: Any, store: EventStore) -> tuple[
             return {"items": _decode_rows(store.list_rows("block_entries"))}, 0
         if args.section_command == "propose":
             proposal = propose_block_for_incident(store, config, args.incident_id, actor="cli", duration_seconds=args.duration_seconds)
-            return {"status": "ok", "item": proposal, "pf_side_effects": "none"}, 0
+            return {"status": "ok", "item": proposal, "pf_side_effects": "none_until_activated"}, 0
         if args.section_command == "activate":
-            changed = store.update_block_status(args.block_id, "active", actor="cli")
-            return {"status": "ok" if changed else "not_found", "block_id": args.block_id, "pf_side_effects": "none"}, 0 if changed else 1
+            payload = activate_block(store, config, args.block_id, actor="cli")
+            return payload, 0 if payload["status"] == "ok" else 1
         if args.section_command == "remove":
-            changed = store.update_block_status(args.block_id, "removed", args.reason, actor="cli")
-            return {"status": "ok" if changed else "not_found", "block_id": args.block_id, "pf_side_effects": "none"}, 0 if changed else 1
+            payload = remove_block(store, args.block_id, args.reason, actor="cli")
+            return payload, 0 if payload["status"] == "ok" else 1
         if args.section_command == "expire":
+            expired_sources = store.expired_active_block_sources()
             expired = store.expire_block_entries(actor="cli")
-            return {"status": "ok", "expired": expired, "pf_side_effects": "none"}, 0
+            enforcer = PFTableEnforcer()
+            removed = []
+            for source_ip in expired_sources:
+                if source_ip not in store.active_block_sources():
+                    removed.append(enforcer.delete(source_ip).as_dict())
+            return {"status": "ok", "expired": expired, "pf_removed": removed}, 0
     if command == "policies":
         return {"items": _decode_rows(store.list_rows("policies"))}, 0
     if command == "logs":
@@ -215,6 +230,9 @@ def dispatch(args: argparse.Namespace, config: Any, store: EventStore) -> tuple[
             store.migrate()
             return {"status": "ok", "schema_version": 1}, 0
         payload = store.check()
+        return payload, 0 if payload["status"] == "ok" else 1
+    if command == "protection" and args.protection_command == "validate":
+        payload = validate_protection_path(store, config, args.source_ip, args.destination_ip, args.duration_seconds, args.remove_after)
         return payload, 0 if payload["status"] == "ok" else 1
     if command == "run":
         service = PondSecService(config)
@@ -246,6 +264,98 @@ def replay_file(eve_file: Path, max_lines: int) -> dict[str, Any]:
         "incidents": incidents,
         "response_mode": "simulation_only",
     }
+
+
+def validate_protection_path(
+    store: EventStore,
+    config: Any,
+    source_ip: str,
+    destination_ip: str,
+    duration_seconds: int,
+    remove_after: bool,
+) -> dict[str, Any]:
+    source_ip = validate_ip_or_network(source_ip)
+    destination_ip = validate_ip_or_network(destination_ip)
+    if "/" in source_ip or "/" in destination_ip:
+        raise ResponseDenied("protection validation requires host IP addresses, not networks")
+    events = [
+        _validation_flow_event(source_ip, destination_ip, 20 + index, index)
+        for index in range(18)
+    ]
+    features = aggregate_features(events)
+    detections = []
+    for detector in default_detectors():
+        detections.extend(detector.detect(events, features))
+    incidents = correlate_detections(detections)
+    for incident in incidents:
+        incident["title"] = "[PondSec validation] " + incident["title"]
+        incident["evidence"]["validation"] = True
+    inserted_events = store.insert_events(events)
+    store.insert_features(features)
+    inserted_detections = store.insert_detections(detections)
+    inserted_incidents = store.insert_incidents(incidents)
+    if not incidents:
+        return {
+            "status": "failed",
+            "reason": "synthetic suspicious behavior did not produce an incident",
+            "inserted_events": inserted_events,
+            "inserted_detections": inserted_detections,
+            "inserted_incidents": inserted_incidents,
+        }
+    incident = max(incidents, key=lambda item: item["risk_score"])
+    original_minimum_risk = config.response.minimum_risk_score
+    original_minimum_confidence = config.response.minimum_confidence
+    config.response.minimum_risk_score = min(original_minimum_risk, int(incident["risk_score"]))
+    config.response.minimum_confidence = min(original_minimum_confidence, int(float(incident["confidence"]) * 100))
+    proposal = propose_block_for_incident(store, config, incident["incident_id"], actor="protection-validation", duration_seconds=duration_seconds)
+    activation = activate_block(store, config, proposal["block_id"], actor="protection-validation")
+    active_block = store.get_block_entry(proposal["block_id"]) or proposal
+    removal = None
+    if remove_after:
+        removal = remove_block(store, proposal["block_id"], "protection validation cleanup", actor="protection-validation")
+    return {
+        "status": "ok" if activation["status"] == "ok" else "failed",
+        "validated_behavior": "horizontal/vertical port scan",
+        "source_ip": source_ip,
+        "destination_ip": destination_ip,
+        "inserted_events": inserted_events,
+        "inserted_detections": inserted_detections,
+        "inserted_incidents": inserted_incidents,
+        "detectors": sorted({item["detector_id"] for item in detections}),
+        "incident": {
+            "incident_id": incident["incident_id"],
+            "risk_score": incident["risk_score"],
+            "confidence": incident["confidence"],
+            "category": incident["category"],
+        },
+        "block": active_block,
+        "activation": activation,
+        "removal": removal,
+    }
+
+
+def _validation_flow_event(source_ip: str, destination_ip: str, port: int, index: int) -> dict[str, Any]:
+    timestamp = f"2026-07-05T16:50:{index:02d}+00:00"
+    raw = {
+        "timestamp": timestamp,
+        "event_type": "flow",
+        "src_ip": source_ip,
+        "src_port": 52000 + index,
+        "dest_ip": destination_ip,
+        "dest_port": port,
+        "proto": "TCP",
+        "flow": {
+            "state": "closed",
+            "reason": "timeout",
+            "age": 1,
+            "pkts_toserver": 3,
+            "pkts_toclient": 1,
+            "bytes_toserver": 2000,
+            "bytes_toclient": 200,
+        },
+    }
+    from pondsec_ndr.normalizers.suricata import normalize_eve
+    return normalize_eve(raw)
 
 
 def interfaces_list(config: Any) -> dict[str, Any]:

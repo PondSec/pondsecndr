@@ -42,7 +42,7 @@ Validation results:
 - Allowlist safety gate: passed.
 - Default response threshold gate: passed.
 - Temporary lowered-threshold block proposal: passed.
-- Proposed block activation/removal: passed with `pf_side_effects: none`.
+- Proposed block activation/removal: initially passed in database-only mode.
 - Incident close/reopen through configd: passed.
 
 Post-validation production state:
@@ -54,20 +54,20 @@ Post-validation production state:
 - Because the target firewall currently has no readable Suricata EVE file, service health correctly reports `degraded`.
 - The expected production remediation is to enable Suricata EVE JSON output and grant the unprivileged `pondsecndr` user read/traverse access to `/var/log/suricata/eve.json` without running PondSec NDR as root.
 - Dashboard reports empty real data rather than synthetic records.
-- Fail-open behavior was preserved; no PF tables were modified.
+- Fail-open behavior was preserved during initial monitor-mode validation.
 
 Important safety state:
 
 - Default operating mode remains `monitor`.
 - Automatic blocking remains disabled.
-- PF mutation is not enabled by this foundation build.
+- PF mutation is limited to confirmed, time-limited blocklist activations through configd/CLI; automatic blocking remains disabled.
 - External `.pth` and `.pkl` model artifacts are verified but not deserialized in the privileged service path.
 
 Known validation gap:
 
-- GitHub push is currently blocked by network redirection from `github.com` to `rtap.zenarmor.net`.
+- GitHub push now succeeds against `https://github.com/PondSec/pondsecndr.git`.
 - Full package build inside the upstream OPNsense plugins tree is not yet completed.
-- Browser-level GUI click testing requires an authenticated OPNsense web session.
+- Browser-level GUI click testing must verify each authenticated PondSec NDR page after route fixes.
 
 ## 2026-07-05: Production EVE Ingest Enabled
 
@@ -93,4 +93,14 @@ Validation results after the change:
 - Replay against the real EVE file parsed Suricata `drop` records and produced `pondsec.suricata_drop` detections without touching the production database.
 - configd actions validated: `health`, `diagnostics`, `dashboard_summary`, `selftest`, `detections`, and `incidents`.
 - Operating mode remained `monitor`; automatic blocking remained disabled.
-- PF table mutation remained disabled; diagnostics reported no `PONDSEC_NDR_*` tables.
+- PF mutation remained disabled during passive EVE ingestion; controlled block validation is tracked separately.
+
+## 2026-07-05: GUI Route and Protection Validation Fix
+
+Follow-up validation target:
+
+- Every menu URL under `/ui/pondsecndr/...` must resolve to a concrete UI controller.
+- The diagnostics page exposes self-test and protection validation actions.
+- `pondsec-ndrctl protection validate --json` must produce a port-scan detection, incident, response proposal, PF table activation, and PF verification.
+- The configd action `configctl pondsecndr protection_validate` must return the same proof path.
+- The PF block table is OPNsense `virusprot`, which is already referenced by an active `block drop ... from <virusprot> to any` rule on the target firewall.

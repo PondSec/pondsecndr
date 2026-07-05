@@ -393,6 +393,117 @@ class EventStore:
             )
         return len(rows)
 
+    def score_features_against_baselines(self, features: list[dict[str, Any]], minimum_observations: int = 50) -> list[dict[str, Any]]:
+        if not features:
+            return features
+        metrics = [
+            "destination_count",
+            "port_count",
+            "bytes_out",
+            "upload_download_ratio",
+            "dns_entropy",
+            "dns_name_length",
+            "connections_60s",
+            "internal_connections",
+            "external_connections",
+        ]
+        with self.connect() as conn:
+            baseline_rows = {
+                row["host_ip"]: row
+                for row in conn.execute(
+                    "SELECT host_ip, observation_count, baseline_json FROM host_baselines WHERE host_ip IN ({})".format(
+                        ",".join("?" for _ in features)
+                    ),
+                    [item["source_ip"] for item in features],
+                ).fetchall()
+            } if features else {}
+        scored = []
+        for item in features:
+            enriched = dict(item)
+            row = baseline_rows.get(item["source_ip"])
+            reasons: list[dict[str, Any]] = []
+            score = float(enriched.get("baseline_deviation") or 0)
+            if row and int(row["observation_count"]) >= minimum_observations:
+                baseline = json.loads(row["baseline_json"] or "{}")
+                for metric in metrics:
+                    current = float(enriched.get(metric) or 0)
+                    expected = float(baseline.get(metric) or 0)
+                    if current <= 0 or expected <= 0:
+                        continue
+                    ratio = current / max(expected, 1.0)
+                    if ratio >= 3:
+                        metric_score = min(1.0, (ratio - 1) / 10)
+                        score = max(score, metric_score)
+                        reasons.append({"metric": metric, "current": round(current, 4), "baseline": round(expected, 4), "ratio": round(ratio, 4)})
+                enriched["baseline_status"] = "established"
+                enriched["baseline_observations"] = int(row["observation_count"])
+                enriched["baseline_anomaly_reasons"] = reasons[:6]
+            else:
+                enriched["baseline_status"] = "learning"
+                enriched["baseline_observations"] = int(row["observation_count"]) if row else 0
+                enriched["baseline_anomaly_reasons"] = []
+            enriched["baseline_deviation"] = round(min(1.0, score), 4)
+            scored.append(enriched)
+        return scored
+
+    def update_host_baselines(self, features: list[dict[str, Any]], skip_sources: set[str] | None = None) -> int:
+        if not features:
+            return 0
+        skip_sources = skip_sources or set()
+        metrics = [
+            "destination_count",
+            "port_count",
+            "bytes_out",
+            "upload_download_ratio",
+            "dns_entropy",
+            "dns_name_length",
+            "connections_60s",
+            "internal_connections",
+            "external_connections",
+        ]
+        updated = 0
+        with self.connect() as conn:
+            for item in features:
+                source_ip = item["source_ip"]
+                if source_ip in skip_sources:
+                    continue
+                now = now_iso()
+                row = conn.execute("SELECT observation_count, first_observation, baseline_json FROM host_baselines WHERE host_ip = ?", (source_ip,)).fetchone()
+                if row:
+                    count = int(row["observation_count"])
+                    baseline = json.loads(row["baseline_json"] or "{}")
+                    next_count = count + 1
+                    for metric in metrics:
+                        current = float(item.get(metric) or 0)
+                        baseline[metric] = ((float(baseline.get(metric) or 0) * count) + current) / next_count
+                    conn.execute(
+                        """
+                        UPDATE host_baselines
+                        SET observation_count = ?, last_observation = ?, baseline_json = ?
+                        WHERE host_ip = ?
+                        """,
+                        (next_count, now, json.dumps(baseline, sort_keys=True), source_ip),
+                    )
+                else:
+                    baseline = {metric: float(item.get(metric) or 0) for metric in metrics}
+                    conn.execute(
+                        """
+                        INSERT INTO host_baselines(host_ip, observation_count, first_observation, last_observation, baseline_json)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (source_ip, 1, now, now, json.dumps(baseline, sort_keys=True)),
+                    )
+                conn.execute(
+                    "UPDATE hosts SET learning_status = ?, baseline_deviation = ? WHERE ip = ?",
+                    (
+                        "established" if int((row["observation_count"] if row else 0)) + 1 >= 50 else "learning",
+                        float(item.get("baseline_deviation") or 0),
+                        source_ip,
+                    ),
+                )
+                updated += 1
+        return updated
+
     def insert_detections(self, detections: list[dict[str, Any]]) -> int:
         if not detections:
             return 0
@@ -568,6 +679,53 @@ class EventStore:
             self._audit(conn, actor, f"block.{record['status']}", record["source_ip"], record)
         return record
 
+    def get_block_entry(self, block_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM block_entries WHERE block_id = ?", (block_id,)).fetchone()
+        return dict(row) if row else None
+
+    def existing_response_block(self, incident_id: str | None, source_ip: str | None) -> dict[str, Any] | None:
+        if not incident_id and not source_ip:
+            return None
+        now = now_iso()
+        clauses = ["status IN ('proposed', 'active')", "expires_at > ?"]
+        values: list[Any] = [now]
+        if incident_id:
+            clauses.append("incident_id = ?")
+            values.append(incident_id)
+        elif source_ip:
+            clauses.append("source_ip = ?")
+            values.append(source_ip)
+        with self.connect() as conn:
+            row = conn.execute(
+                f"SELECT * FROM block_entries WHERE {' AND '.join(clauses)} ORDER BY created_at DESC LIMIT 1",
+                values,
+            ).fetchone()
+        return dict(row) if row else None
+
+    def active_block_count(self) -> int:
+        now = now_iso()
+        with self.connect() as conn:
+            return int(conn.execute("SELECT count(*) FROM block_entries WHERE status = 'active' AND expires_at > ?", (now,)).fetchone()[0])
+
+    def active_block_sources(self) -> list[str]:
+        now = now_iso()
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT source_ip FROM block_entries WHERE status = 'active' AND expires_at > ?",
+                (now,),
+            ).fetchall()
+        return [row["source_ip"] for row in rows]
+
+    def expired_active_block_sources(self) -> list[str]:
+        now = now_iso()
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT source_ip FROM block_entries WHERE status = 'active' AND expires_at <= ?",
+                (now,),
+            ).fetchall()
+        return [row["source_ip"] for row in rows]
+
     def update_block_status(self, block_id: str, status: str, removal_reason: str | None = None, actor: str = "system") -> bool:
         if status not in {"proposed", "active", "removed", "expired", "rejected"}:
             raise ValueError("invalid block status")
@@ -636,7 +794,7 @@ class EventStore:
             events_24h = conn.execute("SELECT count(*) FROM events WHERE timestamp >= ?", (cutoff,)).fetchone()[0]
             open_incidents = conn.execute("SELECT count(*) FROM incidents WHERE status = 'open'").fetchone()[0]
             critical_incidents = conn.execute("SELECT count(*) FROM incidents WHERE status = 'open' AND risk_score >= 90").fetchone()[0]
-            blocked_sources = conn.execute("SELECT count(*) FROM block_entries WHERE status = 'active'").fetchone()[0]
+            blocked_sources = conn.execute("SELECT count(DISTINCT source_ip) FROM block_entries WHERE status = 'active'").fetchone()[0]
             categories = conn.execute("SELECT category, count(*) AS count FROM detections GROUP BY category ORDER BY count DESC").fetchall()
             top_hosts = conn.execute("SELECT ip, risk_score, open_incidents FROM hosts ORDER BY risk_score DESC, last_seen DESC LIMIT 10").fetchall()
             latest_event = conn.execute("SELECT max(timestamp) FROM events").fetchone()[0]

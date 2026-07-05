@@ -7,6 +7,8 @@ import ipaddress
 from typing import Any
 
 from pondsec_ndr.config import PondSecConfig
+from pondsec_ndr.response.pf import PFTableEnforcer
+from pondsec_ndr.schema import is_private_ip
 from pondsec_ndr.storage.database import EventStore
 
 
@@ -67,6 +69,7 @@ def propose_block_for_incident(
     incident_id: str,
     actor: str = "system",
     duration_seconds: int | None = None,
+    automatic: bool = False,
 ) -> dict[str, Any]:
     incident = store.get_incident(incident_id)
     if incident is None:
@@ -78,10 +81,17 @@ def propose_block_for_incident(
         raise ResponseDenied("source IP is protected")
     if config.response.enforce_allowlist and is_allowlisted(source_ip, store.allowlist_values()):
         raise ResponseDenied("source IP is allowlisted")
+    if automatic and is_private_ip(source_ip) and not config.response.isolate_internal:
+        raise ResponseDenied("automatic internal isolation is disabled")
+    if automatic and not is_private_ip(source_ip) and not config.response.block_external:
+        raise ResponseDenied("automatic external blocking is disabled")
     if incident["risk_score"] < config.response.minimum_risk_score:
         raise ResponseDenied("incident risk score is below response threshold")
     if float(incident["confidence"]) * 100 < config.response.minimum_confidence:
         raise ResponseDenied("incident confidence is below response threshold")
+    existing = store.existing_response_block(incident_id, source_ip)
+    if existing:
+        return existing
 
     duration = duration_seconds or config.response.default_block_seconds
     duration = min(duration, config.response.max_block_seconds)
@@ -96,6 +106,65 @@ def propose_block_for_incident(
         "policy_id": None,
         "expires_at": expires_at,
         "created_by": actor,
-        "automatic": False,
+        "automatic": automatic,
         "status": "proposed",
     }, actor=actor)
+
+
+def activate_block(
+    store: EventStore,
+    config: PondSecConfig,
+    block_id: str,
+    actor: str = "system",
+    enforcer: PFTableEnforcer | None = None,
+) -> dict[str, Any]:
+    block = store.get_block_entry(block_id)
+    if block is None:
+        raise ResponseDenied("block entry not found")
+    source_ip = validate_ip_or_network(block["source_ip"])
+    if is_protected_target(source_ip, config):
+        raise ResponseDenied("source IP is protected")
+    if config.response.enforce_allowlist and is_allowlisted(source_ip, store.allowlist_values()):
+        raise ResponseDenied("source IP is allowlisted")
+    if store.active_block_count() >= config.response.max_concurrent_blocks:
+        raise ResponseDenied("maximum concurrent blocks reached")
+    pf = enforcer or PFTableEnforcer()
+    result = pf.add(source_ip)
+    if not result.ok:
+        raise ResponseDenied(f"PF table add failed: {result.stderr or result.stdout or result.returncode}")
+    changed = store.update_block_status(block_id, "active", actor=actor)
+    verified = pf.test(source_ip)
+    return {
+        "status": "ok" if changed and verified.ok else "failed",
+        "block_id": block_id,
+        "source_ip": source_ip,
+        "pf_table": pf.table,
+        "pf_add": result.as_dict(),
+        "pf_verify": verified.as_dict(),
+        "pf_rule_present": pf.rule_present(),
+    }
+
+
+def remove_block(
+    store: EventStore,
+    block_id: str,
+    reason: str = "manual removal",
+    actor: str = "system",
+    enforcer: PFTableEnforcer | None = None,
+) -> dict[str, Any]:
+    block = store.get_block_entry(block_id)
+    if block is None:
+        raise ResponseDenied("block entry not found")
+    source_ip = validate_ip_or_network(block["source_ip"])
+    changed = store.update_block_status(block_id, "removed", reason, actor=actor)
+    still_active = source_ip in store.active_block_sources()
+    pf = enforcer or PFTableEnforcer()
+    result = None if still_active else pf.delete(source_ip)
+    return {
+        "status": "ok" if changed else "not_found",
+        "block_id": block_id,
+        "source_ip": source_ip,
+        "pf_table": pf.table,
+        "pf_removed": result.as_dict() if result else None,
+        "pf_kept_for_other_active_blocks": still_active,
+    }

@@ -7,6 +7,26 @@
 - `interactive`: propose blocks, administrator confirms.
 - `prevent`: automatic response only when policy, confidence, risk, allowlist, and protected-target checks pass.
 
+## Protection Validation
+
+Run a controlled detect-and-block proof from the CLI or configd:
+
+```sh
+pondsec-ndrctl protection validate --json
+configctl pondsecndr protection_validate
+```
+
+The validation emits synthetic port-scan metadata from `203.0.113.250` to the
+local protected service address, runs the normal detection and correlation
+pipeline, creates a response proposal, activates it, and verifies that PF has
+the source in the configured block table. The default table is OPNsense's
+`virusprot`, which is already referenced by an active block rule on the target
+firewall.
+
+Use `--remove-after` during development when the validation block should be
+removed immediately after proof. Without it, the block remains time-limited by
+the generated block entry.
+
 ## Health States
 
 - `healthy`

@@ -75,7 +75,8 @@
             </suricata_eve_path>
         </general>
         <interfaces>
-            <monitored type="TextField">
+            <monitored type="InterfaceField">
+                <Multiple>Y</Multiple>
                 <Required>N</Required>
             </monitored>
             <direction type="OptionField">
@@ -87,16 +88,20 @@
                     <both>both</both>
                 </OptionValues>
             </direction>
-            <internal type="TextField">
+            <internal type="InterfaceField">
+                <Multiple>Y</Multiple>
                 <Required>N</Required>
             </internal>
-            <wan type="TextField">
+            <wan type="InterfaceField">
+                <Multiple>Y</Multiple>
                 <Required>N</Required>
             </wan>
-            <management type="TextField">
+            <management type="InterfaceField">
+                <Multiple>Y</Multiple>
                 <Required>N</Required>
             </management>
-            <excluded_interfaces type="TextField">
+            <excluded_interfaces type="InterfaceField">
+                <Multiple>Y</Multiple>
                 <Required>N</Required>
             </excluded_interfaces>
             <excluded_networks type="TextField">

@@ -1,5 +1,9 @@
 <form>
     <field>
+        <type>header</type>
+        <label>Engine</label>
+    </field>
+    <field>
         <id>pondsecndr.general.enabled</id>
         <label>Enable PondSec NDR</label>
         <type>checkbox</type>
@@ -65,9 +69,13 @@
         <type>text</type>
     </field>
     <field>
+        <type>header</type>
+        <label>Interfaces</label>
+    </field>
+    <field>
         <id>pondsecndr.interfaces.monitored</id>
         <label>Monitored interfaces</label>
-        <type>text</type>
+        <type>select_multiple</type>
     </field>
     <field>
         <id>pondsecndr.interfaces.direction</id>
@@ -77,22 +85,22 @@
     <field>
         <id>pondsecndr.interfaces.internal</id>
         <label>Internal interfaces</label>
-        <type>text</type>
+        <type>select_multiple</type>
     </field>
     <field>
         <id>pondsecndr.interfaces.wan</id>
         <label>WAN interfaces</label>
-        <type>text</type>
+        <type>select_multiple</type>
     </field>
     <field>
         <id>pondsecndr.interfaces.management</id>
         <label>Management interfaces</label>
-        <type>text</type>
+        <type>select_multiple</type>
     </field>
     <field>
         <id>pondsecndr.interfaces.excluded_interfaces</id>
         <label>Excluded interfaces</label>
-        <type>text</type>
+        <type>select_multiple</type>
     </field>
     <field>
         <id>pondsecndr.interfaces.excluded_networks</id>
@@ -103,6 +111,10 @@
         <id>pondsecndr.interfaces.excluded_hosts</id>
         <label>Excluded hosts</label>
         <type>text</type>
+    </field>
+    <field>
+        <type>header</type>
+        <label>Detection</label>
     </field>
     <field>
         <id>pondsecndr.detection.suricata_events</id>
@@ -183,6 +195,10 @@
         <id>pondsecndr.detection.minimum_incident_confidence</id>
         <label>Minimum incident confidence</label>
         <type>text</type>
+    </field>
+    <field>
+        <type>header</type>
+        <label>Response</label>
     </field>
     <field>
         <id>pondsecndr.response.automatic_blocking</id>

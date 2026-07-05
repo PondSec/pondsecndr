@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import pwd
+import subprocess
 import tempfile
 import unittest
 
@@ -18,7 +19,8 @@ from pondsec_ndr.features.aggregator import aggregate_features, shannon_entropy
 from pondsec_ndr.models.cicids_features import CICIDS2017_FEATURES, cicids_vector_from_feature
 from pondsec_ndr.models.manager import model_inventory
 from pondsec_ndr.normalizers.suricata import normalize_eve
-from pondsec_ndr.response.engine import ResponseDenied, is_protected_target, propose_block_for_incident
+from pondsec_ndr.response.engine import ResponseDenied, activate_block, is_protected_target, propose_block_for_incident, remove_block
+from pondsec_ndr.response.pf import PFTableEnforcer
 from pondsec_ndr.service import PondSecService
 from pondsec_ndr.storage.database import EventStore
 
@@ -262,6 +264,46 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(proposal["status"], "proposed")
             self.assertEqual(proposal["automatic"], 0)
             self.assertEqual(store.list_rows("block_entries")[0]["source_ip"], "192.168.10.200")
+
+    def test_response_engine_activates_and_removes_pf_table_blocks(self) -> None:
+        commands: list[list[str]] = []
+
+        def fake_runner(command: list[str]) -> subprocess.CompletedProcess[str]:
+            commands.append(command)
+            if command == ["/sbin/pfctl", "-sr"]:
+                return subprocess.CompletedProcess(command, 0, "block drop in quick from <virusprot> to any", "")
+            return subprocess.CompletedProcess(command, 0, "1/1 addresses processed", "")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            incident = {
+                "incident_id": "incident-pf-test",
+                "title": "PF response test",
+                "status": "open",
+                "risk_score": 90,
+                "severity": 9,
+                "confidence": 0.95,
+                "source_ip": "203.0.113.250",
+                "destination_ip": "192.168.30.3",
+                "category": "reconnaissance",
+                "created_at": "2026-07-05T10:00:00+00:00",
+                "updated_at": "2026-07-05T10:00:00+00:00",
+                "evidence": {},
+                "risk_factors": [{"name": "test", "value": 90}],
+                "detection_ids": [],
+            }
+            store.insert_incidents([incident])
+            config = PondSecConfig(response=ResponseConfig(minimum_risk_score=50, minimum_confidence=50))
+            proposal = propose_block_for_incident(store, config, "incident-pf-test", actor="test", duration_seconds=300)
+            enforcer = PFTableEnforcer(runner=fake_runner)
+            activation = activate_block(store, config, proposal["block_id"], actor="test", enforcer=enforcer)
+            self.assertEqual(activation["status"], "ok")
+            self.assertEqual(store.get_block_entry(proposal["block_id"])["status"], "active")
+            self.assertIn(["/sbin/pfctl", "-t", "virusprot", "-T", "add", "203.0.113.250"], commands)
+            removal = remove_block(store, proposal["block_id"], "test cleanup", actor="test", enforcer=enforcer)
+            self.assertEqual(removal["status"], "ok")
+            self.assertIn(["/sbin/pfctl", "-t", "virusprot", "-T", "delete", "203.0.113.250"], commands)
 
     def test_response_engine_denies_allowlisted_and_protected_targets(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

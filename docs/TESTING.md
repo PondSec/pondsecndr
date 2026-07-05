@@ -17,7 +17,7 @@ The test suite covers:
 - SQLite migration and dashboard queries.
 - External pretrained model catalog and CICIDS2017 feature vector mapping.
 - Verified external model download with SHA-256 checks in a temporary directory.
-- Safe response proposal, allowlist denial, protected target denial, and no-PF-side-effect block workflow.
+- Safe response proposal, allowlist denial, protected target denial, PF table activation/removal, and controlled protection validation.
 - CLI health and configuration validation.
 
 See [VALIDATION.md](VALIDATION.md) for firewall-level validation results.
@@ -45,4 +45,5 @@ Target firewall validation must include:
 - EVE ingestion.
 - Dashboard data.
 - Diagnostics self-test.
+- Controlled detect-and-block validation with `pondsec-ndrctl protection validate --json`.
 - Uninstall and residual path checks.

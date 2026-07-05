@@ -84,7 +84,7 @@ Risk scores are deterministic and explainable. Factors include severity, confide
 
 ### Response Engine
 
-The first response implementation prepares alert and block proposal records only. PF mutation is not enabled by default. Future prevent-mode enforcement will use managed PF tables or OPNsense aliases:
+The response implementation prepares alert and block proposal records first. A confirmed block activation writes the source to the configured PF table after risk, confidence, protected-target, and allowlist checks. Automatic blocking remains disabled by default. Current controlled enforcement uses OPNsense's active `virusprot` block table on the validated firewall:
 
 - `PONDSEC_NDR_BLOCK`
 - `PONDSEC_NDR_QUARANTINE`
@@ -124,11 +124,11 @@ Diagnostics read service health, queue counters, collector offsets, database sta
 - PHP controllers: presentation and OPNsense API glue only.
 - Configd: controlled command boundary.
 - Python backend: collection, normalization, detection, storage, health.
-- Future privileged helper: PF mutations only, with constrained inputs.
+- Privileged response path: PF table mutations only, with constrained inputs.
 
 ## Privileges
 
-The main backend should run as a dedicated unprivileged user. Root-only operations are isolated to install scripts, rc.d setup, and future response helpers. The main service does not require raw packet access.
+The main backend should run as a dedicated unprivileged user. Root-only operations are isolated to install scripts, rc.d setup, configd service actions, and response helpers. The main service does not require raw packet access.
 
 ## Dependencies
 
@@ -151,7 +151,7 @@ No large ML/runtime dependency is added in the first foundation.
 ## Security Risks
 
 - Incorrect interface validation could monitor or exclude the wrong source.
-- Future PF integration could block protected infrastructure if guardrails fail.
+- PF integration could block protected infrastructure if guardrails fail.
 - Model artifact import could become unsafe if checksums and formats are bypassed.
 - Alert floods could exhaust storage if retention limits are misconfigured.
 
@@ -159,6 +159,6 @@ No large ML/runtime dependency is added in the first foundation.
 
 - Final FreeBSD package dependency name for Python 3 on target OPNsense releases.
 - Whether verified external model inference should use an optional PyTorch worker, ONNX conversion, or a compact native runtime on OPNsense.
-- Exact PF table integration strategy for prevent mode.
+- Automatic prevent-mode policy and helper design.
 - Final dashboard charting pattern after testing inside the OPNsense UI.
 - Upstream placement in the OPNsense plugins tree category.

@@ -31,7 +31,7 @@ Controls:
 - No inline packet engine in the first version.
 - Monitor mode by default.
 - Response actions separated from detection.
-- Future PF helper must create time-limited entries only after policy checks.
+- PF helper must create time-limited entries only after policy checks.
 
 ### Unsafe Blocking
 
@@ -121,12 +121,12 @@ Risk: the main backend runs as root and exposes broad filesystem or PF access.
 Controls:
 
 - Main service is designed for a dedicated unprivileged user.
-- Root-only tasks are limited to install, service management, and future response helper.
-- PF mutation is not inside the main detection loop.
+- Root-only tasks are limited to install, service management, configd actions, and response helper execution.
+- PF mutation is not inside the unprivileged main detection loop.
 
 ## Residual Risks
 
 - OPNsense packaging and rc.d behavior require testing on the target firewall.
 - Dynamic interface validation depends on target OPNsense utilities.
 - SQLite performance under sustained high EVE rates must be benchmarked on firewall hardware.
-- Full prevent-mode response must receive a separate security review before enabling by default.
+- Full automatic prevent-mode response must receive a separate security review before enabling by default.

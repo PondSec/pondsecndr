@@ -17,4 +17,9 @@ class DiagnosticsController extends ApiControllerBase
     {
         return $this->runBackendJson('selftest');
     }
+
+    public function protectionValidateAction()
+    {
+        return $this->runBackendJson('protection_validate');
+    }
 }

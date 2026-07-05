@@ -33,7 +33,8 @@ for path in \
     /usr/local/share/pondsec-ndr \
     /usr/local/sbin/pondsec-ndr \
     /usr/local/sbin/pondsec-ndrctl \
-    /usr/local/etc/rc.d/pondsec_ndr; do
+    /usr/local/etc/rc.d/pondsec_ndr \
+    /usr/local/etc/inc/plugins.inc.d/pondsecndr.inc; do
     if [ -e "$path" ]; then
         sudo mkdir -p "$BACKUP$(dirname "$path")"
         sudo cp -Rp "$path" "$BACKUP$path"
@@ -46,7 +47,7 @@ sudo mkdir -p \
     /usr/local/opnsense/mvc/app/views/OPNsense \
     /usr/local/opnsense/service/conf/actions.d \
     /usr/local/opnsense/service/templates/OPNsense \
-    /usr/local/share /usr/local/sbin /usr/local/etc/rc.d
+    /usr/local/share /usr/local/sbin /usr/local/etc/rc.d /usr/local/etc/inc/plugins.inc.d
 
 sudo cp -Rp "$STAGE/src/opnsense/mvc/app/controllers/OPNsense/PondSecNDR" /usr/local/opnsense/mvc/app/controllers/OPNsense/
 sudo cp -Rp "$STAGE/src/opnsense/mvc/app/models/OPNsense/PondSecNDR" /usr/local/opnsense/mvc/app/models/OPNsense/
@@ -57,6 +58,7 @@ sudo rm -rf /usr/local/share/pondsec-ndr
 sudo cp -Rp "$STAGE/src/usr/local/share/pondsec-ndr" /usr/local/share/pondsec-ndr
 sudo cp -p "$STAGE/src/usr/local/sbin/pondsec-ndr" "$STAGE/src/usr/local/sbin/pondsec-ndrctl" /usr/local/sbin/
 sudo cp -p "$STAGE/src/usr/local/etc/rc.d/pondsec_ndr" /usr/local/etc/rc.d/pondsec_ndr
+sudo cp -p "$STAGE/src/usr/local/etc/inc/plugins.inc.d/pondsecndr.inc" /usr/local/etc/inc/plugins.inc.d/pondsecndr.inc
 
 if [ -d /var/log/suricata ]; then
     sudo sh -c "getfacl /var/log/suricata /var/log/suricata/eve.json > \"$BACKUP/suricata-acl-before.txt\" 2>/dev/null || true"
@@ -90,7 +92,8 @@ sudo chown -R root:wheel \
     /usr/local/share/pondsec-ndr \
     /usr/local/sbin/pondsec-ndr \
     /usr/local/sbin/pondsec-ndrctl \
-    /usr/local/etc/rc.d/pondsec_ndr
+    /usr/local/etc/rc.d/pondsec_ndr \
+    /usr/local/etc/inc/plugins.inc.d/pondsecndr.inc
 sudo chmod 755 /usr/local/sbin/pondsec-ndr /usr/local/sbin/pondsec-ndrctl /usr/local/etc/rc.d/pondsec_ndr
 sudo find /usr/local/share/pondsec-ndr -type f -name "*.py" -exec chmod 644 {} +
 sudo chown -R pondsecndr:pondsecndr /var/db/pondsec-ndr /var/log/pondsec-ndr /var/run/pondsec-ndr
