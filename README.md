@@ -98,7 +98,9 @@ python3 -m pondsec_ndr.cli model list --json
 
 The plugin is laid out like an OPNsense plugin and is intended to build as `os-pondsec-ndr` inside the OPNsense plugins tree. The repository is not yet upstreamed into `opnsense/plugins`, so installation on a firewall currently uses a development checkout or package build.
 
-See [docs/OPNSENSE_INSTALLATION.md](docs/OPNSENSE_INSTALLATION.md) and [docs/PACKAGING.md](docs/PACKAGING.md).
+See [docs/OPNSENSE_INSTALLATION.md](docs/OPNSENSE_INSTALLATION.md),
+[docs/PACKAGING.md](docs/PACKAGING.md), and
+[docs/PLUGIN_PUBLICATION.md](docs/PLUGIN_PUBLICATION.md).
 
 Firewall-level validation notes are tracked in [docs/VALIDATION.md](docs/VALIDATION.md).
 

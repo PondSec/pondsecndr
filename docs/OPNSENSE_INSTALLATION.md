@@ -8,6 +8,21 @@ On a development OPNsense host, install the plugin package built from the OPNsen
 pkg install work/pkg/os-pondsec-ndr-*.txz
 ```
 
+For local development without a package build, this repository also contains
+`tools/deploy_opnsense_dev.sh`, which copies the plugin files to a target
+firewall and restarts the required OPNsense services. That path is useful for
+testing, but it is not the same as public plugin distribution.
+
+## Public Plugin Availability
+
+PondSec NDR will appear under **System: Firmware: Plugins** for normal users
+only after `os-pondsec-ndr` is available from a configured OPNsense package
+repository.
+
+The official path is upstreaming into the `opnsense/plugins` tree and passing
+review. A private/community path is also possible by publishing a signed pkg
+repository and configuring target firewalls to trust it.
+
 Restart configd after installing or updating configd actions:
 
 ```sh
