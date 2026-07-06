@@ -336,6 +336,7 @@ Post-deploy firewall proof:
 | Development deploy completed | passed |
 | New service PID | `50366` |
 | `sudo service pondsec_ndr onestatus` | `pondsec_ndr is running as pid 50366.` |
+| OPNsense service inventory | `configctl service list` includes `PondSec NDR`, `pondsec_ndr`, running as PID `50366` |
 | `configctl pondsecndr status` | `healthy` |
 | `last_collector_errors` | `[]` |
 | Queue size | `0` |
@@ -344,6 +345,7 @@ Post-deploy firewall proof:
 | Model checksum | `51bec93ec2c8ac9a480fcef8694852792a8869a817b07d1cef11a2f1fd62c45b` |
 | Synthetic AI validation vector inference | `56.253 ms`, `Bot`, attack probability `0.995789` |
 | Learning mode | active, `14` days remaining |
+| Dashboard API | `healthy`, `operating_mode=monitor`, `events_last_24h=26147`, `queue_utilization=0` |
 
 Important interpretation:
 
