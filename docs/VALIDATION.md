@@ -304,3 +304,51 @@ System service registration proof after the production deploy:
 - Status message: `pondsec_ndr is running as pid 67494.`
 - This confirms the plugin service is visible to the OPNsense service inventory
   used by **System: Diagnostics: Services**.
+
+## 2026-07-06: Filterlog Permission Regression Guard Deploy
+
+Target firewall:
+
+- Host: `HWFirewall01.internal`
+- Address: `192.168.99.2`
+- Deployment backup: `/root/pondsec-ndr-backup-20260706113106`
+- Runtime commit deployed: `3fbed21`
+
+Reason:
+
+- Historical service logs contained repeated `PermissionError` entries for
+  `/var/log/filter/latest.log` when the daemon tried to check the path before
+  the filterlog collector could handle permission failures.
+- The service loop now always delegates the filterlog read attempt to
+  `FilterLogCollector`, which records unreadable or missing filter logs as
+  collector status instead of throwing a service-loop exception.
+
+Local regression result before deploy:
+
+- `46` tests passed with `PYTHONPATH=src/usr/local/share/pondsec-ndr python3 -m unittest discover -s tests -v`.
+- Python compile check passed for backend modules and tests.
+- `git diff --check` passed.
+
+Post-deploy firewall proof:
+
+| Check | Result |
+|---|---:|
+| Development deploy completed | passed |
+| New service PID | `50366` |
+| `sudo service pondsec_ndr onestatus` | `pondsec_ndr is running as pid 50366.` |
+| `configctl pondsecndr status` | `healthy` |
+| `last_collector_errors` | `[]` |
+| Queue size | `0` |
+| RAM usage | about `33 MB` |
+| Model self-test | passed |
+| Model checksum | `51bec93ec2c8ac9a480fcef8694852792a8869a817b07d1cef11a2f1fd62c45b` |
+| Synthetic AI validation vector inference | `56.253 ms`, `Bot`, attack probability `0.995789` |
+| Learning mode | active, `14` days remaining |
+
+Important interpretation:
+
+- The model self-test remains a synthetic AI validation vector, not a claim of
+  live detection quality.
+- The service is healthy and the AI/baseline detectors remain suppressed by
+  Learning Mode until the baseline phase completes or an administrator accepts
+  the early-activation false-positive risk.
