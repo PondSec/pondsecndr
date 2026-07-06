@@ -8,11 +8,12 @@ import sqlite3
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import pondsec_ndr.diagnostics as diagnostics_mod
 from pondsec_ndr.cli import _incident_analysis, main as cli_main
 from pondsec_ndr.collectors.eve import EveCollector
-from pondsec_ndr.collectors.filterlog import FilterLogCollector, normalize_filterlog_line
+from pondsec_ndr.collectors.filterlog import FilterLogCollector, FilterLogStats, normalize_filterlog_line
 from pondsec_ndr.config import DetectionConfig, PondSecConfig, ResponseConfig
 from pondsec_ndr.correlation import correlate_detections
 from pondsec_ndr.detection.detectors import BeaconingDetector, DNSTunnelingDetector, PortScanDetector, SuricataAlertAdapter
@@ -148,6 +149,33 @@ class BackendTests(unittest.TestCase):
             events, stats = FilterLogCollector(log, offset).read_once(max_lines=100)
             self.assertEqual(len(events), 1)
             self.assertEqual(stats.accepted_events, 1)
+
+    def test_service_run_once_tolerates_unreadable_filterlog(self) -> None:
+        class DeniedFilterLogCollector:
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                pass
+
+            def read_once(self, max_lines: int = 1000) -> tuple[list[dict], FilterLogStats]:
+                del max_lines
+                return [], FilterLogStats(last_error="filter log is not readable by pondsec-ndr: /var/log/filter/latest.log")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            eve = root / "eve.json"
+            eve.write_text("", encoding="utf-8")
+            config = PondSecConfig(
+                enabled=True,
+                suricata_eve_path=str(eve),
+                data_dir=root / "data",
+                log_dir=root / "log",
+                run_dir=root / "run",
+                detection=DetectionConfig(machine_learning=False),
+            )
+            service = PondSecService(config)
+            with patch("pondsec_ndr.service.FilterLogCollector", DeniedFilterLogCollector):
+                result = service.run_once(max_lines=100)
+            self.assertEqual(result["status"], "degraded")
+            self.assertIn("filter log is not readable", result["collector"]["opnsense_filterlog"]["last_error"])
 
     def test_filterlog_short_lines_are_ignored_without_parser_error(self) -> None:
         line = (

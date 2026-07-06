@@ -76,16 +76,13 @@ class PondSecService:
             queue_limit=collector_queue_limit,
         )
         events, stats = collector.read_once(max_lines=max_lines)
-        filter_stats = None
-        filterlog_path = Path("/var/log/filter/latest.log")
-        if filterlog_path.exists():
-            filter_collector = FilterLogCollector(
-                filterlog_path,
-                self.config.data_dir / "collector_offsets" / "opnsense_filterlog.json",
-                queue_limit=collector_queue_limit,
-            )
-            filter_events, filter_stats = filter_collector.read_once(max_lines=max_lines)
-            events.extend(filter_events)
+        filter_collector = FilterLogCollector(
+            Path("/var/log/filter/latest.log"),
+            self.config.data_dir / "collector_offsets" / "opnsense_filterlog.json",
+            queue_limit=collector_queue_limit,
+        )
+        filter_events, filter_stats = filter_collector.read_once(max_lines=max_lines)
+        events.extend(filter_events)
         events = self._filter_events(events)
         events, backpressure_drops = self._apply_queue_backpressure(events)
         parser_errors = stats.parser_errors + (filter_stats.parser_errors if filter_stats else 0)
