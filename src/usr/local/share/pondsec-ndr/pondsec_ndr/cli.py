@@ -24,7 +24,8 @@ from pondsec_ndr.features.aggregator import aggregate_features
 from pondsec_ndr.models.manager import ModelError, download_model_artifacts, model_inventory, write_runtime_selftest
 from pondsec_ndr.models.runtime import MODEL_ID, SYNTHETIC_AI_VALIDATION_VECTOR, ModelRuntimeUnavailable, SaidimnIdsCnnRuntime
 from pondsec_ndr.privacy import export_privacy_bundle, privacy_status, purge_telemetry_before
-from pondsec_ndr.response.engine import ResponseDenied, activate_block, propose_block_for_incident, propose_manual_block, remove_block, validate_ip_or_network
+from pondsec_ndr.intel.cve import CveEnrichmentOptions, enrich_case_cves
+from pondsec_ndr.response.engine import ResponseDenied, activate_block, propose_block_for_incident, propose_manual_block, release_incident_response, remove_block, validate_ip_or_network
 from pondsec_ndr.response.pf import PFTableEnforcer
 from pondsec_ndr.sensor import harden_sensor, sensor_status
 from pondsec_ndr.service import PondSecService
@@ -78,6 +79,17 @@ def main(argv: list[str] | None = None) -> int:
     reopen_incident.add_argument("incident_id")
     false_positive = incidents_sub.add_parser("false-positive")
     false_positive.add_argument("incident_id")
+    release_incident = incidents_sub.add_parser("release")
+    release_incident.add_argument("incident_id")
+    merge_incident = incidents_sub.add_parser("merge")
+    merge_incident.add_argument("primary_id")
+    merge_incident.add_argument("secondary_id")
+    link_incident = incidents_sub.add_parser("link")
+    link_incident.add_argument("primary_id")
+    link_incident.add_argument("related_id")
+    keep_separate = incidents_sub.add_parser("keep-separate")
+    keep_separate.add_argument("primary_id")
+    keep_separate.add_argument("related_id")
 
     allowlist = sub.add_parser("allowlist")
     allowlist_sub = allowlist.add_subparsers(dest="section_command", required=True)
@@ -170,7 +182,7 @@ def main(argv: list[str] | None = None) -> int:
     args.json = as_json or args.json
     config = load_config()
     if args.command == "replay":
-        result, exit_code = replay_file(Path(args.eve_file), args.max_lines), 0
+        result, exit_code = replay_file(Path(args.eve_file), args.max_lines, config), 0
         emit(result, args.json)
         return exit_code
     if args.command == "config" and args.config_command == "validate":
@@ -255,7 +267,20 @@ def dispatch(args: argparse.Namespace, config: Any, store: EventStore) -> tuple[
             response_block = store.existing_response_block(incident.get("incident_id"), incident.get("source_ip"))
             if response_block:
                 incident["response_state"] = response_block
-            return {"status": "ok", "item": incident, "analysis": _incident_analysis(incident, response_block)}, 0
+            incident["response_blocks"] = store.active_response_blocks_for_incident(incident.get("incident_id"))
+            return {"status": "ok", "item": incident, "analysis": _incident_analysis(incident, response_block, store=store, config=config)}, 0
+        if args.section_command == "release":
+            payload = release_incident_response(store, args.incident_id, actor="cli")
+            return payload, 0 if payload["status"] in {"ok", "not_found"} else 1
+        if args.section_command == "merge":
+            payload = store.merge_incidents(args.primary_id, args.secondary_id, actor="cli")
+            return payload, 0 if payload["status"] == "ok" else 1
+        if args.section_command == "link":
+            store.audit_case_action("link", args.primary_id, {"related_incident_id": args.related_id}, actor="cli")
+            return {"status": "ok", "primary_id": args.primary_id, "related_incident_id": args.related_id}, 0
+        if args.section_command == "keep-separate":
+            store.audit_case_action("keep_separate", args.primary_id, {"related_incident_id": args.related_id}, actor="cli")
+            return {"status": "ok", "primary_id": args.primary_id, "related_incident_id": args.related_id}, 0
         status_map = {"close": "closed", "reopen": "open", "false-positive": "false_positive"}
         changed = store.update_incident_status(args.incident_id, status_map[args.section_command], actor="cli")
         return {"status": "ok" if changed else "not_found", "incident_id": args.incident_id}, 0 if changed else 1
@@ -272,7 +297,7 @@ def dispatch(args: argparse.Namespace, config: Any, store: EventStore) -> tuple[
             return {"status": "ok" if changed else "not_found", "allowlist_id": args.allowlist_id}, 0 if changed else 1
     if command == "blocklist":
         if args.section_command == "list":
-            return {"items": _decode_rows(store.list_rows("block_entries"))}, 0
+            return _decode_blocklist_view(store.blocklist_view()), 0
         if args.section_command == "add":
             proposal = propose_manual_block(store, config, args.value, args.reason or None, actor="cli", duration_seconds=args.duration_seconds)
             return {"status": "ok", "item": proposal, "pf_side_effects": "none_until_activated"}, 0
@@ -352,7 +377,7 @@ def dispatch(args: argparse.Namespace, config: Any, store: EventStore) -> tuple[
     raise ValueError(f"unsupported command: {command}")
 
 
-def replay_file(eve_file: Path, max_lines: int) -> dict[str, Any]:
+def replay_file(eve_file: Path, max_lines: int, config: Any) -> dict[str, Any]:
     offset = eve_file.parent / f".{eve_file.name}.pondsec-replay-offset"
     offset.unlink(missing_ok=True)
     collector = EveCollector(eve_file, offset, queue_limit=max_lines)
@@ -361,7 +386,7 @@ def replay_file(eve_file: Path, max_lines: int) -> dict[str, Any]:
     detections = []
     for detector in default_detectors():
         detections.extend(detector.detect(events, features))
-    incidents = correlate_detections(detections)
+    incidents = correlate_detections(detections, window_seconds=config.detection.correlation_window_minutes * 60)
     offset.unlink(missing_ok=True)
     return {
         "status": "ok",
@@ -393,7 +418,7 @@ def validate_protection_path(
     detections = []
     for detector in default_detectors():
         detections.extend(detector.detect(events, features))
-    incidents = correlate_detections(detections)
+    incidents = correlate_detections(detections, window_seconds=config.detection.correlation_window_minutes * 60)
     for incident in incidents:
         incident["title"] = "[PondSec validation] " + incident["title"]
         incident["evidence"]["validation"] = True
@@ -543,7 +568,7 @@ def validate_model_flow(
     detections = []
     for detector in default_detectors():
         detections.extend(detector.detect(events, features))
-    incidents = correlate_detections(detections)
+    incidents = correlate_detections(detections, window_seconds=config.detection.correlation_window_minutes * 60)
     for incident in incidents:
         incident["title"] = f"[PondSec AI validation:{kind}] {incident['title']}"
         incident["evidence"]["validation"] = {
@@ -602,7 +627,7 @@ def _run_validation_scenario(
     detections = []
     for detector in default_detectors():
         detections.extend(detector.detect(events, features))
-    incidents = correlate_detections(detections)
+    incidents = correlate_detections(detections, window_seconds=config.detection.correlation_window_minutes * 60)
     for incident in incidents:
         incident["title"] = f"[PondSec validation:{scenario['scenario']}] {incident['title']}"
         incident["evidence"]["validation"] = {
@@ -944,13 +969,20 @@ GRAPH_STATUS_RANK = {
 }
 
 
-def _incident_analysis(incident: dict[str, Any], response_block: dict[str, Any] | None = None) -> dict[str, Any]:
+def _incident_analysis(
+    incident: dict[str, Any],
+    response_block: dict[str, Any] | None = None,
+    store: EventStore | None = None,
+    config: Any | None = None,
+) -> dict[str, Any]:
     evidence = incident.get("evidence") if isinstance(incident.get("evidence"), dict) else {}
     detections = evidence.get("detections", []) if isinstance(evidence, dict) else []
     if not isinstance(detections, list):
         detections = []
+    entity_roles = evidence.get("entity_roles", {}) if isinstance(evidence, dict) and isinstance(evidence.get("entity_roles"), dict) else {}
     targets = incident.get("affected_targets") or []
     response_block = response_block or incident.get("response_state")
+    response_blocks = incident.get("response_blocks") if isinstance(incident.get("response_blocks"), list) else []
     timeline = []
     admin_guidance = []
     notable_features = []
@@ -988,14 +1020,31 @@ def _incident_analysis(incident: dict[str, Any], response_block: dict[str, Any] 
             "title": "Response action",
             "confidence": response_block.get("confidence"),
         })
-    graph = _incident_attack_graph(incident, detections, targets, response_block)
+    threat_intel = _case_threat_intelligence(detections, config)
+    if threat_intel.get("risk_modifier"):
+        incident_risk_factors = list(incident.get("risk_factors", []))
+        incident_risk_factors.append({
+            "name": "cve_intel_priority",
+            "value": threat_intel["risk_modifier"],
+            "source": "local CVE/KEV/EPSS enrichment",
+            "note": "Prioritization only; not used as sole blocking evidence.",
+        })
+    else:
+        incident_risk_factors = incident.get("risk_factors", [])
+    graph = _incident_attack_graph(incident, detections, targets, response_block, entity_roles)
     visual_timeline = _group_timeline(timeline)
-    summary = _case_summary(incident, targets, admin_guidance, response_block)
+    summary = _case_summary(incident, targets, admin_guidance, response_block, entity_roles, response_blocks, threat_intel)
+    related_cases = _related_cases(store, incident, entity_roles) if store else []
     return {
         "case_summary": summary,
+        "case_narrative": summary.get("narrative", {}),
+        "entity_roles": entity_roles,
+        "related_cases": related_cases,
+        "threat_intelligence": threat_intel,
         "host_story": {
             "source_ip": incident.get("source_ip"),
             "destination_ip": incident.get("destination_ip"),
+            "entity_roles": entity_roles,
             "affected_targets": targets,
             "attack_stage": incident.get("attack_stage"),
             "category": incident.get("category"),
@@ -1011,7 +1060,7 @@ def _incident_analysis(incident: dict[str, Any], response_block: dict[str, Any] 
         "visual_timeline": visual_timeline,
         "notable_features": notable_features[:20],
         "administrator_guidance": admin_guidance[:12],
-        "risk_factors": incident.get("risk_factors", []),
+        "risk_factors": incident_risk_factors,
         "correlation": evidence.get("correlation", {}),
     }
 
@@ -1047,7 +1096,7 @@ def _promote_stage(stages: dict[str, dict[str, Any]], stage: str, status: str, d
     if current["status"] == "confirmed":
         current["certainty_note"] = "Confirmed by a strong detector or explicit security action."
     elif current["status"] == "prevented":
-        current["certainty_note"] = "A response action is active or was applied for this case."
+        current["certainty_note"] = "Traffic was blocked or a response action is active; this does not prove successful compromise."
     elif current["status"] == "observed":
         current["certainty_note"] = "Observed directly in telemetry, but not marked as exploit-confirmed."
     elif current["status"] == "suspected":
@@ -1099,10 +1148,12 @@ def _certainty_for_detection(detection: dict[str, Any]) -> str:
     category = str(detection.get("category") or "").lower()
     confidence = float(detection.get("confidence") or 0)
     action = str(evidence.get("suricata_action") or evidence.get("action") or "").lower()
+    if evidence.get("exploit_success") or evidence.get("compromise_confirmed"):
+        return "confirmed"
     if action in {"blocked", "drop", "dropped"} or "suricata_drop" in detector_id:
-        return "confirmed"
-    if category == "signature" and confidence >= 0.9:
-        return "confirmed"
+        return "prevented"
+    if category == "signature":
+        return "observed" if confidence >= 0.6 else "suspected"
     if confidence >= 0.75:
         return "observed"
     return "suspected"
@@ -1120,15 +1171,20 @@ def _incident_attack_graph(
     detections: list[dict[str, Any]],
     targets: list[Any],
     response_block: dict[str, Any] | None,
+    entity_roles: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     nodes: dict[str, dict[str, Any]] = {}
     edges: list[dict[str, Any]] = []
+    entity_roles = entity_roles or {}
     source_ip = str(incident.get("source_ip") or "unknown-source")
-    source_id = _add_graph_node(nodes, source_ip, "source_host", "observed", incident.get("risk_score"), incident.get("confidence"))
+    source_id = _add_graph_node(nodes, source_ip, _role_node_type(source_ip, entity_roles, "source_host"), "observed", incident.get("risk_score"), incident.get("confidence"))
     source_network = _network_label(source_ip)
     if source_network:
         _add_graph_node(nodes, source_network, "internal_network", "inferred", None, None)
     visible_targets = _visible_targets(incident, detections, targets)
+    for role, value in entity_roles.items():
+        if isinstance(value, str):
+            _add_graph_node(nodes, value, _role_node_type(value, entity_roles, role), "correlated", incident.get("risk_score"), incident.get("confidence"))
 
     for index, detection in enumerate(detections[:40]):
         if not isinstance(detection, dict):
@@ -1137,15 +1193,17 @@ def _incident_attack_graph(
         edge_kind = _edge_kind_for_stage(stage, detection.get("category"))
         certainty = _certainty_for_detection(detection)
         graph_status = _graph_status_for_detection(detection, incident)
+        source = str(detection.get("source_ip") or source_ip)
+        detection_source_id = _add_graph_node(nodes, source, _role_node_type(source, entity_roles, "source_host"), graph_status, detection.get("severity"), detection.get("confidence"))
         destination = detection.get("destination_ip") or incident.get("destination_ip")
         if not destination:
             destination = "Host baseline"
         destination = _target_group(str(destination), visible_targets)
-        node_type = _node_type(destination)
+        node_type = _role_node_type(destination, entity_roles, _node_type(destination))
         target_id = _add_graph_node(nodes, destination, node_type, graph_status if destination != "Host baseline" else "inferred", detection.get("severity"), detection.get("confidence"))
         edge = {
             "id": f"edge-{index}-{edge_kind}",
-            "source": source_id,
+            "source": detection_source_id,
             "target": target_id,
             "kind": edge_kind,
             "status": graph_status if destination != "Host baseline" else "inferred",
@@ -1165,9 +1223,11 @@ def _incident_attack_graph(
 
     if response_block:
         response_id = _add_graph_node(nodes, f"PF {response_block.get('status', 'response')}", "response", "confirmed", response_block.get("risk_score"), response_block.get("confidence"))
+        response_target = str(response_block.get("source_ip") or entity_roles.get("response_target") or source_ip)
+        response_source_id = _add_graph_node(nodes, response_target, _role_node_type(response_target, entity_roles, "response_target"), "confirmed", response_block.get("risk_score"), response_block.get("confidence"))
         edges.append({
             "id": "edge-response",
-            "source": source_id,
+            "source": response_source_id,
             "target": response_id,
             "kind": "response",
             "status": "confirmed" if response_block.get("status") == "active" else "observed",
@@ -1179,6 +1239,7 @@ def _incident_attack_graph(
             "confidence": response_block.get("confidence"),
             "risk_contribution": response_block.get("risk_score"),
             "detection_ids": [],
+            "count": 1,
             "title": f"PF block {response_block.get('status')}",
             "summary": response_block.get("reason"),
             "evidence": response_block,
@@ -1186,7 +1247,7 @@ def _incident_attack_graph(
 
     return {
         "nodes": list(nodes.values())[:24],
-        "edges": edges[:60],
+        "edges": _dedupe_graph_edges(edges)[:60],
         "legend": {
             "observed": "Seen directly in firewall or Suricata telemetry.",
             "inferred": "Derived from host, subnet, or baseline context.",
@@ -1260,6 +1321,41 @@ def _node_type(value: str) -> str:
     return "target_host" if address.is_private else "external_target"
 
 
+def _role_node_type(value: str, roles: dict[str, Any], fallback: str) -> str:
+    if value == roles.get("external_actor"):
+        return "external_actor"
+    if value == roles.get("victim"):
+        return "victim_host"
+    if value == roles.get("pivot_host"):
+        return "pivot_host"
+    if value == roles.get("affected_host"):
+        return "affected_host"
+    if value == roles.get("response_target"):
+        return "response_target"
+    return fallback
+
+
+def _dedupe_graph_edges(edges: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    for edge in edges:
+        key = (str(edge.get("source")), str(edge.get("target")), str(edge.get("kind")), str(edge.get("stage")))
+        if key not in grouped:
+            item = dict(edge)
+            item["count"] = int(item.get("count") or 1)
+            grouped[key] = item
+            continue
+        current = grouped[key]
+        current["count"] = int(current.get("count") or 1) + 1
+        current["risk_contribution"] = max(int(current.get("risk_contribution") or 0), int(edge.get("risk_contribution") or 0))
+        current["confidence"] = max(float(current.get("confidence") or 0), float(edge.get("confidence") or 0))
+        current["detection_ids"] = list(dict.fromkeys((current.get("detection_ids") or []) + (edge.get("detection_ids") or [])))
+        current_ports = current.get("ports") if isinstance(current.get("ports"), list) else []
+        edge_ports = edge.get("ports") if isinstance(edge.get("ports"), list) else []
+        current["ports"] = list(dict.fromkeys(current_ports + edge_ports))[:12]
+        current["last_seen"] = edge.get("timestamp") or current.get("last_seen") or current.get("timestamp")
+    return list(grouped.values())
+
+
 def _visible_targets(incident: dict[str, Any], detections: list[dict[str, Any]], targets: list[Any]) -> dict[str, Any]:
     all_targets: list[str] = []
     for target in list(targets or []) + [incident.get("destination_ip")]:
@@ -1326,16 +1422,29 @@ def _case_summary(
     targets: list[Any],
     admin_guidance: list[str],
     response_block: dict[str, Any] | None,
+    entity_roles: dict[str, Any] | None = None,
+    response_blocks: list[dict[str, Any]] | None = None,
+    threat_intel: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    entity_roles = entity_roles or {}
+    response_blocks = response_blocks or []
+    threat_intel = threat_intel or {}
     source_ip = incident.get("source_ip")
     destination = incident.get("destination_ip")
+    affected_host = entity_roles.get("affected_host") or entity_roles.get("victim") or source_ip
     source_private = False
-    if source_ip:
+    if affected_host:
         try:
-            source_private = ipaddress.ip_address(str(source_ip)).is_private
+            source_private = ipaddress.ip_address(str(affected_host)).is_private
         except ValueError:
             source_private = False
-    if source_private:
+    if entity_roles.get("external_actor"):
+        entry_source = {
+            "value": entity_roles["external_actor"],
+            "certainty": "observed",
+            "reason": "The source participated in inbound detections against an internal target.",
+        }
+    elif source_private:
         entry_source = {
             "value": "Internal host behavior observed",
             "certainty": "inferred",
@@ -1352,9 +1461,14 @@ def _case_summary(
         "block_id": response_block.get("block_id") if response_block else None,
         "automatic": bool(response_block.get("automatic")) if response_block else False,
         "isolation": "active" if response_block and response_block.get("status") == "active" and source_private else "none",
+        "active_blocks": response_blocks,
+        "release_available": any(item.get("status") in {"active", "proposed"} for item in response_blocks),
     }
+    narrative = _case_narrative(incident, entity_roles, response, threat_intel)
     return {
-        "affected_host": source_ip,
+        "affected_host": affected_host,
+        "entity_roles": entity_roles,
+        "narrative": narrative,
         "possible_entry_source": entry_source,
         "primary_destination": destination,
         "targets": targets,
@@ -1363,6 +1477,7 @@ def _case_summary(
         "risk_score": incident.get("risk_score"),
         "confidence": incident.get("confidence"),
         "response": response,
+        "threat_intel_risk_modifier": threat_intel.get("risk_modifier", 0),
         "recommended_actions": admin_guidance[:6],
         "certainty": {
             "confirmed": ["Stored incident fields", "Recorded detection metadata"],
@@ -1371,6 +1486,117 @@ def _case_summary(
             "not_claimed": ["Successful compromise", "confirmed exploit execution", "confirmed zero-day root cause"],
         },
     }
+
+
+def _case_narrative(
+    incident: dict[str, Any],
+    roles: dict[str, Any],
+    response: dict[str, Any],
+    threat_intel: dict[str, Any],
+) -> dict[str, Any]:
+    source = roles.get("external_actor") or roles.get("threat_source") or incident.get("source_ip") or "unknown source"
+    victim = roles.get("victim") or roles.get("affected_host") or incident.get("destination_ip") or "unknown target"
+    categories = []
+    evidence = incident.get("evidence") if isinstance(incident.get("evidence"), dict) else {}
+    correlation = evidence.get("correlation") if isinstance(evidence, dict) else {}
+    if isinstance(correlation, dict):
+        categories = correlation.get("categories") or []
+    if not categories and incident.get("category"):
+        categories = [incident["category"]]
+    response_text = "No active PondSec block or isolation is recorded for this case."
+    if response.get("status") in {"active", "proposed"}:
+        action = "active" if response.get("status") == "active" else "proposed"
+        response_text = f"A PondSec response is {action} for response target {roles.get('response_target') or source}."
+    cve_count = len((threat_intel or {}).get("cves", []))
+    intel_text = ""
+    if cve_count:
+        intel_text = f" Local CVE context found {cve_count} referenced CVE(s); this prioritizes review but does not prove vulnerability or exploitation success."
+    return {
+        "what_happened": (
+            f"PondSec correlated {incident.get('detection_count', 0)} detection(s) from {source} involving {victim}"
+            f" across {', '.join(str(item) for item in categories) or 'recorded telemetry'}."
+            f" {response_text}{intel_text}"
+        ),
+        "confirmed": [
+            "Detection timestamps and stored incident metadata",
+            "Observed source/destination relationships from local telemetry",
+        ],
+        "not_confirmed": [
+            "Successful initial access",
+            "Successful exploit execution",
+            "Confirmed vulnerable product/version unless version-matched CVE evidence is shown",
+        ],
+    }
+
+
+def _case_threat_intelligence(detections: list[dict[str, Any]], config: Any | None) -> dict[str, Any]:
+    if not config or not getattr(config, "threat_intel", None) or not config.threat_intel.cve_enrichment:
+        return {"enabled": False, "cves": [], "risk_modifier": 0}
+    return enrich_case_cves(
+        detections,
+        config.data_dir,
+        CveEnrichmentOptions(
+            cache_ttl_hours=config.threat_intel.cache_ttl_hours,
+            external_lookup=config.threat_intel.external_lookup,
+        ),
+    )
+
+
+def _related_cases(store: EventStore | None, incident: dict[str, Any], roles: dict[str, Any]) -> list[dict[str, Any]]:
+    if store is None:
+        return []
+    current_id = incident.get("incident_id")
+    current_entities = _case_entities(incident, roles)
+    first_seen = _parse_analysis_time(incident.get("first_seen") or incident.get("created_at"))
+    related = []
+    for row in store.list_rows("incidents", limit=200):
+        if row.get("incident_id") == current_id:
+            continue
+        other = _decode_rows([row])[0]
+        other_evidence = other.get("evidence", {}) if isinstance(other.get("evidence"), dict) else {}
+        other_roles = other_evidence.get("entity_roles", {}) if isinstance(other_evidence, dict) else {}
+        other_entities = _case_entities(other, other_roles)
+        reasons = []
+        if incident.get("source_ip") and incident.get("source_ip") == other.get("source_ip"):
+            reasons.append("same source")
+        shared = sorted(current_entities & other_entities)
+        if shared:
+            reasons.append("shared entity " + ", ".join(shared[:3]))
+        other_time = _parse_analysis_time(other.get("first_seen") or other.get("created_at"))
+        if first_seen and other_time and abs((first_seen - other_time).total_seconds()) <= 1800:
+            reasons.append("close time window")
+        if not reasons:
+            continue
+        related.append({
+            "incident_id": other.get("incident_id"),
+            "title": other.get("title"),
+            "status": other.get("status"),
+            "risk_score": other.get("risk_score"),
+            "category": other.get("category"),
+            "reasons": reasons,
+            "actions": ["merge", "link_as_related", "keep_separate"],
+        })
+    return related[:8]
+
+
+def _case_entities(incident: dict[str, Any], roles: dict[str, Any]) -> set[str]:
+    entities = {str(incident[key]) for key in ("source_ip", "destination_ip") if incident.get(key)}
+    entities.update(str(target) for target in incident.get("affected_targets", []) if target)
+    if isinstance(roles, dict):
+        entities.update(str(value) for value in roles.values() if value)
+    return entities
+
+
+def _parse_analysis_time(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _decode_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1386,6 +1612,13 @@ def _decode_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 del item[key]
         decoded.append(item)
     return decoded
+
+
+def _decode_blocklist_view(payload: dict[str, Any]) -> dict[str, Any]:
+    result = dict(payload)
+    result["items"] = _decode_rows(result.get("items", []))
+    result["history"] = _decode_rows(result.get("history", []))
+    return result
 
 
 def emit(result: dict[str, Any], as_json: bool) -> None:

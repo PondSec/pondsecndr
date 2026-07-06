@@ -16,7 +16,7 @@ from uuid import uuid4
 
 
 SCHEMA_VERSION = 2
-INCIDENT_DEDUPE_WINDOW_SECONDS = 3600
+INCIDENT_DEDUPE_WINDOW_SECONDS = 1800
 OPEN_INCIDENT_STATUSES = ("open",)
 ARCHIVED_INCIDENT_STATUSES = ("closed", "false_positive", "archived")
 
@@ -68,6 +68,7 @@ def _attack_stage(category: str | None) -> str:
         "machine_learning": "classification",
         "signature": "signature",
         "anomaly": "host_observation",
+        "multi_stage": "multi_stage",
     }.get(str(category or ""), "unknown")
 
 
@@ -794,8 +795,16 @@ class EventStore:
     @staticmethod
     def _incident_targets(incident: dict[str, Any], evidence: dict[str, Any]) -> list[str]:
         targets = set()
+        for target in incident.get("affected_targets") or []:
+            if target:
+                targets.add(str(target))
         if incident.get("destination_ip"):
             targets.add(str(incident["destination_ip"]))
+        roles = evidence.get("entity_roles", {}) if isinstance(evidence, dict) else {}
+        if isinstance(roles, dict):
+            for key in ("victim", "affected_host", "pivot_host", "destination"):
+                if roles.get(key):
+                    targets.add(str(roles[key]))
         detections = evidence.get("detections", [])
         if isinstance(detections, list):
             for detection in detections:
@@ -812,19 +821,38 @@ class EventStore:
             SELECT *
             FROM incidents
             WHERE status = 'open'
-              AND source_ip IS ?
-              AND category IS ?
               AND COALESCE(validation_tag, '') = COALESCE(?, '')
               AND COALESCE(last_seen, updated_at) >= ?
             ORDER BY COALESCE(last_seen, updated_at) DESC
-            LIMIT 20
+            LIMIT 50
             """,
-            (incident.get("source_ip"), incident.get("category"), incident.get("validation_tag"), cutoff),
+            (incident.get("validation_tag"), cutoff),
         ).fetchall()
         for row in rows:
-            if self._incident_target_matches(row, incident):
+            if self._incident_related(row, incident):
                 return row
         return None
+
+    @staticmethod
+    def _incident_related(row: sqlite3.Row, incident: dict[str, Any]) -> bool:
+        if row["source_ip"] and incident.get("source_ip") and row["source_ip"] == incident.get("source_ip"):
+            return EventStore._incident_target_matches(row, incident)
+        try:
+            existing_evidence = json.loads(row["evidence_json"] or "{}")
+        except json.JSONDecodeError:
+            existing_evidence = {}
+        existing_roles = existing_evidence.get("entity_roles", {}) if isinstance(existing_evidence, dict) else {}
+        incoming_roles = (incident.get("evidence") or {}).get("entity_roles", {}) if isinstance(incident.get("evidence"), dict) else {}
+        existing_entities = EventStore._role_entities(row, existing_roles)
+        incoming_entities = EventStore._role_entities_dict(incident, incoming_roles)
+        if incident.get("source_ip") and incident.get("source_ip") in existing_entities:
+            return True
+        if row["source_ip"] and row["source_ip"] in incoming_entities:
+            return True
+        shared = existing_entities & incoming_entities
+        if shared:
+            return True
+        return False
 
     @staticmethod
     def _incident_target_matches(row: sqlite3.Row, incident: dict[str, Any]) -> bool:
@@ -840,6 +868,25 @@ class EventStore:
             row_targets = []
         target_keys = {_target_network_key(str(target), row["category"]) for target in row_targets}
         return incoming in target_keys or candidate in {_target_network_key(target, incident["category"]) for target in incident["affected_targets"]}
+
+    @staticmethod
+    def _role_entities(row: sqlite3.Row, roles: dict[str, Any]) -> set[str]:
+        entities = {str(row[key]) for key in ("source_ip", "destination_ip") if row[key]}
+        try:
+            entities.update(str(target) for target in json.loads(row["affected_targets_json"] or "[]") if target)
+        except json.JSONDecodeError:
+            pass
+        if isinstance(roles, dict):
+            entities.update(str(value) for value in roles.values() if value)
+        return entities
+
+    @staticmethod
+    def _role_entities_dict(incident: dict[str, Any], roles: dict[str, Any]) -> set[str]:
+        entities = {str(incident[key]) for key in ("source_ip", "destination_ip") if incident.get(key)}
+        entities.update(str(target) for target in incident.get("affected_targets", []) if target)
+        if isinstance(roles, dict):
+            entities.update(str(value) for value in roles.values() if value)
+        return entities
 
     @staticmethod
     def _merge_evidence(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
@@ -868,7 +915,8 @@ class EventStore:
         correlation = merged.get("correlation") if isinstance(merged.get("correlation"), dict) else {}
         correlation.update({
             "deduplicated": True,
-            "dedupe_rule": "same source, category, target or target network, validation tag, and time window",
+            "dedupe_rule": "related source, entity role, target or target network, validation tag, and time window",
+            "category_equality_required": False,
             "retained_detection_records": len(merged.get("detections", [])),
         })
         merged["correlation"] = correlation
@@ -923,6 +971,17 @@ class EventStore:
         existing_detection_count = int(existing["detection_count"] or 0)
         existing_event_count = int(existing["event_count"] or 0)
         existing_suppressed = int(existing["suppressed_count"] or 0)
+        merged_category = existing["category"]
+        if incoming.get("category") and incoming.get("category") != existing["category"]:
+            merged_category = "multi_stage"
+        merged_attack_stage = existing["attack_stage"]
+        if incoming.get("attack_stage") and incoming.get("attack_stage") != existing["attack_stage"]:
+            merged_attack_stage = "multi_stage"
+        merged_title = existing["title"]
+        if merged_category == "multi_stage" and not str(existing["title"]).startswith("Multi-stage"):
+            source = existing["source_ip"] or incoming.get("source_ip") or "unknown source"
+            target = targets[0] if targets else incoming.get("destination_ip") or "unknown target"
+            merged_title = f"Multi-stage activity from {source} to {target}"
         conn.execute(
             """
             UPDATE incidents
@@ -931,13 +990,14 @@ class EventStore:
                 severity = max(severity, ?),
                 confidence = max(confidence, ?),
                 destination_ip = COALESCE(destination_ip, ?),
+                category = ?,
                 updated_at = ?,
                 first_seen = ?,
                 last_seen = ?,
                 event_count = ?,
                 detection_count = ?,
                 affected_targets_json = ?,
-                attack_stage = COALESCE(attack_stage, ?),
+                attack_stage = ?,
                 validation_tag = COALESCE(validation_tag, ?),
                 suppressed_count = ?,
                 evidence_json = ?,
@@ -945,18 +1005,19 @@ class EventStore:
             WHERE incident_id = ?
             """,
             (
-                existing["title"],
+                merged_title,
                 incoming["risk_score"],
                 incoming["severity"],
                 incoming["confidence"],
                 incoming.get("destination_ip"),
+                merged_category,
                 max(str(existing["updated_at"]), incoming["updated_at"]),
                 first_seen,
                 last_seen,
                 existing_event_count + incoming["event_count"],
                 existing_detection_count + max(0, incoming["detection_count"]),
                 json.dumps(targets, sort_keys=True),
-                incoming["attack_stage"],
+                merged_attack_stage,
                 incoming["validation_tag"],
                 existing_suppressed + 1 + incoming["suppressed_count"],
                 json.dumps(merged_evidence, sort_keys=True),
@@ -1105,6 +1166,56 @@ class EventStore:
             ).fetchone()
         return dict(row) if row else None
 
+    def active_response_blocks_for_incident(self, incident_id: str) -> list[dict[str, Any]]:
+        now = now_iso()
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM block_entries
+                WHERE incident_id = ?
+                  AND status IN ('proposed', 'active')
+                  AND expires_at > ?
+                ORDER BY created_at DESC
+                """,
+                (incident_id, now),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def blocklist_view(self, limit: int = 100) -> dict[str, Any]:
+        rows = self.list_rows("block_entries", limit=limit)
+        now = now_iso()
+        current_keys: set[tuple[str, str | None]] = set()
+        visible = []
+        history = []
+        for row in rows:
+            key = (str(row.get("source_ip")), row.get("incident_id"))
+            is_current = row.get("status") in {"proposed", "active"} and str(row.get("expires_at") or "") > now
+            if is_current:
+                current_keys.add(key)
+                item = dict(row)
+                item["current"] = True
+                visible.append(item)
+        for row in rows:
+            key = (str(row.get("source_ip")), row.get("incident_id"))
+            if row.get("status") in {"proposed", "active"} and str(row.get("expires_at") or "") > now:
+                continue
+            item = dict(row)
+            item["current"] = False
+            item["superseded_by_current"] = key in current_keys
+            history.append(item)
+            if key not in current_keys:
+                visible.append(item)
+        return {
+            "items": visible,
+            "history": history,
+            "summary": {
+                "current": len(current_keys),
+                "history": len(history),
+                "hidden_historical_duplicates": sum(1 for item in history if item.get("superseded_by_current")),
+            },
+        }
+
     def active_block_count(self) -> int:
         now = now_iso()
         with self.connect() as conn:
@@ -1140,19 +1251,91 @@ class EventStore:
             )
             changed = conn.total_changes - before
             if row:
-                host_status = status if status in {"proposed", "active"} else "none"
+                host_status = self._current_host_block_status(conn, row["source_ip"])
                 conn.execute("UPDATE hosts SET block_status = ? WHERE ip = ?", (host_status, row["source_ip"]))
             self._audit(conn, actor, f"block.{status}", block_id, {"removal_reason": removal_reason})
             return changed > 0
 
+    @staticmethod
+    def _current_host_block_status(conn: sqlite3.Connection, source_ip: str) -> str:
+        row = conn.execute(
+            """
+            SELECT status
+            FROM block_entries
+            WHERE source_ip = ?
+              AND status IN ('active', 'proposed')
+              AND expires_at > ?
+            ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END, created_at DESC
+            LIMIT 1
+            """,
+            (source_ip, now_iso()),
+        ).fetchone()
+        return row["status"] if row else "none"
+
     def expire_block_entries(self, actor: str = "system") -> int:
         now = now_iso()
         with self.connect() as conn:
-            rows = conn.execute("SELECT block_id FROM block_entries WHERE status IN ('proposed', 'active') AND expires_at <= ?", (now,)).fetchall()
+            rows = conn.execute("SELECT block_id, source_ip FROM block_entries WHERE status IN ('proposed', 'active') AND expires_at <= ?", (now,)).fetchall()
             for row in rows:
                 conn.execute("UPDATE block_entries SET status = 'expired', removal_reason = 'expired' WHERE block_id = ?", (row["block_id"],))
+                conn.execute("UPDATE hosts SET block_status = ? WHERE ip = ?", (self._current_host_block_status(conn, row["source_ip"]), row["source_ip"]))
                 self._audit(conn, actor, "block.expired", row["block_id"], {})
             return len(rows)
+
+    def audit_case_action(self, action: str, incident_id: str, detail: dict[str, Any], actor: str = "system") -> None:
+        with self.connect() as conn:
+            self._audit(conn, actor, f"case.{action}", incident_id, detail)
+
+    def merge_incidents(self, primary_id: str, secondary_id: str, actor: str = "system") -> dict[str, Any]:
+        if primary_id == secondary_id:
+            return {"status": "error", "message": "cannot merge an incident into itself"}
+        with self.connect() as conn:
+            primary = conn.execute("SELECT * FROM incidents WHERE incident_id = ?", (primary_id,)).fetchone()
+            secondary = conn.execute("SELECT * FROM incidents WHERE incident_id = ?", (secondary_id,)).fetchone()
+            if not primary or not secondary:
+                return {"status": "not_found", "primary_id": primary_id, "secondary_id": secondary_id}
+            incoming = self._row_to_prepared_incident(secondary)
+            self._merge_incident(conn, primary, incoming)
+            detection_rows = conn.execute("SELECT detection_id FROM incident_detections WHERE incident_id = ?", (secondary_id,)).fetchall()
+            for row in detection_rows:
+                conn.execute("INSERT OR IGNORE INTO incident_detections(incident_id, detection_id) VALUES (?, ?)", (primary_id, row["detection_id"]))
+            conn.execute("UPDATE incidents SET status = 'archived', updated_at = ? WHERE incident_id = ?", (now_iso(), secondary_id))
+            self._audit(conn, actor, "case.merge", primary_id, {"merged_incident_id": secondary_id})
+            return {"status": "ok", "primary_id": primary_id, "merged_incident_id": secondary_id}
+
+    def _row_to_prepared_incident(self, row: sqlite3.Row) -> dict[str, Any]:
+        evidence = json.loads(row["evidence_json"] or "{}")
+        risk_factors = json.loads(row["risk_factors_json"] or "[]")
+        affected_targets = json.loads(row["affected_targets_json"] or "[]")
+        detection_ids = []
+        detections = evidence.get("detections", []) if isinstance(evidence, dict) else []
+        if isinstance(detections, list):
+            detection_ids = [str(item["detection_id"]) for item in detections if isinstance(item, dict) and item.get("detection_id")]
+        return {
+            "incident_id": row["incident_id"],
+            "title": row["title"],
+            "status": row["status"],
+            "risk_score": int(row["risk_score"]),
+            "severity": int(row["severity"]),
+            "confidence": float(row["confidence"]),
+            "source_ip": row["source_ip"],
+            "destination_ip": row["destination_ip"],
+            "category": row["category"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "first_seen": row["first_seen"] or row["created_at"],
+            "last_seen": row["last_seen"] or row["updated_at"],
+            "event_count": int(row["event_count"] or 0),
+            "detection_count": int(row["detection_count"] or 0),
+            "affected_targets": affected_targets,
+            "attack_stage": row["attack_stage"],
+            "validation_tag": row["validation_tag"],
+            "suppressed_count": int(row["suppressed_count"] or 0),
+            "evidence": evidence,
+            "risk_factors": risk_factors,
+            "detection_ids": detection_ids,
+            "target_key": _target_network_key(row["destination_ip"], row["category"]),
+        }
 
     def _audit(self, conn: sqlite3.Connection, actor: str, action: str, target: str | None, detail: dict[str, Any]) -> None:
         conn.execute(

@@ -246,6 +246,38 @@
         <type>text</type>
     </field>
     <field>
+        <id>pondsecndr.detection.correlation_window_minutes</id>
+        <label>Case correlation window</label>
+        <type>text</type>
+        <help>Minutes in which related detections across categories can be combined into one attack case. Default: 30.</help>
+    </field>
+    <field>
+        <type>header</type>
+        <label>Threat intelligence enrichment</label>
+    </field>
+    <field>
+        <id>pondsecndr.threat_intel.cve_enrichment</id>
+        <label>CVE enrichment</label>
+        <type>checkbox</type>
+        <help>Extract CVE references from local Suricata metadata and enrich them from the local cache.</help>
+    </field>
+    <field>
+        <id>pondsecndr.threat_intel.external_lookup</id>
+        <label>External CVE lookups</label>
+        <type>checkbox</type>
+        <help>Opt-in only. Allows administrator-triggered refreshes from NVD, CISA KEV and FIRST EPSS; the service does not require internet access.</help>
+    </field>
+    <field>
+        <id>pondsecndr.threat_intel.cache_ttl_hours</id>
+        <label>Threat intel cache TTL</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.threat_intel.api_timeout_seconds</id>
+        <label>Threat intel API timeout</label>
+        <type>text</type>
+    </field>
+    <field>
         <type>header</type>
         <label>Response</label>
     </field>

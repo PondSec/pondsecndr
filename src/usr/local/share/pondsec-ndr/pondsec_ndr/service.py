@@ -128,7 +128,7 @@ class PondSecService:
             detections.extend(detector.detect(events, features))
         inserted_detections = self.store.insert_detections(detections)
 
-        incidents = correlate_detections(detections)
+        incidents = correlate_detections(detections, window_seconds=self.config.detection.correlation_window_minutes * 60)
         incidents, suppressed_incidents = self._limit_rate(
             incidents,
             "incident_rate_timestamps",

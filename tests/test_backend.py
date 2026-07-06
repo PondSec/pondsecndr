@@ -461,6 +461,118 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(analysis["visual_timeline"][0]["count"], 1)
         self.assertEqual(analysis["case_summary"]["response"]["status"], "active")
 
+    def test_cross_category_correlation_builds_one_multistage_case_with_roles_and_cve_context(self) -> None:
+        detections = [
+            {
+                "detection_id": "d-stage-scan",
+                "detector_id": "pondsec.vertical_scan",
+                "detector_version": "1",
+                "category": "reconnaissance",
+                "title": "External scan",
+                "description": "External actor scanned the DMZ host.",
+                "timestamp": "2026-07-05T10:00:00+00:00",
+                "source_ip": "199.45.155.75",
+                "destination_ip": "192.168.30.3",
+                "severity": 7,
+                "confidence": 0.86,
+                "anomaly_score": 0.7,
+                "evidence": {"ports": [80, 443, 8443]},
+                "recommended_action": "Investigate",
+            },
+            {
+                "detection_id": "d-stage-exploit",
+                "detector_id": "pondsec.suricata_alert",
+                "detector_version": "1",
+                "category": "signature",
+                "title": "Exploit attempt CVE-2024-12345",
+                "description": "Suricata observed an exploit attempt.",
+                "timestamp": "2026-07-05T10:02:00+00:00",
+                "source_ip": "199.45.155.75",
+                "destination_ip": "192.168.30.3",
+                "severity": 9,
+                "confidence": 0.94,
+                "anomaly_score": 0.8,
+                "evidence": {
+                    "signature_id": 900001,
+                    "references": ["cve,CVE-2024-12345"],
+                    "product": "example-web",
+                    "version": "1.2.3",
+                    "ports": [443],
+                },
+                "recommended_action": "Patch and investigate",
+            },
+            {
+                "detection_id": "d-stage-anomaly",
+                "detector_id": "pondsec.host_baseline_anomaly",
+                "detector_version": "1",
+                "category": "anomaly",
+                "title": "Host baseline anomaly",
+                "description": "The DMZ host deviated from baseline.",
+                "timestamp": "2026-07-05T10:08:00+00:00",
+                "source_ip": "192.168.30.3",
+                "destination_ip": "192.168.20.115",
+                "severity": 8,
+                "confidence": 0.82,
+                "anomaly_score": 0.9,
+                "evidence": {"baseline_deviation": 7.4},
+                "recommended_action": "Check host process tree",
+            },
+            {
+                "detection_id": "d-stage-c2",
+                "detector_id": "pondsec.beaconing",
+                "detector_version": "1",
+                "category": "command_and_control",
+                "title": "Outbound beaconing",
+                "description": "The DMZ host contacted an external destination periodically.",
+                "timestamp": "2026-07-05T10:15:00+00:00",
+                "source_ip": "192.168.30.3",
+                "destination_ip": "8.8.8.8",
+                "severity": 8,
+                "confidence": 0.88,
+                "anomaly_score": 0.8,
+                "evidence": {"ports": [443]},
+                "recommended_action": "Contain if confirmed",
+            },
+        ]
+        incidents = correlate_detections(detections, window_seconds=1800)
+        self.assertEqual(len(incidents), 1)
+        incident = incidents[0]
+        self.assertEqual(incident["category"], "multi_stage")
+        self.assertEqual(incident["evidence"]["entity_roles"]["external_actor"], "199.45.155.75")
+        self.assertEqual(incident["evidence"]["entity_roles"]["victim"], "192.168.30.3")
+        self.assertEqual(incident["evidence"]["entity_roles"]["affected_host"], "192.168.30.3")
+        self.assertIn("command_and_control", incident["evidence"]["correlation"]["categories"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            intel = root / "intel"
+            intel.mkdir(parents=True)
+            (intel / "nvd_cve_cache.json").write_text(json.dumps({
+                "CVE-2024-12345": {
+                    "descriptions": [{"lang": "en", "value": "Example product vulnerability."}],
+                    "metrics": {"cvssMetricV31": [{"cvssData": {"baseScore": 9.8}}]},
+                }
+            }), encoding="utf-8")
+            (intel / "cisa_kev.json").write_text(json.dumps({
+                "vulnerabilities": [{
+                    "cveID": "CVE-2024-12345",
+                    "vendorProject": "Example",
+                    "product": "example-web",
+                    "requiredAction": "Apply vendor mitigation.",
+                }]
+            }), encoding="utf-8")
+            (intel / "epss_cache.json").write_text(json.dumps({
+                "data": [{"cve": "CVE-2024-12345", "epss": "0.92", "percentile": "0.99"}]
+            }), encoding="utf-8")
+            analysis = _incident_analysis(incident, config=PondSecConfig(data_dir=root))
+        stages = {item["stage"]: item for item in analysis["attack_stages"]}
+        self.assertEqual(stages["initial_access"]["status"], "observed")
+        self.assertNotEqual(stages["initial_access"]["status"], "confirmed")
+        self.assertEqual(analysis["case_summary"]["affected_host"], "192.168.30.3")
+        self.assertTrue(analysis["threat_intelligence"]["cves"])
+        self.assertEqual(analysis["threat_intelligence"]["cves"][0]["evidence_level"], "exploitation_attempt_observed")
+        self.assertFalse(analysis["threat_intelligence"]["cves"][0]["automatic_block_basis_allowed"])
+
     def test_incident_dedup_merges_same_source_category_target_network_window(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = EventStore(Path(tmp) / "pondsec-ndr.db")
@@ -509,6 +621,52 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(merged["detection_count"], 2)
             self.assertEqual(merged["suppressed_count"], 1)
             self.assertEqual(sorted(merged["affected_targets"]), ["192.168.20.10", "192.168.20.42"])
+            self.assertTrue(merged["evidence"]["correlation"]["deduplicated"])
+
+    def test_incident_dedup_merges_cross_category_related_entities(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            first = {
+                "incident_id": "incident-cross-1",
+                "title": "External scan",
+                "status": "open",
+                "risk_score": 82,
+                "severity": 8,
+                "confidence": 0.9,
+                "source_ip": "199.45.155.75",
+                "destination_ip": "192.168.30.3",
+                "category": "reconnaissance",
+                "created_at": "2026-07-05T10:00:00+00:00",
+                "updated_at": "2026-07-05T10:00:00+00:00",
+                "first_seen": "2026-07-05T10:00:00+00:00",
+                "last_seen": "2026-07-05T10:01:00+00:00",
+                "event_count": 12,
+                "evidence": {"entity_roles": {"external_actor": "199.45.155.75", "victim": "192.168.30.3"}, "detections": [{"detection_id": "d1", "destination_ip": "192.168.30.3"}]},
+                "risk_factors": [{"name": "scan", "value": 80}],
+                "detection_ids": ["d1"],
+            }
+            second = dict(
+                first,
+                incident_id="incident-cross-2",
+                title="Outbound beacon",
+                source_ip="192.168.30.3",
+                destination_ip="8.8.8.8",
+                category="command_and_control",
+                created_at="2026-07-05T10:20:00+00:00",
+                updated_at="2026-07-05T10:20:00+00:00",
+                first_seen="2026-07-05T10:20:00+00:00",
+                last_seen="2026-07-05T10:20:10+00:00",
+                evidence={"entity_roles": {"affected_host": "192.168.30.3", "destination": "8.8.8.8"}, "detections": [{"detection_id": "d2", "source_ip": "192.168.30.3", "destination_ip": "8.8.8.8"}]},
+                detection_ids=["d2"],
+            )
+            self.assertEqual(store.insert_incidents([first]), 1)
+            self.assertEqual(store.insert_incidents([second]), 0)
+            merged = store.get_incident("incident-cross-1")
+            self.assertIsNotNone(merged)
+            assert merged is not None
+            self.assertEqual(merged["category"], "multi_stage")
+            self.assertEqual(merged["attack_stage"], "multi_stage")
             self.assertTrue(merged["evidence"]["correlation"]["deduplicated"])
 
     def test_external_model_catalog_prefers_public_trained_model(self) -> None:
@@ -736,13 +894,55 @@ class BackendTests(unittest.TestCase):
                 "risk_factors": [{"name": "test", "value": 90}],
                 "detection_ids": [],
             }
-            second = dict(first, incident_id="incident-source-reuse-2", title="Second incident", category="command_and_control")
+            second = dict(
+                first,
+                incident_id="incident-source-reuse-2",
+                title="Second incident",
+                category="command_and_control",
+                created_at="2026-07-05T11:00:00+00:00",
+                updated_at="2026-07-05T11:00:00+00:00",
+                first_seen="2026-07-05T11:00:00+00:00",
+                last_seen="2026-07-05T11:00:10+00:00",
+            )
             store.insert_incidents([first, second])
             proposal = propose_block_for_incident(store, config, "incident-source-reuse-1", actor="test")
             store.update_block_status(proposal["block_id"], "active", actor="test")
             reused = propose_block_for_incident(store, config, "incident-source-reuse-2", actor="test")
             self.assertEqual(reused["block_id"], proposal["block_id"])
             self.assertEqual(len(store.list_rows("block_entries")), 1)
+
+    def test_blocklist_view_hides_removed_duplicate_when_current_block_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            incident_id = "incident-block-duplicate"
+            active = store.add_block_entry({
+                "block_id": "block-active",
+                "incident_id": incident_id,
+                "source_ip": "199.45.155.75",
+                "destination": "192.168.30.3",
+                "reason": "Response proposal",
+                "risk_score": 91,
+                "confidence": 0.9,
+                "expires_at": "2030-01-01T00:00:00+00:00",
+                "status": "active",
+            }, actor="test")
+            removed = store.add_block_entry({
+                "block_id": "block-removed",
+                "incident_id": incident_id,
+                "source_ip": "199.45.155.75",
+                "destination": "192.168.30.3",
+                "reason": "Older response proposal",
+                "risk_score": 91,
+                "confidence": 0.9,
+                "expires_at": "2030-01-01T00:00:00+00:00",
+                "status": "removed",
+                "removal_reason": "manual cleanup",
+            }, actor="test")
+            view = store.blocklist_view()
+            self.assertIn(active["block_id"], {item["block_id"] for item in view["items"]})
+            self.assertNotIn(removed["block_id"], {item["block_id"] for item in view["items"]})
+            self.assertEqual(view["summary"]["hidden_historical_duplicates"], 1)
 
     def test_service_auto_response_skips_baseline_only_anomaly(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -206,3 +206,24 @@ def remove_block(
         "pf_removed": result.as_dict() if result else None,
         "pf_kept_for_other_active_blocks": still_active,
     }
+
+
+def release_incident_response(
+    store: EventStore,
+    incident_id: str,
+    reason: str = "case release",
+    actor: str = "system",
+    enforcer: PFTableEnforcer | None = None,
+) -> dict[str, Any]:
+    blocks = store.active_response_blocks_for_incident(incident_id)
+    if not blocks:
+        return {"status": "not_found", "incident_id": incident_id, "released": []}
+    pf = enforcer or PFTableEnforcer()
+    released = []
+    for block in blocks:
+        released.append(remove_block(store, block["block_id"], reason=reason, actor=actor, enforcer=pf))
+    return {
+        "status": "ok" if all(item.get("status") == "ok" for item in released) else "partial",
+        "incident_id": incident_id,
+        "released": released,
+    }

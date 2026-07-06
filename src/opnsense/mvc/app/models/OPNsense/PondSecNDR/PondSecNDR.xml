@@ -230,7 +230,35 @@
                 <MaximumValue>100</MaximumValue>
                 <Required>Y</Required>
             </minimum_incident_confidence>
+            <correlation_window_minutes type="IntegerField">
+                <default>30</default>
+                <MinimumValue>1</MinimumValue>
+                <MaximumValue>1440</MaximumValue>
+                <Required>Y</Required>
+            </correlation_window_minutes>
         </detection>
+        <threat_intel>
+            <cve_enrichment type="BooleanField">
+                <default>1</default>
+                <Required>Y</Required>
+            </cve_enrichment>
+            <external_lookup type="BooleanField">
+                <default>0</default>
+                <Required>Y</Required>
+            </external_lookup>
+            <cache_ttl_hours type="IntegerField">
+                <default>24</default>
+                <MinimumValue>1</MinimumValue>
+                <MaximumValue>168</MaximumValue>
+                <Required>Y</Required>
+            </cache_ttl_hours>
+            <api_timeout_seconds type="IntegerField">
+                <default>5</default>
+                <MinimumValue>1</MinimumValue>
+                <MaximumValue>30</MaximumValue>
+                <Required>Y</Required>
+            </api_timeout_seconds>
+        </threat_intel>
         <response>
             <automatic_blocking type="BooleanField">
                 <default>0</default>

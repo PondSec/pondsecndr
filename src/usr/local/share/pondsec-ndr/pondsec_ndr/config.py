@@ -100,6 +100,7 @@ class DetectionConfig:
     learning_phase_observations: int = 1000
     minimum_observations: int = 50
     minimum_incident_confidence: int = 75
+    correlation_window_minutes: int = 30
 
     def learning_status(self, now: datetime | None = None) -> dict[str, Any]:
         now = now or datetime.now(timezone.utc)
@@ -148,6 +149,14 @@ class DetectionConfig:
 
 
 @dataclass(slots=True)
+class ThreatIntelConfig:
+    cve_enrichment: bool = True
+    external_lookup: bool = False
+    cache_ttl_hours: int = 24
+    api_timeout_seconds: int = 5
+
+
+@dataclass(slots=True)
 class ResponseConfig:
     automatic_blocking: bool = False
     minimum_confidence: int = 95
@@ -185,6 +194,7 @@ class PondSecConfig:
     suricata_eve_path: str = "/var/log/suricata/eve.json"
     interfaces: InterfaceConfig = field(default_factory=InterfaceConfig)
     detection: DetectionConfig = field(default_factory=DetectionConfig)
+    threat_intel: ThreatIntelConfig = field(default_factory=ThreatIntelConfig)
     response: ResponseConfig = field(default_factory=ResponseConfig)
     data_dir: Path = DATA_DIR
     log_dir: Path = LOG_DIR
@@ -212,6 +222,10 @@ class PondSecConfig:
             errors.append("incident_rate_limit_per_minute must be positive")
         if self.pf_action_rate_limit_per_minute < 1:
             errors.append("pf_action_rate_limit_per_minute must be positive")
+        if self.detection.correlation_window_minutes < 1:
+            errors.append("correlation_window_minutes must be positive")
+        if self.threat_intel.cache_ttl_hours < 1:
+            errors.append("threat_intel cache_ttl_hours must be positive")
         return errors
 
 
@@ -229,6 +243,7 @@ def load_config(path: Path | None = None) -> PondSecConfig:
 
     interfaces = raw.get("interfaces") or {}
     detection = raw.get("detection") or {}
+    threat_intel = raw.get("threat_intel") or {}
     response = raw.get("response") or {}
     mode = str(raw.get("mode", "monitor")).strip().lower()
     if mode not in MODES:
@@ -289,6 +304,13 @@ def load_config(path: Path | None = None) -> PondSecConfig:
             learning_phase_observations=_int(detection.get("learning_phase_observations"), 1000, 10, 10000000),
             minimum_observations=_int(detection.get("minimum_observations"), 50, 1, 1000000),
             minimum_incident_confidence=_int(detection.get("minimum_incident_confidence"), 75, 1, 100),
+            correlation_window_minutes=_int(detection.get("correlation_window_minutes"), 30, 1, 1440),
+        ),
+        threat_intel=ThreatIntelConfig(
+            cve_enrichment=_bool(threat_intel.get("cve_enrichment"), True),
+            external_lookup=_bool(threat_intel.get("external_lookup"), False),
+            cache_ttl_hours=_int(threat_intel.get("cache_ttl_hours"), 24, 1, 168),
+            api_timeout_seconds=_int(threat_intel.get("api_timeout_seconds"), 5, 1, 30),
         ),
         response=ResponseConfig(
             automatic_blocking=_bool(response.get("automatic_blocking"), False),

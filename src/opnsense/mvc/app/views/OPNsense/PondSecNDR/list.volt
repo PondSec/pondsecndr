@@ -191,7 +191,7 @@ $(function() {
                 '<strong>' + row[1] + '</strong>' +
                 '<em class="pondsec-certainty ' + className(row[2]) + '">' + escapeHtml(row[2]) + '</em>' +
             '</div>';
-        }).join(''));
+        }).join('') + (response.release_available ? '<div class="pondsec-case-kv pondsec-case-action"><span>Response action</span><strong><button class="btn btn-xs btn-danger pondsec-row-action" data-action="release-case" data-id="' + encodeURIComponent(incident.incident_id || '') + '">Release block/isolation</button></strong><em class="pondsec-certainty confirmed">audited</em></div>' : ''));
         $('#incident_entry_reason').text(entry.reason || '');
     }
 
@@ -203,6 +203,62 @@ $(function() {
             return '<div class="pondsec-certainty-card">' +
                 '<strong>' + escapeHtml(humanKey(key)) + '</strong>' +
                 '<p>' + escapeHtml(values.length ? values.join(', ') : '-') + '</p>' +
+            '</div>';
+        }).join(''));
+    }
+
+    function renderNarrative(narrative) {
+        narrative = narrative || {};
+        $('#incident_narrative').html(
+            '<p>' + escapeHtml(narrative.what_happened || 'No narrative generated for this case yet.') + '</p>' +
+            '<div class="pondsec-certainty-grid">' +
+                '<div class="pondsec-certainty-card"><strong>Confirmed</strong><p>' + escapeHtml((narrative.confirmed || []).join(', ') || '-') + '</p></div>' +
+                '<div class="pondsec-certainty-card"><strong>Not confirmed</strong><p>' + escapeHtml((narrative.not_confirmed || []).join(', ') || '-') + '</p></div>' +
+            '</div>'
+        );
+    }
+
+    function renderRelatedCases(cases, currentId) {
+        cases = cases || [];
+        if (!cases.length) {
+            $('#incident_related_cases').html('<div class="pondsec-empty">No related cases found in the current window.</div>');
+            return;
+        }
+        $('#incident_related_cases').html(cases.map(function(item) {
+            var pair = String(currentId || '') + '|' + String(item.incident_id || '');
+            return '<div class="pondsec-related-case">' +
+                '<button class="pondsec-link-button pondsec-open-incident" data-id="' + encodeURIComponent(item.incident_id || '') + '"><strong>' + escapeHtml(item.title || item.incident_id) + '</strong><span>' + escapeHtml((item.reasons || []).join(', ')) + '</span></button>' +
+                '<div class="pondsec-actions">' +
+                    '<button class="btn btn-xs btn-primary pondsec-row-action" data-action="merge-case" data-id="' + escapeAttr(pair) + '">Merge</button>' +
+                    '<button class="btn btn-xs btn-default pondsec-row-action" data-action="link-case" data-id="' + escapeAttr(pair) + '">Link</button>' +
+                    '<button class="btn btn-xs btn-default pondsec-row-action" data-action="keep-separate-case" data-id="' + escapeAttr(pair) + '">Keep separate</button>' +
+                '</div>' +
+            '</div>';
+        }).join(''));
+    }
+
+    function renderThreatIntel(intel) {
+        intel = intel || {};
+        var cves = intel.cves || [];
+        if (!intel.enabled) {
+            $('#incident_threat_intel').html('<div class="pondsec-empty">CVE enrichment is disabled.</div>');
+            return;
+        }
+        if (!cves.length) {
+            $('#incident_threat_intel').html('<div class="pondsec-empty">No CVE references found in local evidence for this case.</div>');
+            return;
+        }
+        $('#incident_threat_intel').html(cves.map(function(cve) {
+            return '<div class="pondsec-cve-card">' +
+                '<div><strong>' + escapeHtml(cve.cve_id) + '</strong> ' + badge(cve.evidence_level || 'referenced') + (cve.cisa_kev ? badge('CISA KEV') : '') + '</div>' +
+                '<p>' + escapeHtml(cve.short_description || '-') + '</p>' +
+                '<div class="pondsec-cve-grid">' +
+                    '<span>CVSS <strong>' + escapeHtml(hasValue(cve.cvss) ? cve.cvss : '-') + '</strong></span>' +
+                    '<span>EPSS <strong>' + escapeHtml(hasValue(cve.epss) ? formatPercent(cve.epss) : '-') + '</strong></span>' +
+                    '<span>Percentile <strong>' + escapeHtml(hasValue(cve.epss_percentile) ? formatPercent(cve.epss_percentile) : '-') + '</strong></span>' +
+                    '<span>Confidence <strong>' + escapeHtml(formatPercent(cve.match_confidence || 0)) + '</strong></span>' +
+                '</div>' +
+                '<em>' + escapeHtml(cve.claim_limit || '') + '</em>' +
             '</div>';
         }).join(''));
     }
@@ -223,7 +279,21 @@ $(function() {
         }
         var nodeById = {};
         nodes.forEach(function(node) { nodeById[node.id] = node; });
-        var columns = {source_host: 0, internal_network: 1, behavior_model: 1, target_host: 2, external_target: 2, external_group: 2, target: 2, response: 3};
+        var columns = {
+            external_actor: 0,
+            source_host: 0,
+            internal_network: 1,
+            affected_host: 1,
+            victim_host: 1,
+            pivot_host: 2,
+            behavior_model: 2,
+            target_host: 2,
+            external_target: 3,
+            external_group: 3,
+            response_target: 3,
+            target: 2,
+            response: 3
+        };
         var buckets = [[], [], [], []];
         nodes.forEach(function(node) {
             var column = columns[node.type] === undefined ? 2 : columns[node.type];
@@ -441,6 +511,22 @@ $(function() {
         if (action === 'remove-block') {
             return '/api/pondsecndr/blocklist/remove/' + id;
         }
+        if (action === 'release-case') {
+            return '/api/pondsecndr/incidents/release/' + id;
+        }
+        if (action === 'merge-case' || action === 'link-case' || action === 'keep-separate-case') {
+            var parts = String(id || '').split('|');
+            if (parts.length !== 2) {
+                return null;
+            }
+            if (action === 'merge-case') {
+                return '/api/pondsecndr/incidents/merge/' + encodeURIComponent(parts[0]) + '/' + encodeURIComponent(parts[1]);
+            }
+            if (action === 'link-case') {
+                return '/api/pondsecndr/incidents/link/' + encodeURIComponent(parts[0]) + '/' + encodeURIComponent(parts[1]);
+            }
+            return '/api/pondsecndr/incidents/keepSeparate/' + encodeURIComponent(parts[0]) + '/' + encodeURIComponent(parts[1]);
+        }
         return null;
     }
 
@@ -581,6 +667,9 @@ $(function() {
         var guidance = analysis.administrator_guidance || [];
         var features = analysis.notable_features || [];
         var riskFactors = analysis.risk_factors || [];
+        var narrative = analysis.case_narrative || {};
+        var relatedCases = analysis.related_cases || [];
+        var threatIntel = analysis.threat_intelligence || {};
         resetCaseDetails();
         $('#incident_detail_title').text(incident.title || incident.incident_id || 'Incident');
         $('#incident_detail_meta').html(
@@ -590,6 +679,7 @@ $(function() {
             '<span class="pondsec-case-meta">Confidence ' + escapeHtml(formatPercent(incident.confidence)) + '</span>' +
             '<span class="pondsec-case-meta">Window ' + escapeHtml(formatDate(story.first_seen)) + ' - ' + escapeHtml(formatDate(story.last_seen)) + '</span>'
         );
+        renderNarrative(narrative);
         renderCaseSummary(caseSummary, incident);
         renderCertainty(caseSummary);
         $('#incident_story').html([
@@ -608,6 +698,8 @@ $(function() {
         renderGraphLegend(analysis.attack_graph || {});
         $('#incident_attack_stages').html(renderAttackStages(analysis.attack_stages || []));
         $('#incident_timeline').html(renderVisualTimeline(timeline));
+        renderThreatIntel(threatIntel);
+        renderRelatedCases(relatedCases, incident.incident_id);
         $('#incident_guidance').html(guidance.length ? guidance.map(function(item) {
             return '<li>' + escapeHtml(item) + '</li>';
         }).join('') : '<li>No guidance recorded.</li>');
@@ -888,10 +980,10 @@ $(function() {
     padding: 24px;
     position: fixed;
     right: 0;
-    top: 112px;
+    top: 92px;
     transform: translateX(105%);
     transition: transform 0.22s ease;
-    width: min(1160px, calc(100vw - 340px));
+    width: min(1320px, calc(100vw - 300px));
     z-index: 9999;
 }
 .pondsec-case-panel.open {
@@ -975,6 +1067,61 @@ $(function() {
     margin-top: 8px;
     padding: 4px 7px;
     text-transform: uppercase;
+}
+.pondsec-narrative p {
+    color: #d9e3ec;
+    font-size: 14px;
+    line-height: 1.55;
+    margin: 0 0 12px;
+}
+.pondsec-related-case,
+.pondsec-cve-card {
+    background: #171f2a;
+    border: 1px solid #2a3544;
+    border-radius: 6px;
+    margin-bottom: 10px;
+    padding: 12px;
+}
+.pondsec-related-case {
+    align-items: center;
+    display: flex;
+    gap: 12px;
+    justify-content: space-between;
+}
+.pondsec-related-case .pondsec-link-button {
+    flex: 1;
+    text-align: left;
+}
+.pondsec-cve-card p {
+    color: #c8d2dc;
+    margin: 8px 0;
+}
+.pondsec-cve-card em {
+    color: #8f9dac;
+    display: block;
+    font-size: 12px;
+    margin-top: 8px;
+}
+.pondsec-cve-grid {
+    display: grid;
+    gap: 8px;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+.pondsec-cve-grid span {
+    background: #202a36;
+    border: 1px solid #2a3544;
+    border-radius: 6px;
+    color: #8f9dac;
+    padding: 8px;
+}
+.pondsec-cve-grid strong {
+    color: #f1f6fb;
+    display: block;
+    margin-top: 3px;
+}
+.pondsec-case-action strong {
+    align-items: center;
+    display: flex;
 }
 .pondsec-certainty.confirmed,
 .pondsec-certainty.observed {
@@ -1320,6 +1467,10 @@ $(function() {
         <div id="incident_case_summary" class="pondsec-case-grid wide"></div>
         <p id="incident_entry_reason" class="pondsec-entry-reason"></p>
     </section>
+    <section class="pondsec-case-section">
+        <h4>Case narrative</h4>
+        <div id="incident_narrative" class="pondsec-narrative"></div>
+    </section>
     <div class="pondsec-analysis-grid">
         <section class="pondsec-case-section pondsec-graph-card">
             <h4>Attack graph</h4>
@@ -1344,6 +1495,14 @@ $(function() {
     <section class="pondsec-case-section">
         <h4>Visual timeline</h4>
         <div id="incident_timeline" class="pondsec-timeline-stack"></div>
+    </section>
+    <section class="pondsec-case-section">
+        <h4>CVE context</h4>
+        <div id="incident_threat_intel"></div>
+    </section>
+    <section class="pondsec-case-section">
+        <h4>Related cases</h4>
+        <div id="incident_related_cases"></div>
     </section>
     <section class="pondsec-case-section">
         <h4>Confidence boundaries</h4>
