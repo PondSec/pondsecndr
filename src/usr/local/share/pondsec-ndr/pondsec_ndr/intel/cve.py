@@ -209,11 +209,11 @@ def _load_epss_cache(intel_dir: Path) -> dict[str, dict[str, Any]]:
 
 
 def _load_json(path: Path) -> Any:
-    if not path.exists():
-        return None
     try:
+        if not path.exists():
+            return None
         return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, PermissionError, json.JSONDecodeError):
         return None
 
 
@@ -222,10 +222,18 @@ def _cache_status(intel_dir: Path, ttl_hours: int) -> dict[str, Any]:
     files = {}
     for name in ("nvd_cve_cache.json", "cisa_kev.json", "epss_cache.json", "suricata_rule_metadata.json"):
         path = intel_dir / name
-        if not path.exists():
+        try:
+            present = path.exists()
+        except OSError:
+            present = False
+        if not present:
             files[name] = {"present": False, "fresh": False}
             continue
-        modified = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+        try:
+            modified = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+        except OSError:
+            files[name] = {"present": True, "fresh": False, "error": "not_readable"}
+            continue
         age_hours = round((now - modified).total_seconds() / 3600, 2)
         files[name] = {"present": True, "fresh": age_hours <= ttl_hours, "age_hours": age_hours}
     return {"ttl_hours": ttl_hours, "files": files}
