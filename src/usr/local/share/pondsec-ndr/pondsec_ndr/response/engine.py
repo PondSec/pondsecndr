@@ -114,6 +114,41 @@ def propose_block_for_incident(
     }, actor=actor)
 
 
+def propose_manual_block(
+    store: EventStore,
+    config: PondSecConfig,
+    target: str,
+    reason: str | None = None,
+    actor: str = "system",
+    duration_seconds: int | None = None,
+) -> dict[str, Any]:
+    source_ip = validate_ip_or_network(target)
+    if is_protected_target(source_ip, config):
+        raise ResponseDenied("source IP is protected")
+    if config.response.enforce_allowlist and is_allowlisted(source_ip, store.allowlist_values()):
+        raise ResponseDenied("source IP is allowlisted")
+    existing_for_source = store.existing_response_block(None, source_ip)
+    if existing_for_source:
+        return existing_for_source
+
+    duration = duration_seconds or config.response.default_block_seconds
+    duration = min(duration, config.response.max_block_seconds)
+    expires_at = (datetime.now(timezone.utc) + timedelta(seconds=duration)).isoformat()
+    return store.add_block_entry({
+        "incident_id": None,
+        "source_ip": source_ip,
+        "destination": None,
+        "reason": reason or "Manual blocklist entry",
+        "risk_score": config.response.minimum_risk_score,
+        "confidence": 1.0,
+        "policy_id": "manual",
+        "expires_at": expires_at,
+        "created_by": actor,
+        "automatic": False,
+        "status": "proposed",
+    }, actor=actor)
+
+
 def activate_block(
     store: EventStore,
     config: PondSecConfig,

@@ -80,6 +80,15 @@ def _validation_tag_from_evidence(evidence: dict[str, Any]) -> str | None:
     return None
 
 
+def _is_private_address(value: str | None) -> bool:
+    if not value or "/" in str(value):
+        return False
+    try:
+        return ipaddress.ip_address(str(value)).is_private
+    except ValueError:
+        return False
+
+
 SCHEMA = [
     """
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -1218,9 +1227,11 @@ class EventStore:
             active_incidents = conn.execute("SELECT count(*) FROM incidents WHERE status = 'open' AND COALESCE(last_seen, updated_at) >= ?", (cutoff,)).fetchone()[0]
             high_risk_incidents = conn.execute("SELECT count(*) FROM incidents WHERE status = 'open' AND risk_score >= 70").fetchone()[0]
             critical_incidents = conn.execute("SELECT count(*) FROM incidents WHERE status = 'open' AND risk_score >= 90").fetchone()[0]
-            blocked_sources = conn.execute("SELECT count(DISTINCT source_ip) FROM block_entries WHERE status = 'active'").fetchone()[0]
+            block_rows = conn.execute("SELECT DISTINCT source_ip FROM block_entries WHERE status = 'active'").fetchall()
+            blocked_sources = len(block_rows)
+            isolated_clients = sum(1 for row in block_rows if _is_private_address(row["source_ip"]))
             categories = conn.execute("SELECT category, count(*) AS count FROM detections GROUP BY category ORDER BY count DESC").fetchall()
-            top_hosts = conn.execute("SELECT ip, risk_score, open_incidents FROM hosts ORDER BY risk_score DESC, last_seen DESC LIMIT 10").fetchall()
+            top_hosts = conn.execute("SELECT ip, risk_score, open_incidents, block_status, allowlist_status, interface FROM hosts ORDER BY risk_score DESC, last_seen DESC LIMIT 10").fetchall()
             latest_event = conn.execute("SELECT max(timestamp) FROM events").fetchone()[0]
         size = self.db_path.stat().st_size if self.db_path.exists() else 0
         delay = None
@@ -1234,6 +1245,7 @@ class EventStore:
                 "high_risk_incidents": high_risk_incidents,
                 "critical_incidents": critical_incidents,
                 "blocked_sources": blocked_sources,
+                "isolated_clients": isolated_clients,
                 "database_size_bytes": size,
                 "telemetry_delay_seconds": delay,
             },

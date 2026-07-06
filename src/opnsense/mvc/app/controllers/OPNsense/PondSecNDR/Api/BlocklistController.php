@@ -15,7 +15,18 @@ class BlocklistController extends ApiControllerBase
 
     public function addAction()
     {
-        return $this->notAvailable('blocklist add');
+        $value = trim((string)$this->request->getPost('value', null, ''));
+        $reason = trim((string)$this->request->getPost('reason', null, ''));
+        $duration = (int)$this->request->getPost('duration_seconds', 'int', 3600);
+        if ($value === '') {
+            return array('status' => 'error', 'message' => 'missing block value');
+        }
+        if ($duration < 60) {
+            $duration = 3600;
+        }
+        return $this->runBackendJson(
+            'blocklist_add ' . escapeshellarg($value) . ' ' . escapeshellarg($reason) . ' ' . escapeshellarg((string)$duration)
+        );
     }
 
     public function proposeAction($incidentId = null)

@@ -71,7 +71,7 @@ $(function() {
         if (value === 'prevent') {
             return 'good';
         }
-        if (value === 'failed' || value === 'error' || value === 'critical' || value === 'stopped') {
+        if (value === 'failed' || value === 'error' || value === 'critical' || value === 'stopped' || value === 'isolated' || value === 'blocked') {
             return 'bad';
         }
         return 'neutral';
@@ -91,6 +91,7 @@ $(function() {
         }, 0);
         var events24h = numberValue(metrics.events_last_24h);
         var blocked = numberValue(metrics.blocked_sources);
+        var isolated = numberValue(metrics.isolated_clients);
         var openIncidents = numberValue(metrics.open_incidents);
         var critical = numberValue(metrics.critical_incidents);
 
@@ -110,6 +111,7 @@ $(function() {
         $('#open_incidents').text(formatNumber(openIncidents));
         $('#critical_incidents').text(formatNumber(critical));
         $('#blocked_sources').text(formatNumber(blocked));
+        $('#isolated_clients').text(formatNumber(isolated));
         $('#telemetry_delay').text(formatDuration(metrics.telemetry_delay_seconds));
         $('#event_rate').text(formatRate(metrics.event_rate_per_second));
         $('#database_size').text(formatBytes(metrics.database_size_bytes));
@@ -156,11 +158,13 @@ $(function() {
         var rows = '';
         topHosts.slice(0, 8).forEach(function(host) {
             var risk = numberValue(host.risk_score);
+            var protection = host.block_status && host.block_status !== 'none' ? host.block_status : (host.allowlist_status && host.allowlist_status !== 'none' ? 'allowlisted' : 'normal');
             rows += '<tr><td class="pondsec-mono">' + escapeHtml(host.ip) + '</td>' +
+                '<td>' + badge(protection) + '</td>' +
                 '<td><div class="pondsec-risk"><span style="width:' + Math.min(100, risk) + '%"></span></div><strong>' + formatNumber(risk) + '</strong></td>' +
                 '<td>' + formatNumber(host.open_incidents || 0) + '</td></tr>';
         });
-        $('#top_hosts tbody').html(rows || '<tr><td colspan="3" class="pondsec-empty">No hosts observed.</td></tr>');
+        $('#top_hosts tbody').html(rows || '<tr><td colspan="4" class="pondsec-empty">No hosts observed.</td></tr>');
     }
 
     function renderCategoryRows(categories) {
@@ -182,13 +186,24 @@ $(function() {
         var max = items.reduce(function(value, item) {
             return Math.max(value, numberValue(item.events));
         }, 1);
+        var total = items.reduce(function(value, item) {
+            return value + numberValue(item.events);
+        }, 0);
+        var recent = items.slice(-24);
+        var peak = recent.reduce(function(value, item) {
+            return Math.max(value, numberValue(item.events));
+        }, 0);
         var bars = '';
-        items.slice(-24).forEach(function(item) {
-            var height = Math.max(3, Math.round((numberValue(item.events) / max) * 100));
+        recent.forEach(function(item, index) {
+            var events = numberValue(item.events);
+            var height = Math.max(events > 0 ? 8 : 2, Math.round((events / max) * 100));
             var label = String(item.hour || '').slice(-2) + ':00';
-            bars += '<div class="pondsec-timeline-bar" title="' + escapeHtml(label + ' - ' + item.events + ' events') + '">' +
-                '<span style="height:' + height + '%"></span><em>' + escapeHtml(label) + '</em></div>';
+            var showLabel = index === 0 || index === recent.length - 1 || index % 4 === 0;
+            bars += '<div class="pondsec-timeline-bar" title="' + escapeHtml(label + ' - ' + events + ' events') + '">' +
+                '<span style="height:' + height + '%"><i>' + (events ? escapeHtml(events) : '') + '</i></span><em>' + (showLabel ? escapeHtml(label) : '') + '</em></div>';
         });
+        $('#event_timeline_total').text(formatNumber(total));
+        $('#event_timeline_peak').text(formatNumber(peak));
         $('#event_timeline').html(bars || '<div class="pondsec-empty">No event timeline yet.</div>');
     }
 
@@ -463,12 +478,17 @@ $(function() {
 }
 .pondsec-timeline {
     align-items: end;
+    background:
+        linear-gradient(to top, rgba(143, 157, 172, 0.16) 1px, transparent 1px) 0 0 / 100% 33%,
+        #1b2430;
+    border: 1px solid #2a3544;
+    border-radius: 6px;
     display: grid;
-    gap: 6px;
+    gap: 5px;
     grid-auto-flow: column;
-    grid-auto-columns: minmax(24px, 1fr);
-    height: 186px;
-    padding-top: 8px;
+    grid-auto-columns: minmax(18px, 1fr);
+    height: 154px;
+    padding: 14px 10px 8px;
 }
 .pondsec-timeline-bar {
     align-items: center;
@@ -483,13 +503,53 @@ $(function() {
     border-radius: 5px 5px 0 0;
     display: block;
     min-height: 3px;
+    position: relative;
     width: 100%;
+}
+.pondsec-timeline-bar span i {
+    color: #d8e9fa;
+    display: none;
+    font-size: 10px;
+    font-style: normal;
+    font-weight: 700;
+    left: 50%;
+    position: absolute;
+    top: -18px;
+    transform: translateX(-50%);
+}
+.pondsec-timeline-bar:hover span i {
+    display: block;
 }
 .pondsec-timeline-bar em {
     color: #7f8c9b;
     font-size: 10px;
     font-style: normal;
     margin-top: 6px;
+    min-height: 12px;
+}
+.pondsec-chart-head {
+    align-items: center;
+    display: flex;
+    gap: 12px;
+    justify-content: space-between;
+    margin-bottom: 12px;
+}
+.pondsec-chart-metrics {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+.pondsec-chart-metric {
+    background: #1b2430;
+    border: 1px solid #2a3544;
+    border-radius: 6px;
+    color: #9ba8b6;
+    font-size: 12px;
+    padding: 7px 9px;
+}
+.pondsec-chart-metric strong {
+    color: #edf3f8;
+    margin-left: 6px;
 }
 .pondsec-empty {
     color: #8f9dac;
@@ -548,9 +608,9 @@ $(function() {
         <div class="pondsec-kpi warning"><div class="pondsec-kpi-label">Open incidents</div><div class="pondsec-kpi-value" id="open_incidents">Loading</div></div>
         <div class="pondsec-kpi danger"><div class="pondsec-kpi-label">Critical incidents</div><div class="pondsec-kpi-value" id="critical_incidents">Loading</div></div>
         <div class="pondsec-kpi success"><div class="pondsec-kpi-label">Blocked sources</div><div class="pondsec-kpi-value" id="blocked_sources">Loading</div></div>
+        <div class="pondsec-kpi danger"><div class="pondsec-kpi-label">Isolated clients</div><div class="pondsec-kpi-value" id="isolated_clients">Loading</div></div>
         <div class="pondsec-kpi"><div class="pondsec-kpi-label">Event rate</div><div class="pondsec-kpi-value" id="event_rate">Loading</div></div>
         <div class="pondsec-kpi"><div class="pondsec-kpi-label">Telemetry delay</div><div class="pondsec-kpi-value" id="telemetry_delay">Loading</div></div>
-        <div class="pondsec-kpi"><div class="pondsec-kpi-label">Database size</div><div class="pondsec-kpi-value" id="database_size">Loading</div></div>
     </div>
 
     <div class="pondsec-main-grid">
@@ -559,7 +619,13 @@ $(function() {
             <div class="pondsec-threat-grid" id="threat_cards"></div>
         </section>
         <section class="pondsec-panel">
-            <h3 class="pondsec-section-title">Event activity</h3>
+            <div class="pondsec-chart-head">
+                <h3 class="pondsec-section-title" style="margin:0;">Event activity</h3>
+                <div class="pondsec-chart-metrics">
+                    <div class="pondsec-chart-metric">24h total <strong id="event_timeline_total">0</strong></div>
+                    <div class="pondsec-chart-metric">Peak hour <strong id="event_timeline_peak">0</strong></div>
+                </div>
+            </div>
             <div class="pondsec-timeline" id="event_timeline"></div>
         </section>
     </div>
@@ -568,8 +634,8 @@ $(function() {
         <section class="pondsec-panel">
             <h3 class="pondsec-section-title">Highest-risk hosts</h3>
             <table id="top_hosts" class="pondsec-table">
-                <thead><tr><th>IP address</th><th>Risk</th><th>Open incidents</th></tr></thead>
-                <tbody><tr><td colspan="3" class="pondsec-empty">Loading</td></tr></tbody>
+                <thead><tr><th>IP address</th><th>Protection</th><th>Risk</th><th>Open incidents</th></tr></thead>
+                <tbody><tr><td colspan="4" class="pondsec-empty">Loading</td></tr></tbody>
             </table>
         </section>
         <section class="pondsec-panel">

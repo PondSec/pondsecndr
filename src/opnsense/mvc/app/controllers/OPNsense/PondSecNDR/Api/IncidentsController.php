@@ -15,7 +15,11 @@ class IncidentsController extends ApiControllerBase
 
     public function getAction($id = null)
     {
-        return $this->notAvailable('incident detail');
+        if (!$this->isSafeId($id)) {
+            $this->response->setStatusCode(400, 'Bad Request');
+            return ['status' => 'error', 'message' => 'invalid incident id'];
+        }
+        return $this->runBackendJson('incident_get ' . escapeshellarg($id));
     }
 
     public function closeAction($id = null)

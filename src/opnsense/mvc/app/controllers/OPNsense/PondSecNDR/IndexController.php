@@ -51,12 +51,12 @@ class IndexController extends \OPNsense\Base\IndexController
 
     public function allowlistAction()
     {
-        $this->renderList('Allowlist', '/api/pondsecndr/allowlist/list');
+        $this->view->pick('OPNsense/PondSecNDR/allowlist');
     }
 
     public function blocklistAction()
     {
-        $this->renderList('Blocklist', '/api/pondsecndr/blocklist/list');
+        $this->view->pick('OPNsense/PondSecNDR/blocklist');
     }
 
     public function serviceAction()

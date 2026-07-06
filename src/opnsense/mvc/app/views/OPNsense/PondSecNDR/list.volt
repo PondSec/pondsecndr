@@ -2,7 +2,9 @@
 $(function() {
     var pageTitle = '{{ title }}';
     var endpoint = '{{ endpoint }}';
+    var allRows = [];
     var rows = [];
+    var summary = {};
 
     function escapeHtml(value) {
         return $('<div/>').text(value === null || value === undefined ? '' : String(value)).html();
@@ -64,7 +66,7 @@ $(function() {
         if (['proposed', 'monitor', 'catalog', 'warning'].indexOf(value) !== -1) {
             return 'info';
         }
-        if (['failed', 'error', 'blocked', 'critical', 'removed', 'closed', 'stopped'].indexOf(value) !== -1) {
+        if (['failed', 'error', 'blocked', 'isolated', 'critical', 'removed', 'closed', 'stopped'].indexOf(value) !== -1) {
             return 'bad';
         }
         return 'neutral';
@@ -121,7 +123,7 @@ $(function() {
                 {label: 'Source', render: function(row) { return mono(row.source_ip); }},
                 {label: 'Destination', render: function(row) { return mono(row.destination_ip); }},
                 {label: 'Category', render: function(row) { return compactValue(row.category); }},
-                {label: 'Incident', render: function(row) { return '<strong>' + escapeHtml(row.title || row.incident_id) + '</strong>'; }},
+                {label: 'Incident', render: function(row) { return '<button class="pondsec-link-button pondsec-open-incident" data-id="' + encodeURIComponent(row.incident_id || '') + '"><strong>' + escapeHtml(row.title || row.incident_id) + '</strong><span>Open case view</span></button>'; }},
                 {label: 'Updated', render: function(row) { return formatDate(row.updated_at || row.created_at); }},
                 {label: 'Action', render: incidentActions}
             ];
@@ -140,8 +142,10 @@ $(function() {
         if (kind === 'hosts') {
             return [
                 {label: 'Host', render: function(row) { return mono(row.ip); }},
+                {label: 'Protection', render: function(row) { return hostProtection(row); }},
                 {label: 'Risk', render: function(row) { return riskCell(row.risk_score); }},
                 {label: 'Open incidents', render: function(row) { return formatNumber(row.open_incidents); }},
+                {label: 'Interface', render: function(row) { return compactValue(row.interface); }},
                 {label: 'First seen', render: function(row) { return formatDate(row.first_seen); }},
                 {label: 'Last seen', render: function(row) { return formatDate(row.last_seen); }}
             ];
@@ -197,6 +201,17 @@ $(function() {
 
     function mono(value) {
         return hasValue(value) ? '<span class="pondsec-mono">' + escapeHtml(value) + '</span>' : '-';
+    }
+
+    function hostProtection(row) {
+        var badges = [];
+        if (row.block_status && row.block_status !== 'none') {
+            badges.push(badge(row.block_status === 'active' ? 'isolated' : row.block_status));
+        }
+        if (row.allowlist_status && row.allowlist_status !== 'none') {
+            badges.push(badge('allowlisted'));
+        }
+        return badges.length ? badges.join(' ') : badge('normal');
     }
 
     function incidentActions(row) {
@@ -274,12 +289,79 @@ $(function() {
             {label: 'Active', value: active},
             {label: 'High risk', value: highRisk}
         ];
+        if (kind === 'incidents' && summary.open !== undefined) {
+            stats = [
+                {label: 'Shown', value: total},
+                {label: 'Open', value: summary.open || 0},
+                {label: 'Active', value: summary.active || 0},
+                {label: 'High risk', value: summary.high_risk || 0}
+            ];
+        }
         if (kind === 'interfaces') {
             stats = [{label: 'Interfaces', value: total}, {label: 'Selected', value: configured}];
         }
         $('#pondsec_stats').html(stats.map(function(item) {
             return '<div class="pondsec-stat"><span>' + escapeHtml(item.label) + '</span><strong>' + formatNumber(item.value) + '</strong></div>';
         }).join(''));
+    }
+
+    function rowSearchText(row) {
+        return Object.keys(row).map(function(key) {
+            var value = row[key];
+            if (typeof value === 'object' && value !== null) {
+                return JSON.stringify(value);
+            }
+            return value;
+        }).join(' ').toLowerCase();
+    }
+
+    function rebuildFilters() {
+        var statuses = {};
+        var categories = {};
+        allRows.forEach(function(row) {
+            if (hasValue(row.status)) {
+                statuses[row.status] = true;
+            }
+            if (hasValue(row.category)) {
+                categories[row.category] = true;
+            }
+            if (hasValue(row.block_status) && row.block_status !== 'none') {
+                statuses[row.block_status] = true;
+            }
+            if (hasValue(row.allowlist_status) && row.allowlist_status !== 'none') {
+                statuses[row.allowlist_status] = true;
+            }
+        });
+        function options(values, allLabel) {
+            return '<option value="">' + escapeHtml(allLabel) + '</option>' + Object.keys(values).sort().map(function(value) {
+                return '<option value="' + escapeHtml(value) + '">' + escapeHtml(value) + '</option>';
+            }).join('');
+        }
+        $('#pondsec_filter_status').html(options(statuses, 'All statuses'));
+        $('#pondsec_filter_category').html(options(categories, 'All categories'));
+        $('#pondsec_filter_category').closest('.pondsec-filter-field').toggle(Object.keys(categories).length > 0);
+    }
+
+    function applyFilters() {
+        var query = String($('#pondsec_filter_search').val() || '').toLowerCase().trim();
+        var status = $('#pondsec_filter_status').val();
+        var category = $('#pondsec_filter_category').val();
+        rows = allRows.filter(function(row) {
+            if (query && rowSearchText(row).indexOf(query) === -1) {
+                return false;
+            }
+            if (status) {
+                var values = [row.status, row.block_status, row.allowlist_status];
+                if (values.indexOf(status) === -1) {
+                    return false;
+                }
+            }
+            if (category && row.category !== category) {
+                return false;
+            }
+            return true;
+        });
+        renderRows();
     }
 
     function renderRows() {
@@ -294,23 +376,104 @@ $(function() {
             return '<th>' + escapeHtml(column.label) + '</th>';
         }).join('') + '</tr></thead>';
         var body = '<tbody>' + rows.map(function(row) {
-            return '<tr>' + columns.map(function(column) {
+            var attrs = kind === 'incidents' ? ' class="pondsec-clickable-row" data-id="' + encodeURIComponent(row.incident_id || '') + '"' : '';
+            return '<tr' + attrs + '>' + columns.map(function(column) {
                 return '<td>' + column.render(row) + '</td>';
             }).join('') + '</tr>';
         }).join('') + '</tbody>';
         $('#pondsec_table').html(header + body);
     }
 
-    function loadRows() {
-        ajaxGet(endpoint, {}, function(data) {
-            rows = data.items || data.records || data.events || [];
-            $('#pondsec_page_message').text(data.message || '');
-            renderRows();
+    function renderIncidentDetail(data) {
+        var incident = data.item || {};
+        var analysis = data.analysis || {};
+        var story = analysis.host_story || {};
+        var timeline = analysis.timeline || [];
+        var targets = story.affected_targets || [];
+        var guidance = analysis.administrator_guidance || [];
+        var features = analysis.notable_features || [];
+        var riskFactors = analysis.risk_factors || [];
+        $('#incident_detail_title').text(incident.title || incident.incident_id || 'Incident');
+        $('#incident_detail_meta').html(
+            badge(incident.status) + badge(story.attack_stage || incident.category || 'unknown') +
+            '<span class="pondsec-case-meta">Source ' + escapeHtml(story.source_ip || '-') + '</span>' +
+            '<span class="pondsec-case-meta">Window ' + escapeHtml(formatDate(story.first_seen)) + ' - ' + escapeHtml(formatDate(story.last_seen)) + '</span>'
+        );
+        $('#incident_story').html([
+            ['Risk score', riskCell(incident.risk_score)],
+            ['Detections', formatNumber(story.detection_count || 0)],
+            ['Events', formatNumber(story.event_count || 0)],
+            ['Suppressed duplicates', formatNumber(story.suppressed_count || 0)],
+            ['Primary destination', mono(story.destination_ip)]
+        ].map(function(row) {
+            return '<div class="pondsec-case-kv"><span>' + escapeHtml(row[0]) + '</span><strong>' + row[1] + '</strong></div>';
+        }).join(''));
+        $('#incident_targets').html(targets.length ? targets.map(function(target) {
+            return '<span class="pondsec-token">' + escapeHtml(target) + '</span>';
+        }).join('') : '<span class="pondsec-empty-inline">No target list recorded.</span>');
+        $('#incident_timeline').html(timeline.length ? timeline.map(function(item) {
+            return '<div class="pondsec-case-event">' +
+                '<span>' + escapeHtml(formatDate(item.timestamp)) + '</span>' +
+                '<strong>' + escapeHtml(item.title || item.detector_id || 'Detection') + '</strong>' +
+                '<p>' + escapeHtml(item.summary || '-') + '</p>' +
+                '<em>' + escapeHtml(item.detector_id || '-') + ' · severity ' + escapeHtml(item.severity || '-') + ' · confidence ' + escapeHtml(formatPercent(item.confidence)) + '</em>' +
+            '</div>';
+        }).join('') : '<div class="pondsec-empty">No detection timeline recorded.</div>');
+        $('#incident_guidance').html(guidance.length ? guidance.map(function(item) {
+            return '<li>' + escapeHtml(item) + '</li>';
+        }).join('') : '<li>No guidance recorded.</li>');
+        $('#incident_features').html(features.length ? features.slice(0, 12).map(function(item) {
+            return '<div class="pondsec-feature"><span>' + escapeHtml(item.name || 'feature') + '</span><strong>' + compactValue(item.value) + '</strong></div>';
+        }).join('') : '<div class="pondsec-empty">No notable feature list recorded.</div>');
+        $('#incident_risk_factors').html(riskFactors.length ? riskFactors.map(function(item) {
+            return '<div class="pondsec-feature"><span>' + escapeHtml(item.name || item.factor || 'risk') + '</span><strong>' + compactValue(item.value || item.score || item.weight || item) + '</strong></div>';
+        }).join('') : '<div class="pondsec-empty">No risk factors recorded.</div>');
+        $('#incident_detail_panel').addClass('open');
+    }
+
+    function openIncidentDetail(id) {
+        if (!id) {
+            return;
+        }
+        ajaxGet('/api/pondsecndr/incidents/get/' + id, {}, function(data) {
+            if (data.status !== 'ok') {
+                $('#pondsec_action_result').html(renderActionResult(data));
+                return;
+            }
+            renderIncidentDetail(data);
         });
     }
 
-    $(document).on('click', '.pondsec-row-action', function() {
+    function loadRows() {
+        ajaxGet(endpoint, {}, function(data) {
+            allRows = data.items || data.records || data.events || [];
+            summary = data.summary || {};
+            $('#pondsec_page_message').text(data.message || '');
+            rebuildFilters();
+            applyFilters();
+        });
+    }
+
+    $(document).on('input change', '#pondsec_filter_search, #pondsec_filter_status, #pondsec_filter_category', applyFilters);
+    $('#pondsec_filter_reset').on('click', function() {
+        $('#pondsec_filter_search').val('');
+        $('#pondsec_filter_status').val('');
+        $('#pondsec_filter_category').val('');
+        applyFilters();
+    });
+
+    $(document).on('click', '.pondsec-row-action', function(event) {
+        event.stopPropagation();
         runAction($(this).data('action'), $(this).data('id'));
+    });
+    $(document).on('click', '.pondsec-open-incident, .pondsec-clickable-row', function(event) {
+        if ($(event.target).closest('.pondsec-row-action').length) {
+            return;
+        }
+        openIncidentDetail($(this).data('id'));
+    });
+    $('#incident_detail_close').on('click', function() {
+        $('#incident_detail_panel').removeClass('open');
     });
 
     loadRows();
@@ -377,6 +540,34 @@ $(function() {
     border: 1px solid #2a3544;
     border-radius: 6px;
     overflow: hidden;
+}
+.pondsec-filterbar {
+    align-items: end;
+    background: #202a36;
+    border: 1px solid #2a3544;
+    border-radius: 6px;
+    display: grid;
+    gap: 12px;
+    grid-template-columns: minmax(220px, 1fr) 180px 180px auto;
+    margin-bottom: 14px;
+    padding: 12px;
+}
+.pondsec-filter-field label {
+    color: #8f9dac;
+    display: block;
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+}
+.pondsec-filter-field input,
+.pondsec-filter-field select {
+    background: #151d26;
+    border: 1px solid #334153;
+    border-radius: 5px;
+    color: #e5edf5;
+    height: 34px;
+    padding: 6px 8px;
+    width: 100%;
 }
 .pondsec-table {
     border-collapse: collapse;
@@ -457,9 +648,28 @@ $(function() {
 .pondsec-actions .btn {
     border-radius: 5px;
 }
+.pondsec-clickable-row {
+    cursor: pointer;
+}
+.pondsec-link-button {
+    background: transparent;
+    border: 0;
+    color: #e7eef7;
+    padding: 0;
+    text-align: left;
+}
+.pondsec-link-button span {
+    color: #65b7ff;
+    display: block;
+    font-size: 12px;
+    margin-top: 3px;
+}
 .pondsec-empty {
     color: #8f9dac;
     padding: 18px;
+}
+.pondsec-empty-inline {
+    color: #8f9dac;
 }
 .pondsec-notice {
     align-items: center;
@@ -474,10 +684,138 @@ $(function() {
 .pondsec-notice span:last-child {
     color: #d9e3ec;
 }
+.pondsec-case-panel {
+    background: #151d26;
+    border-left: 1px solid #2a3544;
+    bottom: 0;
+    box-shadow: -12px 0 32px rgba(0, 0, 0, 0.32);
+    max-width: 760px;
+    overflow-y: auto;
+    padding: 18px;
+    position: fixed;
+    right: -820px;
+    top: 0;
+    transition: right 0.22s ease;
+    width: 48vw;
+    z-index: 9999;
+}
+.pondsec-case-panel.open {
+    right: 0;
+}
+.pondsec-case-head {
+    align-items: flex-start;
+    display: flex;
+    gap: 14px;
+    justify-content: space-between;
+    margin-bottom: 14px;
+}
+.pondsec-case-head h3 {
+    color: #f5f8fb;
+    font-size: 22px;
+    margin: 0 0 10px;
+}
+.pondsec-case-meta-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+.pondsec-case-meta {
+    background: #202a36;
+    border: 1px solid #2a3544;
+    border-radius: 6px;
+    color: #c8d2dc;
+    display: inline-block;
+    font-size: 12px;
+    padding: 6px 8px;
+}
+.pondsec-case-section {
+    background: #202a36;
+    border: 1px solid #2a3544;
+    border-radius: 6px;
+    margin-bottom: 12px;
+    padding: 14px;
+}
+.pondsec-case-section h4 {
+    color: #f1f6fb;
+    font-size: 15px;
+    margin: 0 0 12px;
+}
+.pondsec-case-grid,
+.pondsec-feature-grid {
+    display: grid;
+    gap: 10px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.pondsec-case-kv,
+.pondsec-feature {
+    background: #1b2430;
+    border: 1px solid #2a3544;
+    border-radius: 6px;
+    padding: 10px;
+}
+.pondsec-case-kv span,
+.pondsec-feature span {
+    color: #8f9dac;
+    display: block;
+    font-size: 12px;
+    text-transform: uppercase;
+}
+.pondsec-case-kv strong,
+.pondsec-feature strong {
+    color: #edf3f8;
+    display: block;
+    margin-top: 6px;
+    overflow-wrap: anywhere;
+}
+.pondsec-token {
+    background: #1b2430;
+    border: 1px solid #334153;
+    border-radius: 6px;
+    color: #dbe6f0;
+    display: inline-block;
+    font-family: Menlo, Monaco, Consolas, monospace;
+    margin: 0 6px 6px 0;
+    padding: 6px 8px;
+}
+.pondsec-case-event {
+    border-left: 3px solid #49a6ff;
+    margin-bottom: 12px;
+    padding-left: 12px;
+}
+.pondsec-case-event span,
+.pondsec-case-event em {
+    color: #8f9dac;
+    display: block;
+    font-size: 12px;
+    font-style: normal;
+}
+.pondsec-case-event strong {
+    color: #f1f6fb;
+    display: block;
+    margin: 4px 0;
+}
+.pondsec-case-event p {
+    color: #c8d2dc;
+    margin: 0 0 5px;
+}
+.pondsec-guidance {
+    color: #c8d2dc;
+    margin-bottom: 0;
+    padding-left: 18px;
+}
+.pondsec-guidance li {
+    margin-bottom: 8px;
+}
 @media (max-width: 900px) {
     .pondsec-pagehead {
         align-items: stretch;
         flex-direction: column;
+    }
+    .pondsec-filterbar {
+        grid-template-columns: 1fr;
+    }
+    .pondsec-case-panel {
+        width: 100vw;
     }
 }
 </style>
@@ -491,6 +829,21 @@ $(function() {
         <div class="pondsec-stat-grid" id="pondsec_stats"></div>
     </div>
     <div id="pondsec_action_result"></div>
+    <div class="pondsec-filterbar">
+        <div class="pondsec-filter-field">
+            <label for="pondsec_filter_search">Search</label>
+            <input id="pondsec_filter_search" type="search" placeholder="IP, category, detector, message">
+        </div>
+        <div class="pondsec-filter-field">
+            <label for="pondsec_filter_status">Status</label>
+            <select id="pondsec_filter_status"><option value="">All statuses</option></select>
+        </div>
+        <div class="pondsec-filter-field">
+            <label for="pondsec_filter_category">Category</label>
+            <select id="pondsec_filter_category"><option value="">All categories</option></select>
+        </div>
+        <button class="btn btn-default" id="pondsec_filter_reset" type="button"><i class="fa fa-undo"></i> Reset</button>
+    </div>
     <div class="pondsec-tablebox">
         <div class="table-responsive">
             <table id="pondsec_table" class="pondsec-table">
@@ -499,3 +852,37 @@ $(function() {
         </div>
     </div>
 </div>
+
+<aside id="incident_detail_panel" class="pondsec-case-panel">
+    <div class="pondsec-case-head">
+        <div>
+            <h3 id="incident_detail_title">Incident</h3>
+            <div id="incident_detail_meta" class="pondsec-case-meta-row"></div>
+        </div>
+        <button id="incident_detail_close" class="btn btn-default" type="button"><i class="fa fa-times"></i></button>
+    </div>
+    <section class="pondsec-case-section">
+        <h4>Host story</h4>
+        <div id="incident_story" class="pondsec-case-grid"></div>
+    </section>
+    <section class="pondsec-case-section">
+        <h4>Affected targets</h4>
+        <div id="incident_targets"></div>
+    </section>
+    <section class="pondsec-case-section">
+        <h4>Threat timeline</h4>
+        <div id="incident_timeline"></div>
+    </section>
+    <section class="pondsec-case-section">
+        <h4>What to check next</h4>
+        <ul id="incident_guidance" class="pondsec-guidance"></ul>
+    </section>
+    <section class="pondsec-case-section">
+        <h4>Notable features</h4>
+        <div id="incident_features" class="pondsec-feature-grid"></div>
+    </section>
+    <section class="pondsec-case-section">
+        <h4>Risk factors</h4>
+        <div id="incident_risk_factors" class="pondsec-feature-grid"></div>
+    </section>
+</aside>

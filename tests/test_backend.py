@@ -20,7 +20,7 @@ from pondsec_ndr.features.aggregator import aggregate_features, shannon_entropy
 from pondsec_ndr.models.cicids_features import CICIDS2017_FEATURES, cicids_vector_from_feature
 from pondsec_ndr.models.manager import model_inventory
 from pondsec_ndr.normalizers.suricata import normalize_eve
-from pondsec_ndr.response.engine import ResponseDenied, activate_block, is_protected_target, propose_block_for_incident, remove_block
+from pondsec_ndr.response.engine import ResponseDenied, activate_block, is_protected_target, propose_block_for_incident, propose_manual_block, remove_block
 from pondsec_ndr.response.pf import PFTableEnforcer
 from pondsec_ndr.sensor import eve_types_from_suricata_yaml, patch_suricata_yaml_text, required_eve_types
 from pondsec_ndr.service import PondSecService
@@ -408,6 +408,17 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(proposal["status"], "proposed")
             self.assertEqual(proposal["automatic"], 0)
             self.assertEqual(store.list_rows("block_entries")[0]["source_ip"], "192.168.10.200")
+
+    def test_response_engine_adds_manual_block_proposal_without_pf_side_effects(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            config = PondSecConfig(response=ResponseConfig(default_block_seconds=300, minimum_risk_score=70))
+            proposal = propose_manual_block(store, config, "203.0.113.44", reason="manual test", actor="test")
+            self.assertEqual(proposal["status"], "proposed")
+            self.assertEqual(proposal["source_ip"], "203.0.113.44")
+            self.assertEqual(proposal["policy_id"], "manual")
+            self.assertEqual(store.list_rows("block_entries")[0]["status"], "proposed")
 
     def test_response_engine_reuses_existing_active_source_block(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -21,7 +21,7 @@ from pondsec_ndr.diagnostics import self_test, service_status
 from pondsec_ndr.features.aggregator import aggregate_features
 from pondsec_ndr.models.manager import ModelError, download_model_artifacts, model_inventory, write_runtime_selftest
 from pondsec_ndr.models.runtime import MODEL_ID, SYNTHETIC_AI_VALIDATION_VECTOR, ModelRuntimeUnavailable, SaidimnIdsCnnRuntime
-from pondsec_ndr.response.engine import ResponseDenied, activate_block, propose_block_for_incident, remove_block, validate_ip_or_network
+from pondsec_ndr.response.engine import ResponseDenied, activate_block, propose_block_for_incident, propose_manual_block, remove_block, validate_ip_or_network
 from pondsec_ndr.response.pf import PFTableEnforcer
 from pondsec_ndr.sensor import harden_sensor, sensor_status
 from pondsec_ndr.service import PondSecService
@@ -55,6 +55,8 @@ def main(argv: list[str] | None = None) -> int:
     incidents = sub.add_parser("incidents")
     incidents_sub = incidents.add_subparsers(dest="section_command", required=True)
     incidents_sub.add_parser("list")
+    get_incident = incidents_sub.add_parser("get")
+    get_incident.add_argument("incident_id")
     close_incident = incidents_sub.add_parser("close")
     close_incident.add_argument("incident_id")
     reopen_incident = incidents_sub.add_parser("reopen")
@@ -75,6 +77,10 @@ def main(argv: list[str] | None = None) -> int:
     blocklist = sub.add_parser("blocklist")
     blocklist_sub = blocklist.add_subparsers(dest="section_command", required=True)
     blocklist_sub.add_parser("list")
+    block_add = blocklist_sub.add_parser("add")
+    block_add.add_argument("value")
+    block_add.add_argument("--reason", default=None)
+    block_add.add_argument("--duration-seconds", type=int, default=None)
     block_propose = blocklist_sub.add_parser("propose")
     block_propose.add_argument("incident_id")
     block_propose.add_argument("--duration-seconds", type=int, default=None)
@@ -209,6 +215,11 @@ def dispatch(args: argparse.Namespace, config: Any, store: EventStore) -> tuple[
     if command == "incidents":
         if args.section_command == "list":
             return {"items": _decode_rows(store.list_rows("incidents")), "summary": store.incident_status_summary()}, 0
+        if args.section_command == "get":
+            incident = store.get_incident(args.incident_id)
+            if incident is None:
+                return {"status": "not_found", "incident_id": args.incident_id}, 1
+            return {"status": "ok", "item": incident, "analysis": _incident_analysis(incident)}, 0
         status_map = {"close": "closed", "reopen": "open", "false-positive": "false_positive"}
         changed = store.update_incident_status(args.incident_id, status_map[args.section_command], actor="cli")
         return {"status": "ok" if changed else "not_found", "incident_id": args.incident_id}, 0 if changed else 1
@@ -219,13 +230,16 @@ def dispatch(args: argparse.Namespace, config: Any, store: EventStore) -> tuple[
             return {"items": _decode_rows(store.list_rows("allowlist_entries"))}, 0
         if args.section_command == "add":
             value = validate_ip_or_network(args.value)
-            return {"status": "ok", "item": store.add_allowlist_entry(value, args.reason, args.expires_at, actor="cli")}, 0
+            return {"status": "ok", "item": store.add_allowlist_entry(value, args.reason or None, args.expires_at or None, actor="cli")}, 0
         if args.section_command == "delete":
             changed = store.remove_allowlist_entry(args.allowlist_id, actor="cli")
             return {"status": "ok" if changed else "not_found", "allowlist_id": args.allowlist_id}, 0 if changed else 1
     if command == "blocklist":
         if args.section_command == "list":
             return {"items": _decode_rows(store.list_rows("block_entries"))}, 0
+        if args.section_command == "add":
+            proposal = propose_manual_block(store, config, args.value, args.reason or None, actor="cli", duration_seconds=args.duration_seconds)
+            return {"status": "ok", "item": proposal, "pf_side_effects": "none_until_activated"}, 0
         if args.section_command == "propose":
             proposal = propose_block_for_incident(store, config, args.incident_id, actor="cli", duration_seconds=args.duration_seconds)
             return {"status": "ok", "item": proposal, "pf_side_effects": "none_until_activated"}, 0
@@ -865,6 +879,54 @@ def _active_model(config: Any) -> str | None:
         if model.get("active"):
             return model["model_id"]
     return None
+
+
+def _incident_analysis(incident: dict[str, Any]) -> dict[str, Any]:
+    evidence = incident.get("evidence") if isinstance(incident.get("evidence"), dict) else {}
+    detections = evidence.get("detections", []) if isinstance(evidence, dict) else []
+    if not isinstance(detections, list):
+        detections = []
+    targets = incident.get("affected_targets") or []
+    timeline = []
+    admin_guidance = []
+    notable_features = []
+    for detection in detections:
+        if not isinstance(detection, dict):
+            continue
+        explanation = detection.get("explainability") or (detection.get("evidence") or {}).get("explainability") or {}
+        timeline.append({
+            "timestamp": detection.get("timestamp"),
+            "title": detection.get("title"),
+            "detector_id": detection.get("detector_id"),
+            "category": detection.get("category"),
+            "severity": detection.get("severity"),
+            "confidence": detection.get("confidence"),
+            "summary": explanation.get("why") or detection.get("description"),
+        })
+        for item in explanation.get("administrator_guidance", []) if isinstance(explanation, dict) else []:
+            if item not in admin_guidance:
+                admin_guidance.append(item)
+        for item in explanation.get("notable_features", []) if isinstance(explanation, dict) else []:
+            notable_features.append(item)
+    return {
+        "host_story": {
+            "source_ip": incident.get("source_ip"),
+            "destination_ip": incident.get("destination_ip"),
+            "affected_targets": targets,
+            "attack_stage": incident.get("attack_stage"),
+            "category": incident.get("category"),
+            "first_seen": incident.get("first_seen") or incident.get("created_at"),
+            "last_seen": incident.get("last_seen") or incident.get("updated_at"),
+            "event_count": incident.get("event_count"),
+            "detection_count": incident.get("detection_count"),
+            "suppressed_count": incident.get("suppressed_count"),
+        },
+        "timeline": sorted(timeline, key=lambda item: str(item.get("timestamp") or "")),
+        "notable_features": notable_features[:20],
+        "administrator_guidance": admin_guidance[:12],
+        "risk_factors": incident.get("risk_factors", []),
+        "correlation": evidence.get("correlation", {}),
+    }
 
 
 def _decode_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

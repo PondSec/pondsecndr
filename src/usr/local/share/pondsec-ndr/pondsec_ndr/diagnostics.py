@@ -44,6 +44,9 @@ def diagnostics(config: PondSecConfig, store: EventStore) -> dict[str, Any]:
     detail = health.get("detail") or {}
     eve_access = eve_access_status(config)
     telemetry_counts = store.telemetry_type_counts()
+    ml_runtime = _ml_runtime_status(config)
+    pf_blocking = _pf_blocking_status()
+    tls_inspection = _tls_inspection_status(telemetry_counts)
     return {
         "status": health["status"],
         "pid": health["pid"],
@@ -63,11 +66,12 @@ def diagnostics(config: PondSecConfig, store: EventStore) -> dict[str, Any]:
         "last_collector_errors": detail.get("last_collector_errors", []),
         "last_ml_errors": detail.get("last_ml_errors", []),
         "last_response_errors": detail.get("last_response_errors", []),
+        "readiness": _readiness_status(config, health, db, eve_access, ml_runtime, pf_blocking, tls_inspection),
         "pf_tables": _pf_tables_status(),
-        "pf_blocking": _pf_blocking_status(),
-        "ml_runtime": _ml_runtime_status(config),
+        "pf_blocking": pf_blocking,
+        "ml_runtime": ml_runtime,
         "host_baselines": store.baseline_summary(),
-        "tls_inspection": _tls_inspection_status(telemetry_counts),
+        "tls_inspection": tls_inspection,
     }
 
 
@@ -314,7 +318,106 @@ def _tls_inspection_status(telemetry_counts: dict[str, int]) -> dict[str, Any]:
         "status": status,
         "http_events_24h": http_events,
         "tls_events_24h": tls_events,
+        "requirement": "optional",
         "note": "PondSec consumes decrypted HTTP metadata when Suricata or a proxy publishes it into telemetry.",
+        "recommendation": (
+            "For deeper web visibility, enable TLS inspection in Zenarmor or Squid where legally and operationally appropriate. "
+            "PondSec still works without TLS decryption, but encrypted payload content remains opaque."
+        ),
+    }
+
+
+def _readiness_status(
+    config: PondSecConfig,
+    health: dict[str, Any],
+    db: dict[str, Any],
+    eve_access: dict[str, Any],
+    ml_runtime: dict[str, Any],
+    pf_blocking: dict[str, Any],
+    tls_inspection: dict[str, Any],
+) -> dict[str, Any]:
+    checks = [
+        {
+            "id": "service_enabled",
+            "label": "PondSec service enabled",
+            "requirement": "required",
+            "status": "ok" if config.enabled else "warning",
+            "detail": "PondSec is enabled in plugin settings." if config.enabled else "PondSec is installed but disabled in plugin settings.",
+            "recommendation": "" if config.enabled else "Enable PondSec NDR in Settings after confirming interfaces and data sources.",
+        },
+        {
+            "id": "suricata_eve",
+            "label": "Suricata EVE telemetry",
+            "requirement": "required",
+            "status": "ok" if eve_access.get("status") == "ok" else "failed",
+            "detail": eve_access.get("message") or "Suricata EVE telemetry is not confirmed.",
+            "recommendation": eve_access.get("recommendation") or "",
+        },
+        {
+            "id": "interfaces",
+            "label": "Protected interfaces selected",
+            "requirement": "required",
+            "status": "ok" if (config.interfaces.monitored or config.interfaces.internal or config.interfaces.wan) else "warning",
+            "detail": ", ".join(config.interfaces.monitored or config.interfaces.internal or config.interfaces.wan) or "No monitored interface selected.",
+            "recommendation": "" if (config.interfaces.monitored or config.interfaces.internal or config.interfaces.wan) else "Select WAN, internal, DMZ and VLAN interfaces in PondSec NDR settings.",
+        },
+        {
+            "id": "database",
+            "label": "Local event database",
+            "requirement": "required",
+            "status": "ok" if db.get("status") == "ok" else "failed",
+            "detail": f"Schema {db.get('schema_version')} integrity {db.get('integrity')}.",
+            "recommendation": "" if db.get("status") == "ok" else "Run database check/migration before starting the service.",
+        },
+        {
+            "id": "ml_runtime",
+            "label": "AI model runtime",
+            "requirement": "required for AI detections",
+            "status": "ok" if ml_runtime.get("external_model_status") == "active" else "warning",
+            "detail": f"{ml_runtime.get('external_model_id') or 'No model'} status: {ml_runtime.get('external_model_status')}.",
+            "recommendation": "" if ml_runtime.get("external_model_status") == "active" else "Install and verify the pretrained model artifact, then run the model self-test.",
+        },
+        {
+            "id": "pf_response",
+            "label": "PF response rule",
+            "requirement": "required for blocking",
+            "status": "ok" if pf_blocking.get("rule_present") else "warning",
+            "detail": f"PF table {pf_blocking.get('table')} rule present: {bool(pf_blocking.get('rule_present'))}.",
+            "recommendation": "" if pf_blocking.get("rule_present") else "Install/reconfigure the plugin so PondSec PF table enforcement can be applied.",
+        },
+        {
+            "id": "tls_visibility",
+            "label": "TLS / web visibility",
+            "requirement": "optional",
+            "status": "ok" if tls_inspection.get("status") in {"http_metadata_observed", "tls_metadata_observed"} else "info",
+            "detail": f"HTTP events: {tls_inspection.get('http_events_24h')}; TLS events: {tls_inspection.get('tls_events_24h')}.",
+            "recommendation": tls_inspection.get("recommendation", ""),
+        },
+        {
+            "id": "privacy_defaults",
+            "label": "Privacy defaults",
+            "requirement": "required for publication",
+            "status": "ok" if config.privacy_mode else "warning",
+            "detail": "Privacy mode is enabled; cloud telemetry is not used by PondSec.",
+            "recommendation": "" if config.privacy_mode else "Enable privacy mode before production rollout.",
+        },
+    ]
+    required = [item for item in checks if item["requirement"].startswith("required")]
+    failed = [item for item in required if item["status"] == "failed"]
+    warnings = [item for item in required if item["status"] == "warning"]
+    if failed:
+        status = "not_ready"
+    elif warnings:
+        status = "needs_attention"
+    else:
+        status = "ready"
+    return {
+        "status": status,
+        "mode": config.mode,
+        "service_status": health.get("status"),
+        "required_ok": len(required) - len(failed) - len(warnings),
+        "required_total": len(required),
+        "checks": checks,
     }
 
 
