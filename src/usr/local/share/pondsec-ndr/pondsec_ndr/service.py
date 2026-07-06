@@ -124,8 +124,10 @@ class PondSecService:
         )
         self.store.insert_features(features)
 
+        learning_status = self.config.detection.learning_status()
         detections: list[dict[str, Any]] = []
-        for detector in default_detectors():
+        enabled_detectors, learning_suppressed_detectors = self._enabled_detectors(learning_status)
+        for detector in enabled_detectors:
             detections.extend(detector.detect(events, features))
         inserted_detections = self.store.insert_detections(detections)
 
@@ -170,6 +172,8 @@ class PondSecService:
             "max_queue_length": self.config.max_queue_length,
             "resource_usage": resource_usage,
             "resource_warnings": resource_warnings,
+            "learning_status": learning_status,
+            "learning_suppressed_detectors": learning_suppressed_detectors,
             "limits": {
                 "max_event_rate": self.config.max_event_rate,
                 "max_queue_length": self.config.max_queue_length,
@@ -196,7 +200,24 @@ class PondSecService:
             "response_actions": response_actions,
             "baseline_updates": baseline_updates,
             "resource_warnings": resource_warnings,
+            "learning_status": learning_status,
+            "learning_suppressed_detectors": learning_suppressed_detectors,
         }
+
+    def _enabled_detectors(self, learning_status: dict[str, Any]) -> tuple[list[Any], list[str]]:
+        ai_detector_ids = {"pondsec.host_baseline_anomaly", "pondsec.pretrained_ids_model"}
+        enabled = []
+        suppressed = []
+        for detector in default_detectors():
+            detector_id = getattr(detector, "detector_id", "")
+            if detector_id in ai_detector_ids and not self.config.detection.machine_learning:
+                suppressed.append(detector_id)
+                continue
+            if detector_id in ai_detector_ids and learning_status.get("active"):
+                suppressed.append(detector_id)
+                continue
+            enabled.append(detector)
+        return enabled, suppressed
 
     def _apply_queue_backpressure(self, events: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
         limit = max(1, self.config.max_queue_length)

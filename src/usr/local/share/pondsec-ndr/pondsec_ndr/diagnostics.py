@@ -39,6 +39,7 @@ def service_status(config: PondSecConfig, store: EventStore) -> dict[str, Any]:
         "database": db,
         "suricata_eve_path": config.suricata_eve_path,
         "eve_access": eve_access,
+        "learning_status": config.detection.learning_status(),
     }
 
 
@@ -52,6 +53,7 @@ def diagnostics(config: PondSecConfig, store: EventStore) -> dict[str, Any]:
     pf_blocking = _pf_blocking_status()
     tls_inspection = _tls_inspection_status(telemetry_counts)
     resource_usage = detail.get("resource_usage", {})
+    learning_status = config.detection.learning_status()
     return {
         "status": health["status"],
         "pid": health["pid"],
@@ -73,6 +75,8 @@ def diagnostics(config: PondSecConfig, store: EventStore) -> dict[str, Any]:
         "last_response_errors": detail.get("last_response_errors", []),
         "resource_usage": resource_usage,
         "resource_warnings": detail.get("resource_warnings", []),
+        "learning_status": detail.get("learning_status", learning_status),
+        "learning_suppressed_detectors": detail.get("learning_suppressed_detectors", []),
         "limits": detail.get("limits", {
             "max_event_rate": config.max_event_rate,
             "max_queue_length": config.max_queue_length,
@@ -80,7 +84,7 @@ def diagnostics(config: PondSecConfig, store: EventStore) -> dict[str, Any]:
             "incident_rate_limit_per_minute": config.incident_rate_limit_per_minute,
             "pf_action_rate_limit_per_minute": config.pf_action_rate_limit_per_minute,
         }),
-        "readiness": _readiness_status(config, health, db, eve_access, ml_runtime, pf_blocking, tls_inspection),
+        "readiness": _readiness_status(config, health, db, eve_access, ml_runtime, pf_blocking, tls_inspection, learning_status),
         "pf_tables": _pf_tables_status(),
         "pf_blocking": pf_blocking,
         "ml_runtime": ml_runtime,
@@ -95,6 +99,7 @@ def self_test(config: PondSecConfig, store: EventStore) -> dict[str, Any]:
     eve_access = eve_access_status(config)
     ml_runtime = _ml_runtime_status(config)
     host_baselines = store.baseline_summary()
+    learning_status = config.detection.learning_status()
     if db["status"] != "ok":
         errors.append("database integrity check failed")
     if eve_access["status"] != "ok":
@@ -108,11 +113,13 @@ def self_test(config: PondSecConfig, store: EventStore) -> dict[str, Any]:
             "fail_open": config.fail_open,
             "response_side_effects": "time_limited_pf_table_on_activation",
             "machine_learning": "ok" if config.detection.machine_learning else "disabled",
+            "learning_mode": learning_status["status"],
             "host_baselines": "ok" if host_baselines["total_hosts"] >= 0 else "failed",
             "pytorch_runtime": ml_runtime["pytorch_status"],
         },
         "eve_access": eve_access,
         "ml_runtime": ml_runtime,
+        "learning_status": learning_status,
         "host_baselines": host_baselines,
         "errors": errors,
     }
@@ -335,6 +342,7 @@ def _active_model(config: PondSecConfig) -> str | None:
 def _ml_runtime_status(config: PondSecConfig) -> dict[str, Any]:
     inventory = model_inventory(config.data_dir)
     preferred = next((item for item in inventory if item.get("preferred")), None)
+    learning_status = config.detection.learning_status()
     torch_spec = importlib.util.find_spec("torch")
     torch_version = None
     if torch_spec is not None:
@@ -343,11 +351,12 @@ def _ml_runtime_status(config: PondSecConfig) -> dict[str, Any]:
         except importlib.metadata.PackageNotFoundError:
             torch_version = "unknown"
     return {
-        "status": "active" if config.detection.machine_learning else "disabled",
-        "host_baseline_anomaly": "active" if config.detection.machine_learning else "disabled",
+        "status": "learning" if learning_status.get("active") else ("active" if config.detection.machine_learning else "disabled"),
+        "host_baseline_anomaly": "suppressed_by_learning_mode" if learning_status.get("active") else ("active" if config.detection.machine_learning else "disabled"),
         "external_model_id": preferred["model_id"] if preferred else None,
         "external_model_status": preferred["status"] if preferred else "missing",
         "external_model_runtime": preferred["runtime"] if preferred else None,
+        "learning_status": learning_status,
         "pytorch_available": torch_spec is not None,
         "pytorch_status": "available" if torch_spec is not None else "unavailable",
         "pytorch_version": torch_version,
@@ -386,6 +395,7 @@ def _readiness_status(
     ml_runtime: dict[str, Any],
     pf_blocking: dict[str, Any],
     tls_inspection: dict[str, Any],
+    learning_status: dict[str, Any],
 ) -> dict[str, Any]:
     checks = [
         {
@@ -427,6 +437,17 @@ def _readiness_status(
             "status": "ok" if ml_runtime.get("external_model_status") == "active" else "warning",
             "detail": f"{ml_runtime.get('external_model_id') or 'No model'} status: {ml_runtime.get('external_model_status')}.",
             "recommendation": "" if ml_runtime.get("external_model_status") == "active" else "Install and verify the pretrained model artifact, then run the model self-test.",
+        },
+        {
+            "id": "learning_mode",
+            "label": "AI learning phase",
+            "requirement": "required for AI production alarms",
+            "status": "warning" if learning_status.get("active") else "ok",
+            "detail": (
+                f"Status {learning_status.get('status')}; remaining days: {learning_status.get('remaining_days')}; "
+                f"override: {bool(learning_status.get('early_ai_activation_override'))}."
+            ),
+            "recommendation": learning_status.get("warning") or "AI alarms are armed for production use.",
         },
         {
             "id": "pf_response",

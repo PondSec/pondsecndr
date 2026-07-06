@@ -10,10 +10,10 @@ import tempfile
 import unittest
 
 import pondsec_ndr.diagnostics as diagnostics_mod
-from pondsec_ndr.cli import main as cli_main
+from pondsec_ndr.cli import _incident_analysis, main as cli_main
 from pondsec_ndr.collectors.eve import EveCollector
 from pondsec_ndr.collectors.filterlog import FilterLogCollector, normalize_filterlog_line
-from pondsec_ndr.config import PondSecConfig, ResponseConfig
+from pondsec_ndr.config import DetectionConfig, PondSecConfig, ResponseConfig
 from pondsec_ndr.correlation import correlate_detections
 from pondsec_ndr.detection.detectors import BeaconingDetector, DNSTunnelingDetector, PortScanDetector, SuricataAlertAdapter
 from pondsec_ndr.diagnostics import diagnostic_archive, eve_access_status
@@ -386,6 +386,53 @@ class BackendTests(unittest.TestCase):
         self.assertTrue(explanation["thresholds_exceeded"])
         self.assertTrue(explanation["administrator_guidance"])
 
+    def test_incident_analysis_builds_threat_graph_and_stage_view(self) -> None:
+        incident = {
+            "incident_id": "incident-analysis-1",
+            "title": "Possible C2",
+            "status": "open",
+            "risk_score": 82,
+            "severity": 8,
+            "confidence": 0.91,
+            "source_ip": "192.168.10.50",
+            "destination_ip": "203.0.113.50",
+            "category": "command_and_control",
+            "created_at": "2026-07-05T10:00:00+00:00",
+            "updated_at": "2026-07-05T10:10:00+00:00",
+            "first_seen": "2026-07-05T10:00:00+00:00",
+            "last_seen": "2026-07-05T10:10:00+00:00",
+            "event_count": 6,
+            "detection_count": 1,
+            "suppressed_count": 0,
+            "affected_targets": ["203.0.113.50"],
+            "attack_stage": "command_and_control",
+            "evidence": {
+                "correlation": {"deduplicated": True},
+                "detections": [{
+                    "detection_id": "d-c2",
+                    "detector_id": "pondsec.beaconing",
+                    "title": "Possible command-and-control beaconing",
+                    "category": "command_and_control",
+                    "timestamp": "2026-07-05T10:00:00+00:00",
+                    "source_ip": "192.168.10.50",
+                    "destination_ip": "203.0.113.50",
+                    "severity": 8,
+                    "confidence": 0.91,
+                    "anomaly_score": 0.9,
+                    "description": "Connections recur at regular intervals.",
+                    "evidence": {"port": 443, "explainability": {"administrator_guidance": ["Check endpoint process tree."]}},
+                }],
+            },
+            "risk_factors": [{"name": "confidence", "value": 18}],
+        }
+        analysis = _incident_analysis(incident, {"status": "active", "risk_score": 82, "confidence": 0.91, "created_at": "2026-07-05T10:11:00+00:00"})
+        self.assertIn("attack_graph", analysis)
+        self.assertGreaterEqual(len(analysis["attack_graph"]["nodes"]), 3)
+        self.assertTrue(any(edge["kind"] == "command_and_control" for edge in analysis["attack_graph"]["edges"]))
+        self.assertTrue(any(stage["stage"] == "response" and stage["status"] == "prevented" for stage in analysis["attack_stages"]))
+        self.assertEqual(analysis["visual_timeline"][0]["count"], 1)
+        self.assertEqual(analysis["case_summary"]["response"]["status"], "active")
+
     def test_incident_dedup_merges_same_source_category_target_network_window(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = EventStore(Path(tmp) / "pondsec-ndr.db")
@@ -493,6 +540,86 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(result["status"], "degraded")
             self.assertLessEqual(result["inserted_events"], 5)
             self.assertTrue(result["resource_warnings"] == [] or isinstance(result["resource_warnings"], list))
+
+    def test_service_learning_mode_suppresses_ai_baseline_incidents_until_override(self) -> None:
+        def anomaly_raw_event() -> dict:
+            return {
+                "timestamp": "2026-07-05T10:01:00+00:00",
+                "event_type": "flow",
+                "src_ip": "192.168.10.250",
+                "src_port": 52001,
+                "dest_ip": "198.51.100.250",
+                "dest_port": 443,
+                "proto": "TCP",
+                "flow": {
+                    "state": "closed",
+                    "reason": "finished",
+                    "age": 1,
+                    "pkts_toserver": 3,
+                    "pkts_toclient": 1,
+                    "bytes_toserver": 1000,
+                    "bytes_toclient": 100,
+                },
+            }
+
+        def seed_baseline(service: PondSecService) -> None:
+            normal = [{
+                "feature_version": "1",
+                "source_ip": "192.168.10.250",
+                "bytes_out": 100.0,
+                "upload_download_ratio": 1.0,
+                "connections_60s": 1.0,
+                "external_connections": 1.0,
+                "destination_count": 1.0,
+                "port_count": 1.0,
+                "dns_entropy": 0.0,
+                "dns_name_length": 0.0,
+                "internal_connections": 0.0,
+            }]
+            for _ in range(3):
+                service.store.update_host_baselines(normal)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            eve = root / "eve.json"
+            eve.write_text(json.dumps(anomaly_raw_event()) + "\n", encoding="utf-8")
+            config = PondSecConfig(
+                enabled=True,
+                suricata_eve_path=str(eve),
+                data_dir=root / "db",
+                log_dir=root / "log",
+                run_dir=root / "run",
+                detection=DetectionConfig(machine_learning=True, learning_mode=True, minimum_observations=3),
+            )
+            service = PondSecService(config)
+            seed_baseline(service)
+            result = service.run_once(max_lines=10)
+            self.assertEqual(result["detections"], 0)
+            self.assertIn("pondsec.host_baseline_anomaly", result["learning_suppressed_detectors"])
+            self.assertEqual(result["learning_status"]["status"], "learning")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            eve = root / "eve.json"
+            eve.write_text(json.dumps(anomaly_raw_event()) + "\n", encoding="utf-8")
+            config = PondSecConfig(
+                enabled=True,
+                suricata_eve_path=str(eve),
+                data_dir=root / "db",
+                log_dir=root / "log",
+                run_dir=root / "run",
+                detection=DetectionConfig(
+                    machine_learning=True,
+                    learning_mode=True,
+                    early_ai_activation_override=True,
+                    minimum_observations=3,
+                ),
+            )
+            service = PondSecService(config)
+            seed_baseline(service)
+            result = service.run_once(max_lines=10)
+            self.assertGreaterEqual(result["detections"], 1)
+            self.assertEqual(result["learning_status"]["status"], "override")
 
     def test_eve_access_status_checks_service_user_read_permission(self) -> None:
         current_user = pwd.getpwuid(os.getuid()).pw_name

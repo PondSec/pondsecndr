@@ -45,10 +45,10 @@ $(function() {
 
     function statusClass(value) {
         value = String(value || '').toLowerCase();
-        if (['ok', 'ready', 'healthy', 'active', 'running', 'available'].indexOf(value) !== -1) {
+        if (['ok', 'ready', 'healthy', 'active', 'running', 'available', 'armed'].indexOf(value) !== -1) {
             return 'good';
         }
-        if (['warning', 'needs_attention', 'info', 'disabled', 'missing', 'unavailable'].indexOf(value) !== -1) {
+        if (['warning', 'needs_attention', 'info', 'disabled', 'missing', 'unavailable', 'learning', 'override', 'suppressed_by_learning_mode'].indexOf(value) !== -1) {
             return 'info';
         }
         if (['failed', 'error', 'not_ready', 'stopped'].indexOf(value) !== -1) {
@@ -96,9 +96,11 @@ $(function() {
         var eve = data.eve_access || {};
         var pf = data.pf_blocking || {};
         var baselines = data.host_baselines || {};
+        var learning = data.learning_status || (ml.learning_status || {});
         $('#runtime_grid').html([
             {label: 'EVE telemetry', value: eve.status || 'unknown', detail: eve.path || data.suricata_eve_path || '-'},
             {label: 'AI model', value: ml.external_model_status || 'unknown', detail: ml.external_model_id || 'No model selected'},
+            {label: 'AI learning mode', value: learning.status || 'unknown', detail: learning.warning || ((learning.remaining_days || 0) + ' days remaining')},
             {label: 'PyTorch runtime', value: ml.pytorch_status || 'unknown', detail: ml.pytorch_version || ml.python_executable || '-'},
             {label: 'PF blocking', value: pf.rule_present ? 'active' : 'missing', detail: pf.table || '-'},
             {label: 'TLS visibility', value: tls.status || 'unknown', detail: 'HTTP ' + numberValue(tls.http_events_24h) + ' / TLS ' + numberValue(tls.tls_events_24h) + ' events in 24h'},
@@ -121,7 +123,9 @@ $(function() {
             ['Parser errors', numberValue(data.parser_errors).toLocaleString()],
             ['Database size', formatBytes(data.database_size)],
             ['Feature schema', data.feature_version || '-'],
-            ['Active model', data.active_model_version || 'No active model']
+            ['Active model', data.active_model_version || 'No active model'],
+            ['Learning state', ((data.learning_status || {}).status || '-')],
+            ['AI detectors suppressed', (data.learning_suppressed_detectors || []).join(', ') || 'None']
         ].map(function(row) {
             return '<tr><td>' + escapeHtml(row[0]) + '</td><td>' + escapeHtml(row[1]) + '</td></tr>';
         }).join(''));
@@ -142,6 +146,8 @@ $(function() {
             readiness: data.readiness,
             eve_access: data.eve_access,
             ml_runtime: data.ml_runtime,
+            learning_status: data.learning_status,
+            learning_suppressed_detectors: data.learning_suppressed_detectors,
             pf_blocking: data.pf_blocking,
             tls_inspection: data.tls_inspection,
             last_collector_errors: data.last_collector_errors,

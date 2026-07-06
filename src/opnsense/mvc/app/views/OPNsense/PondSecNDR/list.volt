@@ -5,6 +5,7 @@ $(function() {
     var allRows = [];
     var rows = [];
     var summary = {};
+    var caseDetailLookup = {};
 
     function escapeHtml(value) {
         return $('<div/>').text(value === null || value === undefined ? '' : String(value)).html();
@@ -113,6 +114,192 @@ $(function() {
             return parts.length ? escapeHtml(parts.join(' | ')) : 'Details available';
         }
         return escapeHtml(data);
+    }
+
+    function escapeAttr(value) {
+        return escapeHtml(value).replace(/"/g, '&quot;');
+    }
+
+    function className(value) {
+        return String(value || 'unknown').toLowerCase().replace(/[^a-z0-9_-]+/g, '-');
+    }
+
+    function shortLabel(value, length) {
+        value = String(value || '-');
+        if (value.length <= length) {
+            return value;
+        }
+        return value.substring(0, Math.max(1, length - 3)) + '...';
+    }
+
+    function stageLabel(value) {
+        return humanKey(value || 'unknown');
+    }
+
+    function resetCaseDetails() {
+        caseDetailLookup = {};
+    }
+
+    function registerCaseDetail(type, title, item) {
+        var id = 'case-detail-' + Object.keys(caseDetailLookup).length;
+        caseDetailLookup[id] = {type: type, title: title, item: item || {}};
+        return id;
+    }
+
+    function renderCaseDetail(detail) {
+        detail = detail || {type: 'Case', title: 'Case overview', item: {}};
+        var item = detail.item || {};
+        var rows = [
+            ['Type', detail.type],
+            ['Status', item.status || item.stage_status || item.certainty],
+            ['Stage', item.stage],
+            ['Kind', item.kind || item.edge_kind || item.type],
+            ['Time', item.timestamp || item.first_seen || item.last_seen],
+            ['Protocol', item.protocol],
+            ['Ports', item.ports],
+            ['Confidence', hasValue(item.confidence) ? formatPercent(item.confidence) : null],
+            ['Risk contribution', item.risk_contribution || item.risk_delta || item.risk],
+            ['Detection IDs', item.detection_ids],
+            ['Summary', item.summary || item.reason || item.title]
+        ].filter(function(row) { return hasValue(row[1]) && row[1] !== '-'; });
+        $('#incident_focus_title').text(detail.title || 'Selected evidence');
+        $('#incident_focus_body').html(rows.length ? rows.map(function(row) {
+            return '<div class="pondsec-focus-row"><span>' + escapeHtml(row[0]) + '</span><strong>' + compactValue(row[1]) + '</strong></div>';
+        }).join('') : '<div class="pondsec-empty">Select a graph node, relationship, phase, or timeline item.</div>');
+        var evidence = item.evidence || item.details || {};
+        $('#incident_focus_evidence').html(Object.keys(evidence).length ? '<pre>' + escapeHtml(JSON.stringify(evidence, null, 2)) + '</pre>' : '');
+    }
+
+    function renderCaseSummary(summaryData, incident) {
+        summaryData = summaryData || {};
+        var entry = summaryData.possible_entry_source || {};
+        var response = summaryData.response || {};
+        var rows = [
+            ['Affected host', mono(summaryData.affected_host || incident.source_ip), 'observed'],
+            ['Possible entry source', escapeHtml(entry.value || '-'), entry.certainty || 'inferred'],
+            ['Primary destination', mono(summaryData.primary_destination || incident.destination_ip), hasValue(summaryData.primary_destination || incident.destination_ip) ? 'observed' : 'inferred'],
+            ['First seen', formatDate(summaryData.first_seen || incident.created_at), 'observed'],
+            ['Last seen', formatDate(summaryData.last_seen || incident.updated_at), 'observed'],
+            ['Risk score', riskCell(summaryData.risk_score || incident.risk_score), 'observed'],
+            ['Confidence', formatPercent(summaryData.confidence || incident.confidence), 'observed'],
+            ['Block status', badge(response.status || 'none'), response.status === 'active' ? 'confirmed' : 'observed'],
+            ['Isolation', badge(response.isolation || 'none'), response.isolation === 'active' ? 'confirmed' : 'observed']
+        ];
+        $('#incident_case_summary').html(rows.map(function(row) {
+            return '<div class="pondsec-case-kv">' +
+                '<span>' + escapeHtml(row[0]) + '</span>' +
+                '<strong>' + row[1] + '</strong>' +
+                '<em class="pondsec-certainty ' + className(row[2]) + '">' + escapeHtml(row[2]) + '</em>' +
+            '</div>';
+        }).join(''));
+        $('#incident_entry_reason').text(entry.reason || '');
+    }
+
+    function renderCertainty(summaryData) {
+        var certainty = (summaryData || {}).certainty || {};
+        var order = ['confirmed', 'observed', 'inferred', 'not_claimed'];
+        $('#incident_certainty').html(order.map(function(key) {
+            var values = certainty[key] || [];
+            return '<div class="pondsec-certainty-card">' +
+                '<strong>' + escapeHtml(humanKey(key)) + '</strong>' +
+                '<p>' + escapeHtml(values.length ? values.join(', ') : '-') + '</p>' +
+            '</div>';
+        }).join(''));
+    }
+
+    function renderGraphLegend(graph) {
+        var legend = (graph || {}).legend || {};
+        $('#incident_graph_legend').html(Object.keys(legend).map(function(key) {
+            return '<span class="pondsec-legend-item ' + className(key) + '"><i></i>' + escapeHtml(key) + '</span>';
+        }).join(''));
+    }
+
+    function renderAttackGraph(graph) {
+        graph = graph || {};
+        var nodes = (graph.nodes || []).slice(0, 24);
+        var edges = (graph.edges || []).slice(0, 60);
+        if (!nodes.length) {
+            return '<div class="pondsec-empty">No graph data recorded for this incident.</div>';
+        }
+        var nodeById = {};
+        nodes.forEach(function(node) { nodeById[node.id] = node; });
+        var columns = {source_host: 0, internal_network: 1, behavior_model: 1, target_host: 2, external_target: 2, external_group: 2, target: 2, response: 3};
+        var buckets = [[], [], [], []];
+        nodes.forEach(function(node) {
+            var column = columns[node.type] === undefined ? 2 : columns[node.type];
+            buckets[column].push(node);
+        });
+        var maxBucket = Math.max(1, buckets[0].length, buckets[1].length, buckets[2].length, buckets[3].length);
+        var width = 980;
+        var height = Math.max(300, maxBucket * 82 + 80);
+        var xs = [92, 330, 620, 880];
+        var positions = {};
+        buckets.forEach(function(bucket, column) {
+            var gap = height / (bucket.length + 1);
+            bucket.forEach(function(node, index) {
+                positions[node.id] = {x: xs[column], y: Math.round(gap * (index + 1))};
+            });
+        });
+        var edgeHtml = edges.filter(function(edge) {
+            return positions[edge.source] && positions[edge.target];
+        }).map(function(edge, index) {
+            var source = positions[edge.source];
+            var target = positions[edge.target];
+            var dx = Math.max(80, Math.abs(target.x - source.x) * 0.45);
+            var path = 'M ' + source.x + ' ' + source.y + ' C ' + (source.x + dx) + ' ' + source.y + ', ' + (target.x - dx) + ' ' + target.y + ', ' + target.x + ' ' + target.y;
+            var detailId = registerCaseDetail('Relationship', edge.kind || 'relationship', edge);
+            var midX = Math.round((source.x + target.x) / 2);
+            var midY = Math.round((source.y + target.y) / 2) - 7;
+            return '<g class="pondsec-graph-edge-wrap pondsec-analysis-click" data-detail-id="' + escapeAttr(detailId) + '">' +
+                '<path class="pondsec-graph-edge ' + className(edge.status) + ' kind-' + className(edge.kind) + '" d="' + escapeAttr(path) + '" marker-end="url(#pondsec_arrow)"></path>' +
+                '<path class="pondsec-graph-hit" d="' + escapeAttr(path) + '"></path>' +
+                '<text x="' + midX + '" y="' + midY + '">' + escapeHtml(shortLabel(edge.kind || edge.stage || 'related', 18)) + '</text>' +
+            '</g>';
+        }).join('');
+        var nodeHtml = nodes.map(function(node) {
+            var pos = positions[node.id] || {x: 40, y: 40};
+            var detailId = registerCaseDetail('Node', node.label || node.id, node);
+            return '<g class="pondsec-graph-node pondsec-analysis-click ' + className(node.status) + ' type-' + className(node.type) + '" data-detail-id="' + escapeAttr(detailId) + '" transform="translate(' + pos.x + ',' + pos.y + ')">' +
+                '<circle r="25"></circle>' +
+                '<text text-anchor="middle" y="-34">' + escapeHtml(shortLabel(node.type || 'node', 18)) + '</text>' +
+                '<text text-anchor="middle" y="5">' + escapeHtml(shortLabel(node.label || node.id, 20)) + '</text>' +
+            '</g>';
+        }).join('');
+        return '<svg class="pondsec-attack-svg" viewBox="0 0 ' + width + ' ' + height + '" role="img" aria-label="Incident attack graph">' +
+            '<defs><marker id="pondsec_arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z"></path></marker></defs>' +
+            edgeHtml + nodeHtml +
+        '</svg>';
+    }
+
+    function renderAttackStages(stages) {
+        stages = stages || [];
+        if (!stages.length) {
+            return '<div class="pondsec-empty">No attack stage analysis recorded.</div>';
+        }
+        return stages.map(function(stage) {
+            var detailId = registerCaseDetail('Attack stage', stageLabel(stage.stage), stage);
+            return '<button type="button" class="pondsec-stage-item pondsec-analysis-click ' + className(stage.status) + '" data-detail-id="' + escapeAttr(detailId) + '">' +
+                '<span>' + escapeHtml(stageLabel(stage.stage)) + '</span>' +
+                '<strong>' + escapeHtml(stage.status || 'not_seen') + '</strong>' +
+                '<em>' + formatPercent(stage.confidence || 0) + ' · ' + formatNumber(stage.detection_count || 0) + '</em>' +
+            '</button>';
+        }).join('');
+    }
+
+    function renderVisualTimeline(timeline) {
+        timeline = timeline || [];
+        if (!timeline.length) {
+            return '<div class="pondsec-empty">No detection timeline recorded.</div>';
+        }
+        return timeline.map(function(item) {
+            var detailId = registerCaseDetail('Timeline event', item.title || item.detector_id || item.stage, item);
+            return '<button type="button" class="pondsec-timeline-item pondsec-analysis-click ' + className(item.status || item.stage_status) + '" data-detail-id="' + escapeAttr(detailId) + '">' +
+                '<span>' + escapeHtml(formatDate(item.first_seen || item.timestamp)) + (item.last_seen && item.last_seen !== item.first_seen ? ' - ' + escapeHtml(formatDate(item.last_seen)) : '') + '</span>' +
+                '<strong>' + escapeHtml(item.title || item.detector_id || 'Detection') + '</strong>' +
+                '<p>' + escapeHtml(item.summary || '-') + '</p>' +
+                '<em>' + escapeHtml(stageLabel(item.stage)) + ' · ' + escapeHtml(item.edge_kind || item.kind || 'event') + ' · risk +' + escapeHtml(item.risk_delta || 0) + ' · ' + formatNumber(item.count || 1) + ' event(s)</em>' +
+            '</button>';
+        }).join('');
     }
 
     function primaryColumns(kind) {
@@ -387,18 +574,24 @@ $(function() {
     function renderIncidentDetail(data) {
         var incident = data.item || {};
         var analysis = data.analysis || {};
+        var caseSummary = analysis.case_summary || {};
         var story = analysis.host_story || {};
-        var timeline = analysis.timeline || [];
+        var timeline = analysis.visual_timeline || analysis.timeline || [];
         var targets = story.affected_targets || [];
         var guidance = analysis.administrator_guidance || [];
         var features = analysis.notable_features || [];
         var riskFactors = analysis.risk_factors || [];
+        resetCaseDetails();
         $('#incident_detail_title').text(incident.title || incident.incident_id || 'Incident');
         $('#incident_detail_meta').html(
             badge(incident.status) + badge(story.attack_stage || incident.category || 'unknown') +
             '<span class="pondsec-case-meta">Source ' + escapeHtml(story.source_ip || '-') + '</span>' +
+            '<span class="pondsec-case-meta">Risk ' + escapeHtml(incident.risk_score || '-') + '</span>' +
+            '<span class="pondsec-case-meta">Confidence ' + escapeHtml(formatPercent(incident.confidence)) + '</span>' +
             '<span class="pondsec-case-meta">Window ' + escapeHtml(formatDate(story.first_seen)) + ' - ' + escapeHtml(formatDate(story.last_seen)) + '</span>'
         );
+        renderCaseSummary(caseSummary, incident);
+        renderCertainty(caseSummary);
         $('#incident_story').html([
             ['Risk score', riskCell(incident.risk_score)],
             ['Detections', formatNumber(story.detection_count || 0)],
@@ -411,14 +604,10 @@ $(function() {
         $('#incident_targets').html(targets.length ? targets.map(function(target) {
             return '<span class="pondsec-token">' + escapeHtml(target) + '</span>';
         }).join('') : '<span class="pondsec-empty-inline">No target list recorded.</span>');
-        $('#incident_timeline').html(timeline.length ? timeline.map(function(item) {
-            return '<div class="pondsec-case-event">' +
-                '<span>' + escapeHtml(formatDate(item.timestamp)) + '</span>' +
-                '<strong>' + escapeHtml(item.title || item.detector_id || 'Detection') + '</strong>' +
-                '<p>' + escapeHtml(item.summary || '-') + '</p>' +
-                '<em>' + escapeHtml(item.detector_id || '-') + ' · severity ' + escapeHtml(item.severity || '-') + ' · confidence ' + escapeHtml(formatPercent(item.confidence)) + '</em>' +
-            '</div>';
-        }).join('') : '<div class="pondsec-empty">No detection timeline recorded.</div>');
+        $('#incident_attack_graph').html(renderAttackGraph(analysis.attack_graph || {}));
+        renderGraphLegend(analysis.attack_graph || {});
+        $('#incident_attack_stages').html(renderAttackStages(analysis.attack_stages || []));
+        $('#incident_timeline').html(renderVisualTimeline(timeline));
         $('#incident_guidance').html(guidance.length ? guidance.map(function(item) {
             return '<li>' + escapeHtml(item) + '</li>';
         }).join('') : '<li>No guidance recorded.</li>');
@@ -428,6 +617,7 @@ $(function() {
         $('#incident_risk_factors').html(riskFactors.length ? riskFactors.map(function(item) {
             return '<div class="pondsec-feature"><span>' + escapeHtml(item.name || item.factor || 'risk') + '</span><strong>' + compactValue(item.value || item.score || item.weight || item) + '</strong></div>';
         }).join('') : '<div class="pondsec-empty">No risk factors recorded.</div>');
+        renderCaseDetail({type: 'Case summary', title: 'Case overview', item: caseSummary});
         $('#incident_detail_panel').addClass('open');
     }
 
@@ -471,6 +661,10 @@ $(function() {
             return;
         }
         openIncidentDetail($(this).data('id'));
+    });
+    $(document).on('click', '.pondsec-analysis-click', function(event) {
+        event.stopPropagation();
+        renderCaseDetail(caseDetailLookup[$(this).data('detail-id')]);
     });
     $('#incident_detail_close').on('click', function() {
         $('#incident_detail_panel').removeClass('open');
@@ -687,20 +881,21 @@ $(function() {
 .pondsec-case-panel {
     background: #151d26;
     border-left: 1px solid #2a3544;
-    bottom: 0;
+    bottom: 54px;
     box-shadow: -12px 0 32px rgba(0, 0, 0, 0.32);
-    max-width: 760px;
+    max-width: none;
     overflow-y: auto;
-    padding: 18px;
+    padding: 24px;
     position: fixed;
-    right: -820px;
-    top: 0;
-    transition: right 0.22s ease;
-    width: 48vw;
+    right: 0;
+    top: 112px;
+    transform: translateX(105%);
+    transition: transform 0.22s ease;
+    width: min(1160px, calc(100vw - 340px));
     z-index: 9999;
 }
 .pondsec-case-panel.open {
-    right: 0;
+    transform: translateX(0);
 }
 .pondsec-case-head {
     align-items: flex-start;
@@ -746,6 +941,9 @@ $(function() {
     gap: 10px;
     grid-template-columns: repeat(2, minmax(0, 1fr));
 }
+.pondsec-case-grid.wide {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
 .pondsec-case-kv,
 .pondsec-feature {
     background: #1b2430;
@@ -766,6 +964,34 @@ $(function() {
     display: block;
     margin-top: 6px;
     overflow-wrap: anywhere;
+}
+.pondsec-case-kv em,
+.pondsec-certainty {
+    border-radius: 999px;
+    display: inline-block;
+    font-size: 10px;
+    font-style: normal;
+    font-weight: 700;
+    margin-top: 8px;
+    padding: 4px 7px;
+    text-transform: uppercase;
+}
+.pondsec-certainty.confirmed,
+.pondsec-certainty.observed {
+    background: rgba(76, 201, 112, 0.13);
+    color: #79df8f;
+}
+.pondsec-certainty.inferred,
+.pondsec-certainty.correlated,
+.pondsec-certainty.suspected {
+    background: rgba(73, 166, 255, 0.13);
+    color: #65b7ff;
+}
+.pondsec-certainty.not_claimed,
+.pondsec-certainty.not-seen,
+.pondsec-certainty.none {
+    background: rgba(143, 157, 172, 0.16);
+    color: #aeb9c5;
 }
 .pondsec-token {
     background: #1b2430;
@@ -798,6 +1024,222 @@ $(function() {
     color: #c8d2dc;
     margin: 0 0 5px;
 }
+.pondsec-analysis-grid {
+    display: grid;
+    gap: 12px;
+    grid-template-columns: minmax(0, 1.7fr) minmax(280px, 0.9fr);
+}
+.pondsec-graph-card {
+    min-height: 360px;
+}
+.pondsec-attack-svg {
+    background: #171f2a;
+    border: 1px solid #2a3544;
+    border-radius: 6px;
+    display: block;
+    min-height: 300px;
+    width: 100%;
+}
+.pondsec-attack-svg marker path {
+    fill: #7da2c9;
+}
+.pondsec-graph-edge {
+    fill: none;
+    stroke: #7da2c9;
+    stroke-width: 2.2;
+}
+.pondsec-graph-edge.confirmed {
+    stroke: #79df8f;
+}
+.pondsec-graph-edge.correlated {
+    stroke: #b38cff;
+}
+.pondsec-graph-edge.inferred {
+    stroke: #8f9dac;
+    stroke-dasharray: 6 5;
+}
+.pondsec-graph-hit {
+    cursor: pointer;
+    fill: none;
+    opacity: 0;
+    stroke: #fff;
+    stroke-width: 18;
+}
+.pondsec-graph-edge-wrap text {
+    fill: #9fafbf;
+    font-size: 12px;
+    pointer-events: none;
+}
+.pondsec-graph-node {
+    cursor: pointer;
+}
+.pondsec-graph-node circle {
+    fill: #202a36;
+    stroke: #65b7ff;
+    stroke-width: 2;
+}
+.pondsec-graph-node.confirmed circle {
+    stroke: #79df8f;
+}
+.pondsec-graph-node.correlated circle {
+    stroke: #b38cff;
+}
+.pondsec-graph-node.inferred circle {
+    stroke: #8f9dac;
+    stroke-dasharray: 5 4;
+}
+.pondsec-graph-node.type-response circle {
+    fill: rgba(246, 86, 97, 0.12);
+    stroke: #ff7a83;
+}
+.pondsec-graph-node text {
+    fill: #e7eef7;
+    font-size: 12px;
+    pointer-events: none;
+}
+.pondsec-graph-node text:first-of-type {
+    fill: #8f9dac;
+    font-size: 10px;
+    text-transform: uppercase;
+}
+.pondsec-legend-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 10px;
+}
+.pondsec-legend-item {
+    align-items: center;
+    color: #aeb9c5;
+    display: inline-flex;
+    font-size: 12px;
+    gap: 6px;
+    text-transform: uppercase;
+}
+.pondsec-legend-item i {
+    background: #8f9dac;
+    border-radius: 999px;
+    display: inline-block;
+    height: 8px;
+    width: 8px;
+}
+.pondsec-legend-item.confirmed i,
+.pondsec-legend-item.observed i {
+    background: #79df8f;
+}
+.pondsec-legend-item.correlated i {
+    background: #b38cff;
+}
+.pondsec-stage-lane {
+    display: grid;
+    gap: 8px;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+.pondsec-stage-item,
+.pondsec-timeline-item {
+    background: #1b2430;
+    border: 1px solid #2a3544;
+    border-left: 4px solid #8f9dac;
+    border-radius: 6px;
+    color: #c8d2dc;
+    cursor: pointer;
+    display: block;
+    padding: 10px;
+    text-align: left;
+    width: 100%;
+}
+.pondsec-stage-item.observed,
+.pondsec-timeline-item.observed {
+    border-left-color: #65b7ff;
+}
+.pondsec-stage-item.confirmed,
+.pondsec-stage-item.prevented,
+.pondsec-timeline-item.confirmed {
+    border-left-color: #79df8f;
+}
+.pondsec-stage-item.suspected,
+.pondsec-timeline-item.suspected,
+.pondsec-timeline-item.inferred {
+    border-left-color: #f2a84a;
+}
+.pondsec-stage-item.not_seen {
+    opacity: 0.64;
+}
+.pondsec-stage-item span,
+.pondsec-timeline-item span {
+    color: #8f9dac;
+    display: block;
+    font-size: 12px;
+}
+.pondsec-stage-item strong,
+.pondsec-timeline-item strong {
+    color: #f1f6fb;
+    display: block;
+    margin: 5px 0;
+}
+.pondsec-stage-item em,
+.pondsec-timeline-item em {
+    color: #8f9dac;
+    display: block;
+    font-size: 12px;
+    font-style: normal;
+}
+.pondsec-timeline-stack {
+    display: grid;
+    gap: 9px;
+}
+.pondsec-timeline-item p {
+    margin: 0 0 6px;
+}
+.pondsec-focus-row {
+    border-bottom: 1px solid #2a3544;
+    padding: 8px 0;
+}
+.pondsec-focus-row span {
+    color: #8f9dac;
+    display: block;
+    font-size: 12px;
+    text-transform: uppercase;
+}
+.pondsec-focus-row strong {
+    color: #eef4fa;
+    display: block;
+    font-weight: 600;
+    margin-top: 4px;
+    overflow-wrap: anywhere;
+}
+.pondsec-focus-evidence pre {
+    background: #101820;
+    border: 1px solid #2a3544;
+    border-radius: 6px;
+    color: #c8d2dc;
+    margin: 10px 0 0;
+    max-height: 240px;
+    overflow: auto;
+    padding: 10px;
+}
+.pondsec-certainty-grid {
+    display: grid;
+    gap: 10px;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+.pondsec-certainty-card {
+    background: #1b2430;
+    border: 1px solid #2a3544;
+    border-radius: 6px;
+    padding: 10px;
+}
+.pondsec-certainty-card strong {
+    color: #f1f6fb;
+}
+.pondsec-certainty-card p {
+    color: #aeb9c5;
+    margin: 6px 0 0;
+}
+.pondsec-entry-reason {
+    color: #8f9dac;
+    margin: 10px 0 0;
+}
 .pondsec-guidance {
     color: #c8d2dc;
     margin-bottom: 0;
@@ -815,7 +1257,15 @@ $(function() {
         grid-template-columns: 1fr;
     }
     .pondsec-case-panel {
+        bottom: 0;
+        top: 0;
         width: 100vw;
+    }
+    .pondsec-analysis-grid,
+    .pondsec-case-grid.wide,
+    .pondsec-stage-lane,
+    .pondsec-certainty-grid {
+        grid-template-columns: 1fr;
     }
 }
 </style>
@@ -866,12 +1316,38 @@ $(function() {
         <div id="incident_story" class="pondsec-case-grid"></div>
     </section>
     <section class="pondsec-case-section">
+        <h4>Case summary</h4>
+        <div id="incident_case_summary" class="pondsec-case-grid wide"></div>
+        <p id="incident_entry_reason" class="pondsec-entry-reason"></p>
+    </section>
+    <div class="pondsec-analysis-grid">
+        <section class="pondsec-case-section pondsec-graph-card">
+            <h4>Attack graph</h4>
+            <div id="incident_attack_graph"></div>
+            <div id="incident_graph_legend" class="pondsec-legend-row"></div>
+        </section>
+        <section class="pondsec-case-section">
+            <h4>Selected evidence</h4>
+            <div id="incident_focus_title" class="pondsec-focus-title">Case overview</div>
+            <div id="incident_focus_body"></div>
+            <div id="incident_focus_evidence" class="pondsec-focus-evidence"></div>
+        </section>
+    </div>
+    <section class="pondsec-case-section">
+        <h4>Attack stages</h4>
+        <div id="incident_attack_stages" class="pondsec-stage-lane"></div>
+    </section>
+    <section class="pondsec-case-section">
         <h4>Affected targets</h4>
         <div id="incident_targets"></div>
     </section>
     <section class="pondsec-case-section">
-        <h4>Threat timeline</h4>
-        <div id="incident_timeline"></div>
+        <h4>Visual timeline</h4>
+        <div id="incident_timeline" class="pondsec-timeline-stack"></div>
+    </section>
+    <section class="pondsec-case-section">
+        <h4>Confidence boundaries</h4>
+        <div id="incident_certainty" class="pondsec-certainty-grid"></div>
     </section>
     <section class="pondsec-case-section">
         <h4>What to check next</h4>

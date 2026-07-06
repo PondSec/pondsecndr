@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -251,7 +252,10 @@ def dispatch(args: argparse.Namespace, config: Any, store: EventStore) -> tuple[
             incident = store.get_incident(args.incident_id)
             if incident is None:
                 return {"status": "not_found", "incident_id": args.incident_id}, 1
-            return {"status": "ok", "item": incident, "analysis": _incident_analysis(incident)}, 0
+            response_block = store.existing_response_block(incident.get("incident_id"), incident.get("source_ip"))
+            if response_block:
+                incident["response_state"] = response_block
+            return {"status": "ok", "item": incident, "analysis": _incident_analysis(incident, response_block)}, 0
         status_map = {"close": "closed", "reopen": "open", "false-positive": "false_positive"}
         changed = store.update_incident_status(args.incident_id, status_map[args.section_command], actor="cli")
         return {"status": "ok" if changed else "not_found", "incident_id": args.incident_id}, 0 if changed else 1
@@ -913,34 +917,82 @@ def _active_model(config: Any) -> str | None:
     return None
 
 
-def _incident_analysis(incident: dict[str, Any]) -> dict[str, Any]:
+ATTACK_STAGES = [
+    "reconnaissance",
+    "initial_access",
+    "execution",
+    "persistence",
+    "lateral_movement",
+    "command_and_control",
+    "exfiltration",
+    "response",
+]
+
+STAGE_STATUS_RANK = {
+    "not_seen": 0,
+    "suspected": 1,
+    "observed": 2,
+    "confirmed": 3,
+    "prevented": 4,
+}
+
+GRAPH_STATUS_RANK = {
+    "inferred": 1,
+    "observed": 2,
+    "correlated": 3,
+    "confirmed": 4,
+}
+
+
+def _incident_analysis(incident: dict[str, Any], response_block: dict[str, Any] | None = None) -> dict[str, Any]:
     evidence = incident.get("evidence") if isinstance(incident.get("evidence"), dict) else {}
     detections = evidence.get("detections", []) if isinstance(evidence, dict) else []
     if not isinstance(detections, list):
         detections = []
     targets = incident.get("affected_targets") or []
+    response_block = response_block or incident.get("response_state")
     timeline = []
     admin_guidance = []
     notable_features = []
+    stages = _empty_attack_stages()
     for detection in detections:
         if not isinstance(detection, dict):
             continue
         explanation = detection.get("explainability") or (detection.get("evidence") or {}).get("explainability") or {}
+        stage = _stage_for_detection(detection, incident)
+        certainty = _certainty_for_detection(detection)
         timeline.append({
             "timestamp": detection.get("timestamp"),
             "title": detection.get("title"),
             "detector_id": detection.get("detector_id"),
             "category": detection.get("category"),
+            "stage": stage,
+            "status": certainty,
+            "edge_kind": _edge_kind_for_stage(stage, detection.get("category")),
             "severity": detection.get("severity"),
             "confidence": detection.get("confidence"),
+            "risk_delta": _risk_contribution(detection),
             "summary": explanation.get("why") or detection.get("description"),
+            "evidence": detection.get("evidence", {}),
+            "raw_events": (detection.get("evidence") or {}).get("events", []),
         })
+        _promote_stage(stages, stage, certainty, detection)
         for item in explanation.get("administrator_guidance", []) if isinstance(explanation, dict) else []:
             if item not in admin_guidance:
                 admin_guidance.append(item)
         for item in explanation.get("notable_features", []) if isinstance(explanation, dict) else []:
             notable_features.append(item)
+    if response_block:
+        _promote_stage(stages, "response", "prevented" if response_block.get("status") == "active" else "observed", {
+            "detector_id": "pondsec.response",
+            "title": "Response action",
+            "confidence": response_block.get("confidence"),
+        })
+    graph = _incident_attack_graph(incident, detections, targets, response_block)
+    visual_timeline = _group_timeline(timeline)
+    summary = _case_summary(incident, targets, admin_guidance, response_block)
     return {
+        "case_summary": summary,
         "host_story": {
             "source_ip": incident.get("source_ip"),
             "destination_ip": incident.get("destination_ip"),
@@ -953,11 +1005,371 @@ def _incident_analysis(incident: dict[str, Any]) -> dict[str, Any]:
             "detection_count": incident.get("detection_count"),
             "suppressed_count": incident.get("suppressed_count"),
         },
+        "attack_graph": graph,
+        "attack_stages": [stages[name] for name in ATTACK_STAGES],
         "timeline": sorted(timeline, key=lambda item: str(item.get("timestamp") or "")),
+        "visual_timeline": visual_timeline,
         "notable_features": notable_features[:20],
         "administrator_guidance": admin_guidance[:12],
         "risk_factors": incident.get("risk_factors", []),
         "correlation": evidence.get("correlation", {}),
+    }
+
+
+def _empty_attack_stages() -> dict[str, dict[str, Any]]:
+    return {
+        name: {
+            "stage": name,
+            "status": "not_seen",
+            "confidence": 0,
+            "detection_count": 0,
+            "evidence": [],
+            "certainty_note": "No evidence observed for this phase.",
+        }
+        for name in ATTACK_STAGES
+    }
+
+
+def _promote_stage(stages: dict[str, dict[str, Any]], stage: str, status: str, detection: dict[str, Any]) -> None:
+    stage = stage if stage in stages else "execution"
+    status = status if status in STAGE_STATUS_RANK else "suspected"
+    current = stages[stage]
+    if STAGE_STATUS_RANK[status] > STAGE_STATUS_RANK[current["status"]]:
+        current["status"] = status
+    current["confidence"] = max(float(current.get("confidence") or 0), float(detection.get("confidence") or 0))
+    current["detection_count"] = int(current.get("detection_count") or 0) + 1
+    current["evidence"].append({
+        "detector_id": detection.get("detector_id"),
+        "title": detection.get("title"),
+        "timestamp": detection.get("timestamp"),
+        "confidence": detection.get("confidence"),
+    })
+    if current["status"] == "confirmed":
+        current["certainty_note"] = "Confirmed by a strong detector or explicit security action."
+    elif current["status"] == "prevented":
+        current["certainty_note"] = "A response action is active or was applied for this case."
+    elif current["status"] == "observed":
+        current["certainty_note"] = "Observed directly in telemetry, but not marked as exploit-confirmed."
+    elif current["status"] == "suspected":
+        current["certainty_note"] = "Weak or inferred signal only; investigate before treating as confirmed."
+
+
+def _stage_for_detection(detection: dict[str, Any], incident: dict[str, Any]) -> str:
+    category = str(detection.get("category") or incident.get("category") or "").lower()
+    detector_id = str(detection.get("detector_id") or "").lower()
+    title = str(detection.get("title") or "").lower()
+    if "lateral" in detector_id or category == "lateral_movement":
+        return "lateral_movement"
+    if "beacon" in detector_id or category == "command_and_control":
+        return "command_and_control"
+    if "exfil" in detector_id or category == "exfiltration":
+        return "exfiltration"
+    if "portscan" in detector_id or "scan" in title or category == "reconnaissance":
+        return "reconnaissance"
+    if category == "signature":
+        return "initial_access"
+    if category == "machine_learning":
+        return "execution"
+    if category == "anomaly":
+        return incident.get("attack_stage") if incident.get("attack_stage") in ATTACK_STAGES else "execution"
+    return incident.get("attack_stage") if incident.get("attack_stage") in ATTACK_STAGES else "execution"
+
+
+def _edge_kind_for_stage(stage: str, category: str | None = None) -> str:
+    if stage == "reconnaissance":
+        return "scan"
+    if stage == "initial_access":
+        return "exploit_attempt"
+    if stage == "lateral_movement":
+        return "lateral_movement"
+    if stage == "command_and_control":
+        return "command_and_control"
+    if stage == "exfiltration":
+        return "exfiltration"
+    if stage == "response":
+        return "response"
+    if category == "signature":
+        return "exploit_attempt"
+    return "correlated_behavior"
+
+
+def _certainty_for_detection(detection: dict[str, Any]) -> str:
+    evidence = detection.get("evidence") if isinstance(detection.get("evidence"), dict) else {}
+    detector_id = str(detection.get("detector_id") or "").lower()
+    category = str(detection.get("category") or "").lower()
+    confidence = float(detection.get("confidence") or 0)
+    action = str(evidence.get("suricata_action") or evidence.get("action") or "").lower()
+    if action in {"blocked", "drop", "dropped"} or "suricata_drop" in detector_id:
+        return "confirmed"
+    if category == "signature" and confidence >= 0.9:
+        return "confirmed"
+    if confidence >= 0.75:
+        return "observed"
+    return "suspected"
+
+
+def _risk_contribution(detection: dict[str, Any]) -> int:
+    severity = float(detection.get("severity") or 0)
+    confidence = float(detection.get("confidence") or 0)
+    anomaly = float(detection.get("anomaly_score") or 0)
+    return int(min(100, round((severity * 6) + (confidence * 25) + (anomaly * 20))))
+
+
+def _incident_attack_graph(
+    incident: dict[str, Any],
+    detections: list[dict[str, Any]],
+    targets: list[Any],
+    response_block: dict[str, Any] | None,
+) -> dict[str, Any]:
+    nodes: dict[str, dict[str, Any]] = {}
+    edges: list[dict[str, Any]] = []
+    source_ip = str(incident.get("source_ip") or "unknown-source")
+    source_id = _add_graph_node(nodes, source_ip, "source_host", "observed", incident.get("risk_score"), incident.get("confidence"))
+    source_network = _network_label(source_ip)
+    if source_network:
+        _add_graph_node(nodes, source_network, "internal_network", "inferred", None, None)
+    visible_targets = _visible_targets(incident, detections, targets)
+
+    for index, detection in enumerate(detections[:40]):
+        if not isinstance(detection, dict):
+            continue
+        stage = _stage_for_detection(detection, incident)
+        edge_kind = _edge_kind_for_stage(stage, detection.get("category"))
+        certainty = _certainty_for_detection(detection)
+        graph_status = _graph_status_for_detection(detection, incident)
+        destination = detection.get("destination_ip") or incident.get("destination_ip")
+        if not destination:
+            destination = "Host baseline"
+        destination = _target_group(str(destination), visible_targets)
+        node_type = _node_type(destination)
+        target_id = _add_graph_node(nodes, destination, node_type, graph_status if destination != "Host baseline" else "inferred", detection.get("severity"), detection.get("confidence"))
+        edge = {
+            "id": f"edge-{index}-{edge_kind}",
+            "source": source_id,
+            "target": target_id,
+            "kind": edge_kind,
+            "status": graph_status if destination != "Host baseline" else "inferred",
+            "stage_status": certainty,
+            "stage": stage,
+            "timestamp": detection.get("timestamp"),
+            "protocol": (detection.get("evidence") or {}).get("protocol"),
+            "ports": _ports_for_detection(detection),
+            "confidence": detection.get("confidence"),
+            "risk_contribution": _risk_contribution(detection),
+            "detection_ids": [detection.get("detection_id")] if detection.get("detection_id") else [],
+            "title": detection.get("title"),
+            "summary": detection.get("description"),
+            "evidence": detection.get("evidence", {}),
+        }
+        edges.append(edge)
+
+    if response_block:
+        response_id = _add_graph_node(nodes, f"PF {response_block.get('status', 'response')}", "response", "confirmed", response_block.get("risk_score"), response_block.get("confidence"))
+        edges.append({
+            "id": "edge-response",
+            "source": source_id,
+            "target": response_id,
+            "kind": "response",
+            "status": "confirmed" if response_block.get("status") == "active" else "observed",
+            "stage_status": "prevented" if response_block.get("status") == "active" else "observed",
+            "stage": "response",
+            "timestamp": response_block.get("created_at"),
+            "protocol": "pf",
+            "ports": [],
+            "confidence": response_block.get("confidence"),
+            "risk_contribution": response_block.get("risk_score"),
+            "detection_ids": [],
+            "title": f"PF block {response_block.get('status')}",
+            "summary": response_block.get("reason"),
+            "evidence": response_block,
+        })
+
+    return {
+        "nodes": list(nodes.values())[:24],
+        "edges": edges[:60],
+        "legend": {
+            "observed": "Seen directly in firewall or Suricata telemetry.",
+            "inferred": "Derived from host, subnet, or baseline context.",
+            "correlated": "Combined from multiple related detections.",
+            "confirmed": "Confirmed by a strong detector or explicit security action.",
+        },
+        "limits": {
+            "visible_nodes": 24,
+            "visible_edges": 60,
+            "grouped_targets": max(0, len(visible_targets.get("all_targets", [])) - len(visible_targets.get("visible", []))),
+        },
+    }
+
+
+def _add_graph_node(
+    nodes: dict[str, dict[str, Any]],
+    label: str,
+    node_type: str,
+    status: str,
+    risk: Any,
+    confidence: Any,
+) -> str:
+    node_id = f"{node_type}:{label}"
+    if node_id not in nodes:
+        nodes[node_id] = {
+            "id": node_id,
+            "label": label,
+            "type": node_type,
+            "status": status,
+            "risk": risk,
+            "confidence": confidence,
+            "details": {
+                "certainty": status,
+                "entity": label,
+                "type": node_type,
+            },
+        }
+    else:
+        current = nodes[node_id]
+        if GRAPH_STATUS_RANK.get(status, 0) > GRAPH_STATUS_RANK.get(str(current.get("status")), 0):
+            current["status"] = status
+        if risk is not None:
+            current["risk"] = max(float(current.get("risk") or 0), float(risk))
+        if confidence is not None:
+            current["confidence"] = max(float(current.get("confidence") or 0), float(confidence))
+    return node_id
+
+
+def _network_label(value: str) -> str | None:
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        return None
+    if not address.is_private:
+        return None
+    prefix = 24 if address.version == 4 else 64
+    return str(ipaddress.ip_network(f"{address}/{prefix}", strict=False))
+
+
+def _node_type(value: str) -> str:
+    if value == "Host baseline":
+        return "behavior_model"
+    if value.startswith("External targets"):
+        return "external_group"
+    if "/" in value:
+        return "internal_network"
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        return "target"
+    return "target_host" if address.is_private else "external_target"
+
+
+def _visible_targets(incident: dict[str, Any], detections: list[dict[str, Any]], targets: list[Any]) -> dict[str, Any]:
+    all_targets: list[str] = []
+    for target in list(targets or []) + [incident.get("destination_ip")]:
+        if target and str(target) not in all_targets:
+            all_targets.append(str(target))
+    for detection in detections:
+        target = detection.get("destination_ip") if isinstance(detection, dict) else None
+        if target and str(target) not in all_targets:
+            all_targets.append(str(target))
+    visible = all_targets[:10]
+    return {"all_targets": all_targets, "visible": visible}
+
+
+def _target_group(target: str, visible_targets: dict[str, Any]) -> str:
+    if target in visible_targets.get("visible", []):
+        return target
+    if target == "Host baseline":
+        return target
+    network = _network_label(target)
+    if network:
+        return network
+    return "External targets (grouped)"
+
+
+def _ports_for_detection(detection: dict[str, Any]) -> list[Any]:
+    evidence = detection.get("evidence") if isinstance(detection.get("evidence"), dict) else {}
+    ports = evidence.get("ports") or evidence.get("destination_ports") or evidence.get("target_ports") or []
+    if isinstance(ports, list):
+        return ports[:12]
+    if ports:
+        return [ports]
+    return []
+
+
+def _graph_status_for_detection(detection: dict[str, Any], incident: dict[str, Any]) -> str:
+    certainty = _certainty_for_detection(detection)
+    if certainty == "confirmed":
+        return "confirmed"
+    evidence = incident.get("evidence") if isinstance(incident.get("evidence"), dict) else {}
+    correlation = evidence.get("correlation") if isinstance(evidence, dict) else {}
+    if isinstance(correlation, dict) and correlation.get("deduplicated"):
+        return "correlated"
+    if certainty == "observed":
+        return "observed"
+    return "inferred"
+
+
+def _group_timeline(timeline: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, dict[str, Any]] = {}
+    for item in sorted(timeline, key=lambda row: str(row.get("timestamp") or "")):
+        key = "|".join(str(item.get(part) or "") for part in ("stage", "edge_kind", "detector_id", "title"))
+        if key not in grouped:
+            grouped[key] = dict(item, count=0, first_seen=item.get("timestamp"), last_seen=item.get("timestamp"), detections=[])
+        entry = grouped[key]
+        entry["count"] += 1
+        entry["last_seen"] = item.get("timestamp") or entry["last_seen"]
+        entry["risk_delta"] = max(int(entry.get("risk_delta") or 0), int(item.get("risk_delta") or 0))
+        entry["detections"].append(item)
+    return list(grouped.values())
+
+
+def _case_summary(
+    incident: dict[str, Any],
+    targets: list[Any],
+    admin_guidance: list[str],
+    response_block: dict[str, Any] | None,
+) -> dict[str, Any]:
+    source_ip = incident.get("source_ip")
+    destination = incident.get("destination_ip")
+    source_private = False
+    if source_ip:
+        try:
+            source_private = ipaddress.ip_address(str(source_ip)).is_private
+        except ValueError:
+            source_private = False
+    if source_private:
+        entry_source = {
+            "value": "Internal host behavior observed",
+            "certainty": "inferred",
+            "reason": "The source is inside a private address range; PondSec cannot prove initial compromise from this incident alone.",
+        }
+    else:
+        entry_source = {
+            "value": "External source",
+            "certainty": "observed",
+            "reason": "The source address is outside private address space.",
+        }
+    response = {
+        "status": response_block.get("status") if response_block else "none",
+        "block_id": response_block.get("block_id") if response_block else None,
+        "automatic": bool(response_block.get("automatic")) if response_block else False,
+        "isolation": "active" if response_block and response_block.get("status") == "active" and source_private else "none",
+    }
+    return {
+        "affected_host": source_ip,
+        "possible_entry_source": entry_source,
+        "primary_destination": destination,
+        "targets": targets,
+        "first_seen": incident.get("first_seen") or incident.get("created_at"),
+        "last_seen": incident.get("last_seen") or incident.get("updated_at"),
+        "risk_score": incident.get("risk_score"),
+        "confidence": incident.get("confidence"),
+        "response": response,
+        "recommended_actions": admin_guidance[:6],
+        "certainty": {
+            "confirmed": ["Stored incident fields", "Recorded detection metadata"],
+            "observed": ["Telemetry-backed source and detection timestamps"],
+            "inferred": ["Possible entry source", "Grouped networks", "Ungrouped target clusters"],
+            "not_claimed": ["Successful compromise", "confirmed exploit execution", "confirmed zero-day root cause"],
+        },
     }
 
 
@@ -977,14 +1389,17 @@ def _decode_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def emit(result: dict[str, Any], as_json: bool) -> None:
-    if as_json:
-        print(json.dumps(result, indent=2, sort_keys=True, default=str))
-        return
-    status = result.get("status")
-    if status:
-        print(status)
-    else:
-        print(json.dumps(result, indent=2, sort_keys=True, default=str))
+    try:
+        if as_json:
+            print(json.dumps(result, indent=2, sort_keys=True, default=str))
+            return
+        status = result.get("status")
+        if status:
+            print(status)
+        else:
+            print(json.dumps(result, indent=2, sort_keys=True, default=str))
+    except BrokenPipeError:
+        sys.stdout = open(os.devnull, "w", encoding="utf-8")
 
 
 if __name__ == "__main__":

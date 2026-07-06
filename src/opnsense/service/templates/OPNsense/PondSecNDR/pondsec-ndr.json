@@ -46,6 +46,10 @@
     "unusual_services": "{{ OPNsense.pondsecndr.detection.unusual_services|default("1") }}",
     "unusual_internal": "{{ OPNsense.pondsecndr.detection.unusual_internal|default("1") }}",
     "machine_learning": "{{ OPNsense.pondsecndr.detection.machine_learning|default("0") }}",
+    "learning_mode": "{{ OPNsense.pondsecndr.detection.learning_mode|default("1") }}",
+    "learning_started_at": "{{ OPNsense.pondsecndr.detection.learning_started_at|default("") }}",
+    "learning_days": "{{ OPNsense.pondsecndr.detection.learning_days|default("14") }}",
+    "early_ai_activation_override": "{{ OPNsense.pondsecndr.detection.early_ai_activation_override|default("0") }}",
     "learning_phase_observations": "{{ OPNsense.pondsecndr.detection.learning_phase_observations|default("1000") }}",
     "minimum_observations": "{{ OPNsense.pondsecndr.detection.minimum_observations|default("50") }}",
     "minimum_incident_confidence": "{{ OPNsense.pondsecndr.detection.minimum_incident_confidence|default("75") }}"

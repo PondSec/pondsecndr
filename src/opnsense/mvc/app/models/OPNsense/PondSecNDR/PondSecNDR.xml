@@ -194,6 +194,24 @@
                 <default>0</default>
                 <Required>Y</Required>
             </machine_learning>
+            <learning_mode type="BooleanField">
+                <default>1</default>
+                <Required>Y</Required>
+            </learning_mode>
+            <learning_started_at type="TextField">
+                <default></default>
+                <Required>N</Required>
+            </learning_started_at>
+            <learning_days type="IntegerField">
+                <default>14</default>
+                <MinimumValue>1</MinimumValue>
+                <MaximumValue>90</MaximumValue>
+                <Required>Y</Required>
+            </learning_days>
+            <early_ai_activation_override type="BooleanField">
+                <default>0</default>
+                <Required>Y</Required>
+            </early_ai_activation_override>
             <learning_phase_observations type="IntegerField">
                 <default>1000</default>
                 <MinimumValue>10</MinimumValue>

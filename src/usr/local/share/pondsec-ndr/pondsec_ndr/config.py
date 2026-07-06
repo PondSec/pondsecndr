@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -48,6 +49,18 @@ def _csv(value: Any) -> list[str]:
     return [item.strip() for item in str(value).split(",") if item.strip()]
 
 
+def _parse_datetime(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 @dataclass(slots=True)
 class InterfaceConfig:
     monitored: list[str] = field(default_factory=list)
@@ -80,9 +93,58 @@ class DetectionConfig:
     unusual_services: bool = True
     unusual_internal: bool = True
     machine_learning: bool = True
+    learning_mode: bool = True
+    learning_started_at: str = ""
+    learning_days: int = 14
+    early_ai_activation_override: bool = False
     learning_phase_observations: int = 1000
     minimum_observations: int = 50
     minimum_incident_confidence: int = 75
+
+    def learning_status(self, now: datetime | None = None) -> dict[str, Any]:
+        now = now or datetime.now(timezone.utc)
+        started = _parse_datetime(self.learning_started_at)
+        elapsed_days = 0
+        remaining_days = self.learning_days
+        if started is not None:
+            elapsed_days = int(max(0.0, (now - started).total_seconds()) // 86400)
+            remaining_days = max(0, self.learning_days - elapsed_days)
+        if not self.machine_learning:
+            status = "disabled"
+            active = False
+            reason = "machine_learning_disabled"
+            warning = ""
+        elif self.learning_mode and self.early_ai_activation_override:
+            status = "override"
+            active = False
+            reason = "admin_early_ai_activation_override"
+            warning = (
+                "AI detections are active before the recommended learning phase is complete. "
+                "False positives are likely until enough baseline history exists."
+            )
+        elif self.learning_mode and (started is None or elapsed_days < self.learning_days):
+            status = "learning"
+            active = True
+            reason = "learning_phase_active"
+            warning = "AI and baseline anomaly alarms are suppressed until learning completes or an administrator overrides it."
+        else:
+            status = "armed"
+            active = False
+            reason = "learning_phase_complete_or_disabled"
+            warning = ""
+        return {
+            "status": status,
+            "active": active,
+            "reason": reason,
+            "warning": warning,
+            "started_at": started.isoformat() if started else None,
+            "required_days": self.learning_days,
+            "elapsed_days": elapsed_days,
+            "remaining_days": remaining_days,
+            "minimum_observations": self.minimum_observations,
+            "learning_phase_observations": self.learning_phase_observations,
+            "early_ai_activation_override": self.early_ai_activation_override,
+        }
 
 
 @dataclass(slots=True)
@@ -220,6 +282,10 @@ def load_config(path: Path | None = None) -> PondSecConfig:
             unusual_services=_bool(detection.get("unusual_services"), True),
             unusual_internal=_bool(detection.get("unusual_internal"), True),
             machine_learning=_bool(detection.get("machine_learning"), True),
+            learning_mode=_bool(detection.get("learning_mode"), True),
+            learning_started_at=str(detection.get("learning_started_at") or ""),
+            learning_days=_int(detection.get("learning_days"), 14, 1, 90),
+            early_ai_activation_override=_bool(detection.get("early_ai_activation_override"), False),
             learning_phase_observations=_int(detection.get("learning_phase_observations"), 1000, 10, 10000000),
             minimum_observations=_int(detection.get("minimum_observations"), 50, 1, 1000000),
             minimum_incident_confidence=_int(detection.get("minimum_incident_confidence"), 75, 1, 100),

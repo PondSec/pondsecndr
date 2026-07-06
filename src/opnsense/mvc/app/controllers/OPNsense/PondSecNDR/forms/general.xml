@@ -207,6 +207,30 @@
         <type>checkbox</type>
     </field>
     <field>
+        <id>pondsecndr.detection.learning_mode</id>
+        <label>Learning mode</label>
+        <type>checkbox</type>
+        <help>Suppress AI and baseline anomaly incidents while PondSec learns normal network behavior.</help>
+    </field>
+    <field>
+        <id>pondsecndr.detection.learning_started_at</id>
+        <label>Learning started at</label>
+        <type>text</type>
+        <help>ISO timestamp. Leave empty on first install; PondSec treats an empty value as learning not yet complete.</help>
+    </field>
+    <field>
+        <id>pondsecndr.detection.learning_days</id>
+        <label>Learning days</label>
+        <type>text</type>
+        <help>Recommended 7 to 14 days before enabling AI alarms for production response.</help>
+    </field>
+    <field>
+        <id>pondsecndr.detection.early_ai_activation_override</id>
+        <label>Early AI activation override</label>
+        <type>checkbox</type>
+        <help>Use only if you accept a high false-positive risk before enough baseline history exists.</help>
+    </field>
+    <field>
         <id>pondsecndr.detection.learning_phase_observations</id>
         <label>Learning phase observations</label>
         <type>text</type>

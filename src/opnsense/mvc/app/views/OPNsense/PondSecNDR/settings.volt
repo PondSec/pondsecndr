@@ -113,7 +113,7 @@ $(function() {
 .pondsec-setup-grid {
     display: grid;
     gap: 12px;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
     margin-bottom: 14px;
 }
 .pondsec-setup-card {
@@ -288,6 +288,7 @@ $(function() {
         </div>
         <div class="pondsec-mode-pills">
             <span class="pondsec-badge info">{{ lang._('Suricata EVE required') }}</span>
+            <span class="pondsec-badge info">{{ lang._('AI learning phase default') }}</span>
             <span class="pondsec-badge info">{{ lang._('TLS inspection optional') }}</span>
             <span class="pondsec-badge good">{{ lang._('Fail open default') }}</span>
         </div>
@@ -308,6 +309,11 @@ $(function() {
             <span>{{ lang._('AI') }}</span>
             <strong>{{ lang._('Pretrained model') }}</strong>
             <p>{{ lang._('Machine-learning detections require the verified local pretrained model and a successful self-test.') }}</p>
+        </div>
+        <div class="pondsec-setup-card">
+            <span>{{ lang._('AI safety') }}</span>
+            <strong>{{ lang._('Learning mode') }}</strong>
+            <p>{{ lang._('Keep AI alarms in learning mode for 7 to 14 days. Early activation is possible, but likely increases false positives.') }}</p>
         </div>
         <div class="pondsec-setup-card">
             <span>{{ lang._('Optional') }}</span>
