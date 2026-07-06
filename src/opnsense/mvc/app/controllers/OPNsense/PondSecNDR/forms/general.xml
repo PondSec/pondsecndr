@@ -24,6 +24,11 @@
         <type>text</type>
     </field>
     <field>
+        <id>pondsecndr.general.max_queue_length</id>
+        <label>Maximum queue length</label>
+        <type>text</type>
+    </field>
+    <field>
         <id>pondsecndr.general.retention_days</id>
         <label>Retention days</label>
         <type>text</type>
@@ -31,6 +36,26 @@
     <field>
         <id>pondsecndr.general.max_database_mb</id>
         <label>Maximum database size MB</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.general.incident_rate_limit_per_minute</id>
+        <label>Incident rate limit per minute</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.general.pf_action_rate_limit_per_minute</id>
+        <label>PF action rate limit per minute</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.general.memory_warning_mb</id>
+        <label>Memory warning MB</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.general.cpu_warning_percent</id>
+        <label>CPU warning percent</label>
         <type>text</type>
     </field>
     <field>

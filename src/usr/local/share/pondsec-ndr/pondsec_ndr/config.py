@@ -107,8 +107,13 @@ class PondSecConfig:
     mode: str = "monitor"
     risk_threshold: int = 70
     max_event_rate: int = 5000
+    max_queue_length: int = 10000
     retention_days: int = 30
     max_database_mb: int = 1024
+    incident_rate_limit_per_minute: int = 60
+    pf_action_rate_limit_per_minute: int = 20
+    memory_warning_mb: int = 512
+    cpu_warning_percent: int = 85
     privacy_mode: bool = True
     anonymize_storage: bool = False
     debug_logging: bool = False
@@ -139,6 +144,12 @@ class PondSecConfig:
             errors.append("retention_days must be positive")
         if self.max_database_mb < 64:
             errors.append("max_database_mb must be at least 64")
+        if self.max_queue_length < 1:
+            errors.append("max_queue_length must be positive")
+        if self.incident_rate_limit_per_minute < 1:
+            errors.append("incident_rate_limit_per_minute must be positive")
+        if self.pf_action_rate_limit_per_minute < 1:
+            errors.append("pf_action_rate_limit_per_minute must be positive")
         return errors
 
 
@@ -166,8 +177,13 @@ def load_config(path: Path | None = None) -> PondSecConfig:
         mode=mode,
         risk_threshold=_int(raw.get("risk_threshold"), 70, 1, 100),
         max_event_rate=_int(raw.get("max_event_rate"), 5000, 1, 100000),
+        max_queue_length=_int(raw.get("max_queue_length"), 10000, 1, 1000000),
         retention_days=_int(raw.get("retention_days"), 30, 1, 3650),
         max_database_mb=_int(raw.get("max_database_mb"), 1024, 64, 1048576),
+        incident_rate_limit_per_minute=_int(raw.get("incident_rate_limit_per_minute"), 60, 1, 100000),
+        pf_action_rate_limit_per_minute=_int(raw.get("pf_action_rate_limit_per_minute"), 20, 1, 100000),
+        memory_warning_mb=_int(raw.get("memory_warning_mb"), 512, 32, 1048576),
+        cpu_warning_percent=_int(raw.get("cpu_warning_percent"), 85, 1, 100),
         privacy_mode=_bool(raw.get("privacy_mode"), True),
         anonymize_storage=_bool(raw.get("anonymize_storage"), False),
         debug_logging=_bool(raw.get("debug_logging"), False),

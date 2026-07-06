@@ -394,6 +394,28 @@ class BackendTests(unittest.TestCase):
             self.assertGreaterEqual(result["inserted_events"], 15)
             self.assertGreaterEqual(result["detections"], 1)
 
+    def test_service_run_once_applies_queue_backpressure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            eve = root / "eve.json"
+            eve.write_text("\n".join(
+                json.dumps(flow_event(f"2026-07-05T10:00:{i:02d}+00:00", "192.168.10.94", "192.168.20.94", 1000 + i))
+                for i in range(20)
+            ) + "\n", encoding="utf-8")
+            config = PondSecConfig(
+                enabled=True,
+                suricata_eve_path=str(eve),
+                data_dir=root / "db",
+                log_dir=root / "log",
+                run_dir=root / "run",
+                max_queue_length=5,
+            )
+            service = PondSecService(config)
+            result = service.run_once(max_lines=100)
+            self.assertEqual(result["status"], "degraded")
+            self.assertLessEqual(result["inserted_events"], 5)
+            self.assertTrue(result["resource_warnings"] == [] or isinstance(result["resource_warnings"], list))
+
     def test_eve_access_status_checks_service_user_read_permission(self) -> None:
         current_user = pwd.getpwuid(os.getuid()).pw_name
         with tempfile.TemporaryDirectory() as tmp:

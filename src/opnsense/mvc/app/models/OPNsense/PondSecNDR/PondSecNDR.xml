@@ -29,6 +29,12 @@
                 <MaximumValue>100000</MaximumValue>
                 <Required>Y</Required>
             </max_event_rate>
+            <max_queue_length type="IntegerField">
+                <default>10000</default>
+                <MinimumValue>1</MinimumValue>
+                <MaximumValue>1000000</MaximumValue>
+                <Required>Y</Required>
+            </max_queue_length>
             <retention_days type="IntegerField">
                 <default>30</default>
                 <MinimumValue>1</MinimumValue>
@@ -41,6 +47,30 @@
                 <MaximumValue>1048576</MaximumValue>
                 <Required>Y</Required>
             </max_database_mb>
+            <incident_rate_limit_per_minute type="IntegerField">
+                <default>60</default>
+                <MinimumValue>1</MinimumValue>
+                <MaximumValue>100000</MaximumValue>
+                <Required>Y</Required>
+            </incident_rate_limit_per_minute>
+            <pf_action_rate_limit_per_minute type="IntegerField">
+                <default>20</default>
+                <MinimumValue>1</MinimumValue>
+                <MaximumValue>100000</MaximumValue>
+                <Required>Y</Required>
+            </pf_action_rate_limit_per_minute>
+            <memory_warning_mb type="IntegerField">
+                <default>512</default>
+                <MinimumValue>32</MinimumValue>
+                <MaximumValue>1048576</MaximumValue>
+                <Required>Y</Required>
+            </memory_warning_mb>
+            <cpu_warning_percent type="IntegerField">
+                <default>85</default>
+                <MinimumValue>1</MinimumValue>
+                <MaximumValue>100</MaximumValue>
+                <Required>Y</Required>
+            </cpu_warning_percent>
             <privacy_mode type="BooleanField">
                 <default>1</default>
                 <Required>Y</Required>

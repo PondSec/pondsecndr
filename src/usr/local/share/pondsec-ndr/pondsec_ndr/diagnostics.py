@@ -51,12 +51,13 @@ def diagnostics(config: PondSecConfig, store: EventStore) -> dict[str, Any]:
     ml_runtime = _ml_runtime_status(config)
     pf_blocking = _pf_blocking_status()
     tls_inspection = _tls_inspection_status(telemetry_counts)
+    resource_usage = detail.get("resource_usage", {})
     return {
         "status": health["status"],
         "pid": health["pid"],
         "uptime_seconds": detail.get("uptime_seconds"),
-        "cpu_percent": None,
-        "ram_bytes": None,
+        "cpu_percent": resource_usage.get("cpu_percent"),
+        "ram_mb": resource_usage.get("rss_mb"),
         "eventrate": detail.get("event_rate_per_second", 0),
         "queue_size": detail.get("queue_size", 0),
         "queue_drops": detail.get("queue_drops", 0),
@@ -70,6 +71,15 @@ def diagnostics(config: PondSecConfig, store: EventStore) -> dict[str, Any]:
         "last_collector_errors": detail.get("last_collector_errors", []),
         "last_ml_errors": detail.get("last_ml_errors", []),
         "last_response_errors": detail.get("last_response_errors", []),
+        "resource_usage": resource_usage,
+        "resource_warnings": detail.get("resource_warnings", []),
+        "limits": detail.get("limits", {
+            "max_event_rate": config.max_event_rate,
+            "max_queue_length": config.max_queue_length,
+            "max_database_mb": config.max_database_mb,
+            "incident_rate_limit_per_minute": config.incident_rate_limit_per_minute,
+            "pf_action_rate_limit_per_minute": config.pf_action_rate_limit_per_minute,
+        }),
         "readiness": _readiness_status(config, health, db, eve_access, ml_runtime, pf_blocking, tls_inspection),
         "pf_tables": _pf_tables_status(),
         "pf_blocking": pf_blocking,

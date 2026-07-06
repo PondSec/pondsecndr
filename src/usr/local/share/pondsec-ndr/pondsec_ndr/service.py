@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from dataclasses import asdict
 import os
 from pathlib import Path
+import resource
 import signal
 import time
 from typing import Any
@@ -39,6 +40,8 @@ class PondSecService:
             "last_collector_errors": [],
             "last_ml_errors": [],
             "last_response_errors": [],
+            "incident_rate_timestamps": [],
+            "pf_action_rate_timestamps": [],
         }
 
     def install_signal_handlers(self) -> None:
@@ -64,10 +67,13 @@ class PondSecService:
         self._write_health("stopped")
 
     def run_once(self, max_lines: int = 1000) -> dict[str, Any]:
+        started_wall = time.time()
+        started_cpu = time.process_time()
+        collector_queue_limit = min(self.config.max_event_rate, 100000)
         collector = EveCollector(
             Path(self.config.suricata_eve_path),
             self.config.data_dir / "collector_offsets" / "suricata_eve.json",
-            queue_limit=min(self.config.max_event_rate, 100000),
+            queue_limit=collector_queue_limit,
         )
         events, stats = collector.read_once(max_lines=max_lines)
         filter_stats = None
@@ -76,19 +82,40 @@ class PondSecService:
             filter_collector = FilterLogCollector(
                 filterlog_path,
                 self.config.data_dir / "collector_offsets" / "opnsense_filterlog.json",
-                queue_limit=min(self.config.max_event_rate, 100000),
+                queue_limit=collector_queue_limit,
             )
             filter_events, filter_stats = filter_collector.read_once(max_lines=max_lines)
             events.extend(filter_events)
         events = self._filter_events(events)
+        events, backpressure_drops = self._apply_queue_backpressure(events)
         parser_errors = stats.parser_errors + (filter_stats.parser_errors if filter_stats else 0)
         normalization_errors = stats.normalization_errors + (filter_stats.normalization_errors if filter_stats else 0)
-        queue_drops = stats.queue_drops + (filter_stats.queue_drops if filter_stats else 0)
+        queue_drops = stats.queue_drops + (filter_stats.queue_drops if filter_stats else 0) + backpressure_drops
         self.counters["parser_errors"] += parser_errors
         self.counters["queue_drops"] += queue_drops
         for error in (stats.last_error, filter_stats.last_error if filter_stats else None):
             if error:
                 self.counters["last_collector_errors"] = ([error] + self.counters["last_collector_errors"])[:5]
+
+        if self._database_over_limit():
+            cleaned = self.store.cleanup(self.config.retention_days)
+            if self._database_over_limit():
+                self.counters["queue_drops"] += len(events)
+                resource_usage = self._resource_usage(started_wall, started_cpu)
+                self._write_health("degraded", {
+                    "backpressure": "database_size_limit",
+                    "dropped_events": len(events),
+                    "cleanup_deleted": cleaned,
+                    "queue_size": len(events),
+                    "resource_usage": resource_usage,
+                    "resource_warnings": self._resource_warnings(resource_usage),
+                })
+                return {
+                    "status": "degraded",
+                    "reason": "database_size_limit",
+                    "dropped_events": len(events),
+                    "cleanup_deleted": cleaned,
+                }
 
         inserted_events = self.store.insert_events(events)
         features = self.store.score_features_against_baselines(
@@ -103,11 +130,18 @@ class PondSecService:
         inserted_detections = self.store.insert_detections(detections)
 
         incidents = correlate_detections(detections)
+        incidents, suppressed_incidents = self._limit_rate(
+            incidents,
+            "incident_rate_timestamps",
+            self.config.incident_rate_limit_per_minute,
+        )
         inserted_incidents = self.store.insert_incidents(incidents)
         anomalous_sources = {detection["source_ip"] for detection in detections if detection.get("source_ip")}
         baseline_updates = self.store.update_host_baselines(features, skip_sources=anomalous_sources)
         response_actions = self._auto_response(incidents)
         cleaned = self.store.cleanup(self.config.retention_days)
+        resource_usage = self._resource_usage(started_wall, started_cpu)
+        resource_warnings = self._resource_warnings(resource_usage)
 
         self.counters["events"] += inserted_events
         self.counters["detections"] += inserted_detections
@@ -117,18 +151,32 @@ class PondSecService:
             status = "degraded"
         if filter_stats and filter_stats.last_error and not events:
             status = "degraded"
+        if suppressed_incidents or backpressure_drops:
+            status = "degraded" if status == "healthy" else status
         self._write_health(status, {
             "read_lines": stats.read_lines + (filter_stats.read_lines if filter_stats else 0),
             "accepted_events": stats.accepted_events + (filter_stats.accepted_events if filter_stats else 0),
             "inserted_events": inserted_events,
             "inserted_detections": inserted_detections,
             "inserted_incidents": inserted_incidents,
+            "suppressed_incidents": suppressed_incidents,
             "response_actions": response_actions,
             "baseline_updates": baseline_updates,
             "cleanup_deleted": cleaned,
             "parser_errors": self.counters["parser_errors"],
             "normalization_errors": normalization_errors,
             "queue_drops": self.counters["queue_drops"],
+            "queue_size": len(events),
+            "max_queue_length": self.config.max_queue_length,
+            "resource_usage": resource_usage,
+            "resource_warnings": resource_warnings,
+            "limits": {
+                "max_event_rate": self.config.max_event_rate,
+                "max_queue_length": self.config.max_queue_length,
+                "max_database_mb": self.config.max_database_mb,
+                "incident_rate_limit_per_minute": self.config.incident_rate_limit_per_minute,
+                "pf_action_rate_limit_per_minute": self.config.pf_action_rate_limit_per_minute,
+            },
             "rotation_detected": stats.rotation_detected or (filter_stats.rotation_detected if filter_stats else False),
             "collector_sources": {
                 "suricata_eve": asdict(stats),
@@ -144,9 +192,56 @@ class PondSecService:
             "inserted_events": inserted_events,
             "detections": inserted_detections,
             "incidents": inserted_incidents,
+            "suppressed_incidents": suppressed_incidents,
             "response_actions": response_actions,
             "baseline_updates": baseline_updates,
+            "resource_warnings": resource_warnings,
         }
+
+    def _apply_queue_backpressure(self, events: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+        limit = max(1, self.config.max_queue_length)
+        if len(events) <= limit:
+            return events, 0
+        return events[:limit], len(events) - limit
+
+    def _database_over_limit(self) -> bool:
+        path = self.store.db_path
+        if not path.exists():
+            return False
+        return path.stat().st_size > self.config.max_database_mb * 1024 * 1024
+
+    def _limit_rate(self, items: list[dict[str, Any]], counter_key: str, limit: int) -> tuple[list[dict[str, Any]], int]:
+        limit = max(0, limit)
+        now = time.time()
+        timestamps = [timestamp for timestamp in self.counters.get(counter_key, []) if now - float(timestamp) < 60]
+        available = max(0, limit - len(timestamps))
+        accepted = items[:available]
+        timestamps.extend([now] * len(accepted))
+        self.counters[counter_key] = timestamps
+        return accepted, max(0, len(items) - len(accepted))
+
+    def _consume_rate(self, counter_key: str, limit: int) -> bool:
+        accepted, _suppressed = self._limit_rate([{"rate": "token"}], counter_key, limit)
+        return bool(accepted)
+
+    def _resource_usage(self, started_wall: float, started_cpu: float) -> dict[str, Any]:
+        wall_seconds = max(0.001, time.time() - started_wall)
+        cpu_percent = round(max(0.0, ((time.process_time() - started_cpu) / wall_seconds) * 100), 2)
+        max_rss = float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+        rss_mb = round(max_rss / (1024 * 1024), 2) if max_rss > 1_000_000 else round(max_rss / 1024, 2)
+        return {
+            "inference_and_detection_wall_ms": round(wall_seconds * 1000, 2),
+            "cpu_percent": cpu_percent,
+            "rss_mb": rss_mb,
+        }
+
+    def _resource_warnings(self, usage: dict[str, Any]) -> list[str]:
+        warnings = []
+        if float(usage.get("rss_mb") or 0) > self.config.memory_warning_mb:
+            warnings.append("memory_warning_threshold_exceeded")
+        if float(usage.get("cpu_percent") or 0) > self.config.cpu_warning_percent:
+            warnings.append("cpu_warning_threshold_exceeded")
+        return warnings
 
     def _filter_events(self, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         include = set(self.config.interfaces.monitored) | set(self.config.interfaces.monitored_devices)
@@ -171,6 +266,15 @@ class PondSecService:
         for incident in incidents:
             incident_id = incident.get("incident_id")
             if not incident_id:
+                continue
+            if not self._consume_rate("pf_action_rate_timestamps", self.config.pf_action_rate_limit_per_minute):
+                actions.append({
+                    "incident_id": incident_id,
+                    "source_ip": incident.get("source_ip"),
+                    "status": "skipped",
+                    "reason": "pf_action_rate_limit_exceeded",
+                    "mode": self.config.mode,
+                })
                 continue
             if self._requires_manual_response(incident):
                 actions.append({
