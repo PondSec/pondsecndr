@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import pwd
+import sqlite3
 import subprocess
 import tempfile
 import unittest
@@ -233,6 +234,83 @@ class BackendTests(unittest.TestCase):
             self.assertIn("metrics", summary)
             self.assertGreaterEqual(summary["metrics"]["events_last_24h"], 0)
             self.assertEqual(store.check()["status"], "ok")
+
+    def test_store_migration_upgrades_legacy_incidents_before_indexes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "pondsec-ndr.db"
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE incidents (
+                        incident_id TEXT PRIMARY KEY,
+                        title TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        risk_score INTEGER NOT NULL,
+                        severity INTEGER NOT NULL,
+                        confidence REAL NOT NULL,
+                        source_ip TEXT,
+                        destination_ip TEXT,
+                        category TEXT,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        evidence_json TEXT NOT NULL,
+                        risk_factors_json TEXT NOT NULL
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    INSERT INTO incidents(
+                        incident_id, title, status, risk_score, severity,
+                        confidence, source_ip, destination_ip, category,
+                        created_at, updated_at, evidence_json, risk_factors_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "legacy-incident-1",
+                        "Legacy incident",
+                        "open",
+                        80,
+                        8,
+                        0.9,
+                        "192.168.10.77",
+                        "192.168.20.10",
+                        "reconnaissance",
+                        "2026-07-05T10:00:00+00:00",
+                        "2026-07-05T10:02:00+00:00",
+                        json.dumps({"validation": {"scenario": "legacy-upgrade"}}),
+                        "[]",
+                    ),
+                )
+
+            store = EventStore(db_path)
+            store.migrate()
+
+            with sqlite3.connect(db_path) as conn:
+                columns = {row[1] for row in conn.execute("PRAGMA table_info(incidents)").fetchall()}
+                indexes = {row[1] for row in conn.execute("PRAGMA index_list(incidents)").fetchall()}
+                row = conn.execute(
+                    """
+                    SELECT first_seen, last_seen, event_count, detection_count,
+                           affected_targets_json, attack_stage, validation_tag,
+                           suppressed_count
+                    FROM incidents WHERE incident_id = ?
+                    """,
+                    ("legacy-incident-1",),
+                ).fetchone()
+                version = conn.execute("SELECT max(version) FROM schema_migrations").fetchone()[0]
+            self.assertIn("validation_tag", columns)
+            self.assertIn("idx_incidents_dedupe", indexes)
+            self.assertEqual(row[0], "2026-07-05T10:00:00+00:00")
+            self.assertEqual(row[1], "2026-07-05T10:02:00+00:00")
+            self.assertEqual(row[2], 1)
+            self.assertEqual(row[3], 0)
+            self.assertEqual(json.loads(row[4]), ["192.168.20.10"])
+            self.assertEqual(row[5], "reconnaissance")
+            self.assertEqual(row[6], "legacy-upgrade")
+            self.assertEqual(row[7], 0)
+            self.assertEqual(version, 2)
+            self.assertTrue(any((db_path.parent / "backups").glob("pondsec-ndr.db.schema0-to-2.*.bak")))
 
     def test_store_canonicalizes_structured_tls_fingerprints(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

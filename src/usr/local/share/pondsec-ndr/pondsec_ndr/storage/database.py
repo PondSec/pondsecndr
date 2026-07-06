@@ -323,6 +323,17 @@ SCHEMA = [
     "CREATE INDEX IF NOT EXISTS idx_incidents_dedupe ON incidents(status, source_ip, category, destination_ip, validation_tag, last_seen)",
 ]
 
+INCIDENT_V2_COLUMNS = {
+    "first_seen",
+    "last_seen",
+    "event_count",
+    "detection_count",
+    "affected_targets_json",
+    "attack_stage",
+    "validation_tag",
+    "suppressed_count",
+}
+
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -365,15 +376,21 @@ class EventStore:
 
     def migrate(self) -> None:
         with self.connect() as conn:
+            deferred_indexes: list[str] = []
             for statement in SCHEMA:
-                conn.execute(statement)
+                if statement.lstrip().upper().startswith("CREATE INDEX"):
+                    deferred_indexes.append(statement)
+                else:
+                    conn.execute(statement)
             current_version = self._schema_version(conn)
             if current_version > SCHEMA_VERSION:
                 raise RuntimeError(f"database schema {current_version} is newer than supported schema {SCHEMA_VERSION}")
             if current_version < 2:
-                if current_version > 0:
+                if current_version > 0 or self._schema_needs_v2(conn):
                     self._backup_database(conn, current_version, 2)
                 self._migrate_to_v2(conn)
+            for statement in deferred_indexes:
+                conn.execute(statement)
             conn.execute(
                 "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                 (SCHEMA_VERSION, now_iso()),
@@ -382,6 +399,10 @@ class EventStore:
     def _schema_version(self, conn: sqlite3.Connection) -> int:
         row = conn.execute("SELECT max(version) FROM schema_migrations").fetchone()
         return int(row[0] or 0)
+
+    def _schema_needs_v2(self, conn: sqlite3.Connection) -> bool:
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(incidents)").fetchall()}
+        return bool(columns) and not INCIDENT_V2_COLUMNS.issubset(columns)
 
     def _backup_database(self, conn: sqlite3.Connection, from_version: int, to_version: int) -> Path:
         backup_dir = self.db_path.parent / "backups"
