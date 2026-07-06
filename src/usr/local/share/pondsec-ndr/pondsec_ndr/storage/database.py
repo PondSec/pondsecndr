@@ -1431,7 +1431,7 @@ class EventStore:
             active_incidents = conn.execute("SELECT count(*) FROM incidents WHERE status = 'open' AND COALESCE(last_seen, updated_at) >= ?", (cutoff,)).fetchone()[0]
             high_risk_incidents = conn.execute("SELECT count(*) FROM incidents WHERE status = 'open' AND risk_score >= 70").fetchone()[0]
             critical_incidents = conn.execute("SELECT count(*) FROM incidents WHERE status = 'open' AND risk_score >= 90").fetchone()[0]
-            block_rows = conn.execute("SELECT DISTINCT source_ip FROM block_entries WHERE status = 'active'").fetchall()
+            block_rows = conn.execute("SELECT DISTINCT source_ip FROM block_entries WHERE status = 'active' AND expires_at > ?", (now_iso(),)).fetchall()
             blocked_sources = len(block_rows)
             isolated_clients = sum(1 for row in block_rows if _is_private_address(row["source_ip"]))
             categories = conn.execute("SELECT category, count(*) AS count FROM detections GROUP BY category ORDER BY count DESC").fetchall()

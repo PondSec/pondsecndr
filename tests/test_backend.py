@@ -573,6 +573,48 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(analysis["threat_intelligence"]["cves"][0]["evidence_level"], "exploitation_attempt_observed")
         self.assertFalse(analysis["threat_intelligence"]["cves"][0]["automatic_block_basis_allowed"])
 
+    def test_incident_analysis_infers_entity_roles_for_legacy_case_without_saved_roles(self) -> None:
+        incident = {
+            "incident_id": "legacy-case",
+            "title": "Legacy multi-stage case",
+            "status": "open",
+            "risk_score": 91,
+            "severity": 9,
+            "confidence": 0.9,
+            "source_ip": "199.45.155.75",
+            "destination_ip": "192.168.30.3",
+            "category": "multi_stage",
+            "created_at": "2026-07-05T10:00:00+00:00",
+            "updated_at": "2026-07-05T10:05:00+00:00",
+            "first_seen": "2026-07-05T10:00:00+00:00",
+            "last_seen": "2026-07-05T10:05:00+00:00",
+            "event_count": 2,
+            "detection_count": 2,
+            "affected_targets": ["192.168.30.3"],
+            "attack_stage": "multi_stage",
+            "evidence": {"detections": [
+                {
+                    "detection_id": "legacy-scan",
+                    "detector_id": "pondsec.vertical_scan",
+                    "category": "reconnaissance",
+                    "timestamp": "2026-07-05T10:00:00+00:00",
+                    "source_ip": "199.45.155.75",
+                    "destination_ip": "192.168.30.3",
+                    "severity": 7,
+                    "confidence": 0.8,
+                    "anomaly_score": 0.7,
+                    "title": "Scan",
+                    "description": "Scan",
+                    "evidence": {},
+                }
+            ]},
+            "risk_factors": [],
+        }
+        analysis = _incident_analysis(incident)
+        self.assertEqual(analysis["entity_roles"]["external_actor"], "199.45.155.75")
+        self.assertEqual(analysis["entity_roles"]["victim"], "192.168.30.3")
+        self.assertEqual(analysis["case_summary"]["affected_host"], "192.168.30.3")
+
     def test_incident_dedup_merges_same_source_category_target_network_window(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = EventStore(Path(tmp) / "pondsec-ndr.db")

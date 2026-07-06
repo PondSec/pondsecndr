@@ -980,6 +980,8 @@ def _incident_analysis(
     if not isinstance(detections, list):
         detections = []
     entity_roles = evidence.get("entity_roles", {}) if isinstance(evidence, dict) and isinstance(evidence.get("entity_roles"), dict) else {}
+    if not entity_roles:
+        entity_roles = _infer_entity_roles(detections, incident)
     targets = incident.get("affected_targets") or []
     response_block = response_block or incident.get("response_state")
     response_blocks = incident.get("response_blocks") if isinstance(incident.get("response_blocks"), list) else []
@@ -1415,6 +1417,63 @@ def _group_timeline(timeline: list[dict[str, Any]]) -> list[dict[str, Any]]:
         entry["risk_delta"] = max(int(entry.get("risk_delta") or 0), int(item.get("risk_delta") or 0))
         entry["detections"].append(item)
     return list(grouped.values())
+
+
+def _infer_entity_roles(detections: list[dict[str, Any]], incident: dict[str, Any]) -> dict[str, Any]:
+    ordered = sorted((item for item in detections if isinstance(item, dict)), key=lambda row: str(row.get("timestamp") or ""))
+    if not ordered and incident.get("source_ip"):
+        ordered = [incident]
+    sources = [str(item.get("source_ip")) for item in ordered if item.get("source_ip")]
+    destinations = [str(item.get("destination_ip")) for item in ordered if item.get("destination_ip")]
+    external_actor = None
+    victim = None
+    for item in ordered:
+        src = str(item.get("source_ip") or "")
+        dst = str(item.get("destination_ip") or "")
+        if src and dst and not _is_internal_case_address(src) and _is_internal_case_address(dst):
+            external_actor = src
+            victim = dst
+            break
+    if external_actor is None:
+        external_actor = next((src for src in sources if not _is_internal_case_address(src)), None)
+    affected_host = victim or next((src for src in sources if _is_internal_case_address(src)), None) or incident.get("source_ip")
+    pivot_host = None
+    if affected_host:
+        for item in ordered:
+            src = str(item.get("source_ip") or "")
+            dst = str(item.get("destination_ip") or "")
+            if src == affected_host and dst and dst != affected_host:
+                pivot_host = src
+                break
+    destination = incident.get("destination_ip") or (destinations[0] if destinations else None)
+    response_target = external_actor or affected_host
+    roles = {
+        "external_actor": external_actor,
+        "threat_source": external_actor or incident.get("source_ip"),
+        "affected_host": affected_host,
+        "victim": victim,
+        "pivot_host": pivot_host,
+        "destination": destination,
+        "response_target": response_target,
+    }
+    return {key: value for key, value in roles.items() if value}
+
+
+def _is_internal_case_address(value: str | None) -> bool:
+    if not value or "/" in str(value) or str(value).startswith("port:"):
+        return False
+    try:
+        address = ipaddress.ip_address(str(value))
+    except ValueError:
+        return False
+    internal_networks = (
+        ipaddress.ip_network("10.0.0.0/8"),
+        ipaddress.ip_network("172.16.0.0/12"),
+        ipaddress.ip_network("192.168.0.0/16"),
+        ipaddress.ip_network("fc00::/7"),
+        ipaddress.ip_network("fe80::/10"),
+    )
+    return any(address.version == network.version and address in network for network in internal_networks) or address.is_loopback
 
 
 def _case_summary(
