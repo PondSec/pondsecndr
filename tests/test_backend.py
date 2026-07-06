@@ -264,6 +264,60 @@ class BackendTests(unittest.TestCase):
         incidents = correlate_detections(detections)
         self.assertEqual(len(incidents), 1)
         self.assertTrue(incidents[0]["risk_factors"])
+        explanation = detections[0]["evidence"]["explainability"]
+        self.assertIn("why", explanation)
+        self.assertTrue(explanation["thresholds_exceeded"])
+        self.assertTrue(explanation["administrator_guidance"])
+
+    def test_incident_dedup_merges_same_source_category_target_network_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            first = {
+                "incident_id": "incident-dedupe-1",
+                "title": "First scan",
+                "status": "open",
+                "risk_score": 80,
+                "severity": 8,
+                "confidence": 0.9,
+                "source_ip": "192.168.10.77",
+                "destination_ip": "192.168.20.10",
+                "category": "reconnaissance",
+                "created_at": "2026-07-05T10:00:00+00:00",
+                "updated_at": "2026-07-05T10:00:00+00:00",
+                "first_seen": "2026-07-05T10:00:00+00:00",
+                "last_seen": "2026-07-05T10:00:20+00:00",
+                "event_count": 15,
+                "evidence": {"detections": [{"detection_id": "d1", "destination_ip": "192.168.20.10"}]},
+                "risk_factors": [{"name": "scan", "value": 80}],
+                "detection_ids": ["d1"],
+            }
+            second = dict(
+                first,
+                incident_id="incident-dedupe-2",
+                title="Second scan",
+                destination_ip="192.168.20.42",
+                created_at="2026-07-05T10:30:00+00:00",
+                updated_at="2026-07-05T10:30:00+00:00",
+                first_seen="2026-07-05T10:30:00+00:00",
+                last_seen="2026-07-05T10:30:10+00:00",
+                event_count=9,
+                detection_ids=["d2"],
+                evidence={"detections": [{"detection_id": "d2", "destination_ip": "192.168.20.42"}]},
+            )
+            self.assertEqual(store.insert_incidents([first]), 1)
+            self.assertEqual(store.insert_incidents([second]), 0)
+            self.assertEqual(second["incident_id"], "incident-dedupe-1")
+            rows = store.list_rows("incidents")
+            self.assertEqual(len(rows), 1)
+            merged = store.get_incident("incident-dedupe-1")
+            self.assertIsNotNone(merged)
+            assert merged is not None
+            self.assertEqual(merged["event_count"], 24)
+            self.assertEqual(merged["detection_count"], 2)
+            self.assertEqual(merged["suppressed_count"], 1)
+            self.assertEqual(sorted(merged["affected_targets"]), ["192.168.20.10", "192.168.20.42"])
+            self.assertTrue(merged["evidence"]["correlation"]["deduplicated"])
 
     def test_external_model_catalog_prefers_public_trained_model(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -377,7 +431,7 @@ class BackendTests(unittest.TestCase):
                 "risk_factors": [{"name": "test", "value": 90}],
                 "detection_ids": [],
             }
-            second = dict(first, incident_id="incident-source-reuse-2", title="Second incident")
+            second = dict(first, incident_id="incident-source-reuse-2", title="Second incident", category="command_and_control")
             store.insert_incidents([first, second])
             proposal = propose_block_for_incident(store, config, "incident-source-reuse-1", actor="test")
             store.update_block_status(proposal["block_id"], "active", actor="test")

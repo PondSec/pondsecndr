@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -14,13 +15,69 @@ from typing import Any, Iterator
 from uuid import uuid4
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+INCIDENT_DEDUPE_WINDOW_SECONDS = 3600
+OPEN_INCIDENT_STATUSES = ("open",)
+ARCHIVED_INCIDENT_STATUSES = ("closed", "false_positive", "archived")
+
+
+def _json_default(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
 
 
 def _stable_set_value(value: Any) -> str:
     if isinstance(value, str):
         return value
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _parse_time(value: str | None) -> datetime:
+    if not value:
+        return datetime.now(timezone.utc)
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return datetime.now(timezone.utc)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _target_network_key(value: str | None, category: str | None = None) -> str:
+    if category == "anomaly" and not value:
+        return "host-baseline"
+    if not value:
+        return "any"
+    value = str(value)
+    if value in {"internal", "external"} or value.startswith("port:"):
+        return value
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        return value
+    prefix = 24 if address.version == 4 else 64
+    return str(ipaddress.ip_network(f"{address}/{prefix}", strict=False))
+
+
+def _attack_stage(category: str | None) -> str:
+    return {
+        "reconnaissance": "reconnaissance",
+        "command_and_control": "command_and_control",
+        "lateral_movement": "lateral_movement",
+        "exfiltration": "exfiltration",
+        "machine_learning": "classification",
+        "signature": "signature",
+        "anomaly": "host_observation",
+    }.get(str(category or ""), "unknown")
+
+
+def _validation_tag_from_evidence(evidence: dict[str, Any]) -> str | None:
+    validation = evidence.get("validation")
+    if isinstance(validation, dict):
+        return str(validation.get("scenario") or validation.get("kind") or "validation")
+    if validation:
+        return "validation"
+    return None
 
 
 SCHEMA = [
@@ -131,6 +188,14 @@ SCHEMA = [
         category TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
+        first_seen TEXT,
+        last_seen TEXT,
+        event_count INTEGER NOT NULL DEFAULT 0,
+        detection_count INTEGER NOT NULL DEFAULT 0,
+        affected_targets_json TEXT NOT NULL DEFAULT '[]',
+        attack_stage TEXT,
+        validation_tag TEXT,
+        suppressed_count INTEGER NOT NULL DEFAULT 0,
         evidence_json TEXT NOT NULL,
         risk_factors_json TEXT NOT NULL
     )
@@ -246,6 +311,7 @@ SCHEMA = [
     "CREATE INDEX IF NOT EXISTS idx_detections_source ON detections(source_ip)",
     "CREATE INDEX IF NOT EXISTS idx_incidents_status ON incidents(status)",
     "CREATE INDEX IF NOT EXISTS idx_incidents_source ON incidents(source_ip)",
+    "CREATE INDEX IF NOT EXISTS idx_incidents_dedupe ON incidents(status, source_ip, category, destination_ip, validation_tag, last_seen)",
 ]
 
 
@@ -292,10 +358,97 @@ class EventStore:
         with self.connect() as conn:
             for statement in SCHEMA:
                 conn.execute(statement)
+            current_version = self._schema_version(conn)
+            if current_version > SCHEMA_VERSION:
+                raise RuntimeError(f"database schema {current_version} is newer than supported schema {SCHEMA_VERSION}")
+            if current_version < 2:
+                if current_version > 0:
+                    self._backup_database(conn, current_version, 2)
+                self._migrate_to_v2(conn)
             conn.execute(
                 "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                 (SCHEMA_VERSION, now_iso()),
             )
+
+    def _schema_version(self, conn: sqlite3.Connection) -> int:
+        row = conn.execute("SELECT max(version) FROM schema_migrations").fetchone()
+        return int(row[0] or 0)
+
+    def _backup_database(self, conn: sqlite3.Connection, from_version: int, to_version: int) -> Path:
+        backup_dir = self.db_path.parent / "backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        backup_path = backup_dir / f"{self.db_path.name}.schema{from_version}-to-{to_version}.{stamp}.bak"
+        with sqlite3.connect(backup_path) as backup:
+            conn.backup(backup)
+        return backup_path
+
+    def _migrate_to_v2(self, conn: sqlite3.Connection) -> None:
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(incidents)").fetchall()}
+        additions = {
+            "first_seen": "ALTER TABLE incidents ADD COLUMN first_seen TEXT",
+            "last_seen": "ALTER TABLE incidents ADD COLUMN last_seen TEXT",
+            "event_count": "ALTER TABLE incidents ADD COLUMN event_count INTEGER NOT NULL DEFAULT 0",
+            "detection_count": "ALTER TABLE incidents ADD COLUMN detection_count INTEGER NOT NULL DEFAULT 0",
+            "affected_targets_json": "ALTER TABLE incidents ADD COLUMN affected_targets_json TEXT NOT NULL DEFAULT '[]'",
+            "attack_stage": "ALTER TABLE incidents ADD COLUMN attack_stage TEXT",
+            "validation_tag": "ALTER TABLE incidents ADD COLUMN validation_tag TEXT",
+            "suppressed_count": "ALTER TABLE incidents ADD COLUMN suppressed_count INTEGER NOT NULL DEFAULT 0",
+        }
+        for column, statement in additions.items():
+            if column not in columns:
+                conn.execute(statement)
+        rows = conn.execute(
+            """
+            SELECT incident_id, created_at, updated_at, destination_ip, category,
+                   evidence_json, affected_targets_json
+            FROM incidents
+            """
+        ).fetchall()
+        for row in rows:
+            try:
+                existing_targets = set(json.loads(row["affected_targets_json"] or "[]"))
+            except json.JSONDecodeError:
+                existing_targets = set()
+            if row["destination_ip"]:
+                existing_targets.add(row["destination_ip"])
+            try:
+                evidence = json.loads(row["evidence_json"] or "{}")
+            except json.JSONDecodeError:
+                evidence = {}
+            validation_tag = _validation_tag_from_evidence(evidence)
+            detection_count = int(conn.execute(
+                "SELECT count(*) FROM incident_detections WHERE incident_id = ?",
+                (row["incident_id"],),
+            ).fetchone()[0])
+            conn.execute(
+                """
+                UPDATE incidents
+                SET first_seen = COALESCE(first_seen, ?),
+                    last_seen = COALESCE(last_seen, ?),
+                    event_count = CASE WHEN event_count > 0 THEN event_count ELSE ? END,
+                    detection_count = CASE WHEN detection_count > 0 THEN detection_count ELSE ? END,
+                    affected_targets_json = ?,
+                    attack_stage = COALESCE(attack_stage, ?),
+                    validation_tag = COALESCE(validation_tag, ?),
+                    suppressed_count = COALESCE(suppressed_count, 0)
+                WHERE incident_id = ?
+                """,
+                (
+                    row["created_at"],
+                    row["updated_at"],
+                    max(1, detection_count),
+                    detection_count,
+                    json.dumps(sorted(existing_targets)),
+                    _attack_stage(row["category"]),
+                    validation_tag,
+                    row["incident_id"],
+                ),
+            )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+            (2, now_iso()),
+        )
 
     def check(self) -> dict[str, Any]:
         with self.connect() as conn:
@@ -551,39 +704,251 @@ class EventStore:
     def insert_incidents(self, incidents: list[dict[str, Any]]) -> int:
         if not incidents:
             return 0
+        created = 0
         with self.connect() as conn:
-            before = conn.total_changes
             for incident in incidents:
-                conn.execute(
-                    """
-                    INSERT OR REPLACE INTO incidents(
-                        incident_id, title, status, risk_score, severity, confidence,
-                        source_ip, destination_ip, category, created_at, updated_at,
-                        evidence_json, risk_factors_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        incident["incident_id"], incident["title"], incident.get("status", "open"),
-                        incident["risk_score"], incident["severity"], incident["confidence"],
-                        incident.get("source_ip"), incident.get("destination_ip"), incident.get("category"),
-                        incident["created_at"], incident["updated_at"],
-                        json.dumps(incident.get("evidence", {}), sort_keys=True),
-                        json.dumps(incident.get("risk_factors", []), sort_keys=True),
-                    ),
+                prepared = self._prepare_incident_record(incident)
+                existing = self._find_merge_incident(conn, prepared)
+                if existing:
+                    incident["incident_id"] = existing["incident_id"]
+                    prepared["incident_id"] = existing["incident_id"]
+                    self._merge_incident(conn, existing, prepared)
+                else:
+                    self._insert_incident(conn, prepared)
+                    created += 1
+                for detection_id in prepared["detection_ids"]:
+                    conn.execute("INSERT OR IGNORE INTO incident_detections(incident_id, detection_id) VALUES (?, ?)", (prepared["incident_id"], detection_id))
+                if prepared.get("source_ip"):
+                    self._refresh_host_incident_count(conn, prepared["source_ip"], prepared["risk_score"])
+            return created
+
+    def _prepare_incident_record(self, incident: dict[str, Any]) -> dict[str, Any]:
+        evidence = incident.get("evidence", {}) if isinstance(incident.get("evidence"), dict) else {}
+        detection_ids = list(dict.fromkeys(str(item) for item in incident.get("detection_ids", []) if item))
+        detections = evidence.get("detections", [])
+        if isinstance(detections, list):
+            for detection in detections:
+                if isinstance(detection, dict) and detection.get("detection_id"):
+                    detection_ids.append(str(detection["detection_id"]))
+        detection_ids = list(dict.fromkeys(detection_ids))
+        targets = self._incident_targets(incident, evidence)
+        first_seen = str(incident.get("first_seen") or incident.get("created_at") or now_iso())
+        last_seen = str(incident.get("last_seen") or incident.get("updated_at") or first_seen)
+        validation_tag = incident.get("validation_tag") or _validation_tag_from_evidence(evidence)
+        return {
+            "incident_id": incident["incident_id"],
+            "title": incident["title"],
+            "status": incident.get("status", "open"),
+            "risk_score": int(incident["risk_score"]),
+            "severity": int(incident["severity"]),
+            "confidence": float(incident["confidence"]),
+            "source_ip": incident.get("source_ip"),
+            "destination_ip": incident.get("destination_ip"),
+            "category": incident.get("category"),
+            "created_at": incident["created_at"],
+            "updated_at": incident["updated_at"],
+            "first_seen": first_seen,
+            "last_seen": last_seen,
+            "event_count": int(incident.get("event_count") or max(1, len(detection_ids))),
+            "detection_count": int(incident.get("detection_count") or len(detection_ids)),
+            "affected_targets": targets,
+            "attack_stage": incident.get("attack_stage") or _attack_stage(incident.get("category")),
+            "validation_tag": validation_tag,
+            "suppressed_count": int(incident.get("suppressed_count") or 0),
+            "evidence": evidence,
+            "risk_factors": incident.get("risk_factors", []),
+            "detection_ids": detection_ids,
+            "target_key": _target_network_key(incident.get("destination_ip"), incident.get("category")),
+        }
+
+    @staticmethod
+    def _incident_targets(incident: dict[str, Any], evidence: dict[str, Any]) -> list[str]:
+        targets = set()
+        if incident.get("destination_ip"):
+            targets.add(str(incident["destination_ip"]))
+        detections = evidence.get("detections", [])
+        if isinstance(detections, list):
+            for detection in detections:
+                if isinstance(detection, dict) and detection.get("destination_ip"):
+                    targets.add(str(detection["destination_ip"]))
+        return sorted(targets)
+
+    def _find_merge_incident(self, conn: sqlite3.Connection, incident: dict[str, Any]) -> sqlite3.Row | None:
+        if incident["status"] not in OPEN_INCIDENT_STATUSES:
+            return None
+        cutoff = (_parse_time(incident["first_seen"]) - timedelta(seconds=INCIDENT_DEDUPE_WINDOW_SECONDS)).isoformat()
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM incidents
+            WHERE status = 'open'
+              AND source_ip IS ?
+              AND category IS ?
+              AND COALESCE(validation_tag, '') = COALESCE(?, '')
+              AND COALESCE(last_seen, updated_at) >= ?
+            ORDER BY COALESCE(last_seen, updated_at) DESC
+            LIMIT 20
+            """,
+            (incident.get("source_ip"), incident.get("category"), incident.get("validation_tag"), cutoff),
+        ).fetchall()
+        for row in rows:
+            if self._incident_target_matches(row, incident):
+                return row
+        return None
+
+    @staticmethod
+    def _incident_target_matches(row: sqlite3.Row, incident: dict[str, Any]) -> bool:
+        candidate = _target_network_key(row["destination_ip"], row["category"])
+        incoming = incident["target_key"]
+        if candidate == "any" or incoming == "any":
+            return True
+        if candidate == incoming:
+            return True
+        try:
+            row_targets = json.loads(row["affected_targets_json"] or "[]")
+        except json.JSONDecodeError:
+            row_targets = []
+        target_keys = {_target_network_key(str(target), row["category"]) for target in row_targets}
+        return incoming in target_keys or candidate in {_target_network_key(target, incident["category"]) for target in incident["affected_targets"]}
+
+    @staticmethod
+    def _merge_evidence(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+        merged = dict(existing if isinstance(existing, dict) else {})
+        incoming = incoming if isinstance(incoming, dict) else {}
+        detections_by_id: dict[str, dict[str, Any]] = {}
+        ordered_ids: list[str] = []
+        for evidence in (existing, incoming):
+            detections = evidence.get("detections", []) if isinstance(evidence, dict) else []
+            if not isinstance(detections, list):
+                continue
+            for detection in detections:
+                if not isinstance(detection, dict):
+                    continue
+                detection_id = str(detection.get("detection_id") or _stable_set_value(detection))
+                if detection_id not in detections_by_id:
+                    ordered_ids.append(detection_id)
+                detections_by_id[detection_id] = detection
+        if detections_by_id:
+            merged["detections"] = [detections_by_id[detection_id] for detection_id in ordered_ids[-50:]]
+        for key, value in incoming.items():
+            if key == "detections":
+                continue
+            if key not in merged or merged[key] in (None, {}, [], ""):
+                merged[key] = value
+        correlation = merged.get("correlation") if isinstance(merged.get("correlation"), dict) else {}
+        correlation.update({
+            "deduplicated": True,
+            "dedupe_rule": "same source, category, target or target network, validation tag, and time window",
+            "retained_detection_records": len(merged.get("detections", [])),
+        })
+        merged["correlation"] = correlation
+        return merged
+
+    @staticmethod
+    def _merge_risk_factors(existing: list[Any], incoming: list[Any]) -> list[Any]:
+        merged: list[Any] = []
+        seen: set[str] = set()
+        for factor in list(existing if isinstance(existing, list) else []) + list(incoming if isinstance(incoming, list) else []):
+            key = _stable_set_value(factor)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(factor)
+        return merged[-50:]
+
+    def _insert_incident(self, conn: sqlite3.Connection, incident: dict[str, Any]) -> None:
+        conn.execute(
+            """
+            INSERT INTO incidents(
+                incident_id, title, status, risk_score, severity, confidence,
+                source_ip, destination_ip, category, created_at, updated_at,
+                first_seen, last_seen, event_count, detection_count,
+                affected_targets_json, attack_stage, validation_tag, suppressed_count,
+                evidence_json, risk_factors_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                incident["incident_id"], incident["title"], incident["status"],
+                incident["risk_score"], incident["severity"], incident["confidence"],
+                incident.get("source_ip"), incident.get("destination_ip"), incident.get("category"),
+                incident["created_at"], incident["updated_at"], incident["first_seen"], incident["last_seen"],
+                incident["event_count"], incident["detection_count"], json.dumps(incident["affected_targets"], sort_keys=True),
+                incident["attack_stage"], incident["validation_tag"], incident["suppressed_count"],
+                json.dumps(incident["evidence"], sort_keys=True), json.dumps(incident["risk_factors"], sort_keys=True),
+            ),
+        )
+
+    def _merge_incident(self, conn: sqlite3.Connection, existing: sqlite3.Row, incoming: dict[str, Any]) -> None:
+        existing_evidence = json.loads(existing["evidence_json"] or "{}")
+        existing_risk = json.loads(existing["risk_factors_json"] or "[]")
+        merged_evidence = self._merge_evidence(existing_evidence, incoming["evidence"])
+        merged_risk = self._merge_risk_factors(existing_risk, incoming["risk_factors"])
+        try:
+            existing_targets = set(json.loads(existing["affected_targets_json"] or "[]"))
+        except json.JSONDecodeError:
+            existing_targets = set()
+        targets = sorted(existing_targets | set(incoming["affected_targets"]))
+        first_seen = min(str(existing["first_seen"] or existing["created_at"]), incoming["first_seen"])
+        last_seen = max(str(existing["last_seen"] or existing["updated_at"]), incoming["last_seen"])
+        existing_detection_count = int(existing["detection_count"] or 0)
+        existing_event_count = int(existing["event_count"] or 0)
+        existing_suppressed = int(existing["suppressed_count"] or 0)
+        conn.execute(
+            """
+            UPDATE incidents
+            SET title = ?,
+                risk_score = max(risk_score, ?),
+                severity = max(severity, ?),
+                confidence = max(confidence, ?),
+                destination_ip = COALESCE(destination_ip, ?),
+                updated_at = ?,
+                first_seen = ?,
+                last_seen = ?,
+                event_count = ?,
+                detection_count = ?,
+                affected_targets_json = ?,
+                attack_stage = COALESCE(attack_stage, ?),
+                validation_tag = COALESCE(validation_tag, ?),
+                suppressed_count = ?,
+                evidence_json = ?,
+                risk_factors_json = ?
+            WHERE incident_id = ?
+            """,
+            (
+                existing["title"],
+                incoming["risk_score"],
+                incoming["severity"],
+                incoming["confidence"],
+                incoming.get("destination_ip"),
+                max(str(existing["updated_at"]), incoming["updated_at"]),
+                first_seen,
+                last_seen,
+                existing_event_count + incoming["event_count"],
+                existing_detection_count + max(0, incoming["detection_count"]),
+                json.dumps(targets, sort_keys=True),
+                incoming["attack_stage"],
+                incoming["validation_tag"],
+                existing_suppressed + 1 + incoming["suppressed_count"],
+                json.dumps(merged_evidence, sort_keys=True),
+                json.dumps(merged_risk, sort_keys=True),
+                existing["incident_id"],
+            ),
+        )
+
+    def _refresh_host_incident_count(self, conn: sqlite3.Connection, source_ip: str, risk_score: int) -> None:
+        conn.execute(
+            """
+            UPDATE hosts
+            SET risk_score = max(risk_score, ?),
+                open_incidents = (
+                    SELECT count(*)
+                    FROM incidents
+                    WHERE status = 'open' AND source_ip = ?
                 )
-                for detection_id in incident.get("detection_ids", []):
-                    conn.execute("INSERT OR IGNORE INTO incident_detections(incident_id, detection_id) VALUES (?, ?)", (incident["incident_id"], detection_id))
-                if incident.get("source_ip"):
-                    conn.execute(
-                        """
-                        UPDATE hosts
-                        SET risk_score = max(risk_score, ?),
-                            open_incidents = (SELECT count(*) FROM incidents WHERE status = 'open' AND source_ip = ?)
-                        WHERE ip = ?
-                        """,
-                        (incident["risk_score"], incident["source_ip"], incident["source_ip"]),
-                    )
-            return conn.total_changes - before
+            WHERE ip = ?
+            """,
+            (risk_score, source_ip, source_ip),
+        )
 
     def get_incident(self, incident_id: str) -> dict[str, Any] | None:
         with self.connect() as conn:
@@ -593,10 +958,11 @@ class EventStore:
         item = dict(row)
         item["evidence"] = json.loads(item.pop("evidence_json"))
         item["risk_factors"] = json.loads(item.pop("risk_factors_json"))
+        item["affected_targets"] = json.loads(item.pop("affected_targets_json", "[]") or "[]")
         return item
 
     def update_incident_status(self, incident_id: str, status: str, actor: str = "system") -> bool:
-        if status not in {"open", "closed", "false_positive"}:
+        if status not in {"open", "closed", "false_positive", "archived"}:
             raise ValueError("invalid incident status")
         with self.connect() as conn:
             before = conn.total_changes
@@ -794,6 +1160,29 @@ class EventStore:
             rows = conn.execute(f"SELECT * FROM {table} ORDER BY {order} DESC LIMIT ?", (limit,)).fetchall()
         return [dict(row) for row in rows]
 
+    def incident_status_summary(self) -> dict[str, Any]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT status, count(*) AS count FROM incidents GROUP BY status").fetchall()
+            open_count = int(conn.execute("SELECT count(*) FROM incidents WHERE status = 'open'").fetchone()[0])
+            active_count = int(conn.execute("SELECT count(*) FROM incidents WHERE status = 'open' AND last_seen >= ?", ((datetime.now(timezone.utc) - timedelta(hours=24)).isoformat(),)).fetchone()[0])
+            high_risk_count = int(conn.execute("SELECT count(*) FROM incidents WHERE status = 'open' AND risk_score >= 70").fetchone()[0])
+            critical_count = int(conn.execute("SELECT count(*) FROM incidents WHERE status = 'open' AND risk_score >= 90").fetchone()[0])
+        return {
+            "counts_by_status": {row["status"]: int(row["count"]) for row in rows},
+            "open": open_count,
+            "active": active_count,
+            "high_risk": high_risk_count,
+            "critical": critical_count,
+            "definitions": {
+                "open": "Incidents with status=open; archived, closed, and false-positive incidents are excluded.",
+                "active": "Open incidents with last_seen in the last 24 hours.",
+                "high_risk": "Open incidents with risk_score >= 70.",
+                "critical": "Open incidents with risk_score >= 90.",
+                "time_window": "24 hours for active incidents and telemetry rate metrics; lifetime for open/high-risk/critical counts.",
+                "test_data": "Validation incidents are included unless filtered by validation_tag in the API consumer.",
+            },
+        }
+
     def telemetry_type_counts(self, hours: int = 24) -> dict[str, int]:
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
         with self.connect() as conn:
@@ -826,6 +1215,8 @@ class EventStore:
         with self.connect() as conn:
             events_24h = conn.execute("SELECT count(*) FROM events WHERE timestamp >= ?", (cutoff,)).fetchone()[0]
             open_incidents = conn.execute("SELECT count(*) FROM incidents WHERE status = 'open'").fetchone()[0]
+            active_incidents = conn.execute("SELECT count(*) FROM incidents WHERE status = 'open' AND COALESCE(last_seen, updated_at) >= ?", (cutoff,)).fetchone()[0]
+            high_risk_incidents = conn.execute("SELECT count(*) FROM incidents WHERE status = 'open' AND risk_score >= 70").fetchone()[0]
             critical_incidents = conn.execute("SELECT count(*) FROM incidents WHERE status = 'open' AND risk_score >= 90").fetchone()[0]
             blocked_sources = conn.execute("SELECT count(DISTINCT source_ip) FROM block_entries WHERE status = 'active'").fetchone()[0]
             categories = conn.execute("SELECT category, count(*) AS count FROM detections GROUP BY category ORDER BY count DESC").fetchall()
@@ -839,10 +1230,20 @@ class EventStore:
             "metrics": {
                 "events_last_24h": events_24h,
                 "open_incidents": open_incidents,
+                "active_incidents": active_incidents,
+                "high_risk_incidents": high_risk_incidents,
                 "critical_incidents": critical_incidents,
                 "blocked_sources": blocked_sources,
                 "database_size_bytes": size,
                 "telemetry_delay_seconds": delay,
+            },
+            "incident_definitions": {
+                "open": "status=open; archived, closed, and false-positive incidents are excluded.",
+                "active": "status=open and last_seen within the last 24 hours.",
+                "high_risk": "status=open and risk_score >= 70.",
+                "critical": "status=open and risk_score >= 90.",
+                "telemetry_window": "events_last_24h uses the last 24 hours.",
+                "test_data": "Validation incidents remain visible and carry validation_tag.",
             },
             "detections_by_category": [dict(row) for row in categories],
             "top_hosts": [dict(row) for row in top_hosts],

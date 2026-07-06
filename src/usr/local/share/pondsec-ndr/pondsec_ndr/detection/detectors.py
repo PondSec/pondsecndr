@@ -32,7 +32,15 @@ class PortScanDetector(Detector):
                     7,
                     min(0.98, 0.65 + port_count / 100 + failed / 100),
                     min(1.0, port_count / 50),
-                    {"unique_ports": port_count, "unique_destinations": dest_count, "failed_connections": failed},
+                    {
+                        "unique_ports": port_count,
+                        "unique_destinations": dest_count,
+                        "failed_connections": failed,
+                        "thresholds": [
+                            {"feature": "unique_ports", "operator": ">=", "threshold": 12, "observed": port_count},
+                            {"feature": "failed_connections", "operator": ">=", "threshold": 3, "observed": failed},
+                        ],
+                    },
                 ))
         return detections
 
@@ -61,7 +69,13 @@ class VerticalScanDetector(Detector):
                     7,
                     min(0.95, 0.6 + len(ports) / 80),
                     min(1.0, len(ports) / 40),
-                    {"unique_ports": len(ports), "sample_ports": sorted(ports)[:20]},
+                    {
+                        "unique_ports": len(ports),
+                        "sample_ports": sorted(ports)[:20],
+                        "thresholds": [
+                            {"feature": "unique_ports_to_single_destination", "operator": ">=", "threshold": 10, "observed": len(ports)},
+                        ],
+                    },
                 ))
         return detections
 
@@ -90,7 +104,13 @@ class HorizontalScanDetector(Detector):
                     7,
                     min(0.95, 0.6 + len(destinations) / 80),
                     min(1.0, len(destinations) / 40),
-                    {"destination_count": len(destinations), "port": port},
+                    {
+                        "destination_count": len(destinations),
+                        "port": port,
+                        "thresholds": [
+                            {"feature": "destinations_on_same_port", "operator": ">=", "threshold": 10, "observed": len(destinations)},
+                        ],
+                    },
                 ))
         return detections
 
@@ -116,7 +136,17 @@ class DNSTunnelingDetector(Detector):
                     8,
                     min(0.97, 0.55 + entropy / 10 + min(query_rate, 1) / 5),
                     min(1.0, entropy / 5),
-                    {"dns_entropy": entropy, "dns_name_length": name_length, "dns_query_rate": query_rate, "dns_nxdomain_rate": nxdomain},
+                    {
+                        "dns_entropy": entropy,
+                        "dns_name_length": name_length,
+                        "dns_query_rate": query_rate,
+                        "dns_nxdomain_rate": nxdomain,
+                        "thresholds": [
+                            {"feature": "dns_entropy", "operator": ">=", "threshold": 3.8, "observed": entropy},
+                            {"feature": "dns_name_length", "operator": ">=", "threshold": 45, "observed": name_length},
+                            {"feature": "dns_query_rate_or_nxdomain_rate", "operator": "query_rate>=0.2 OR nxdomain_rate>=0.3", "threshold": "0.2/0.3", "observed": {"dns_query_rate": query_rate, "dns_nxdomain_rate": nxdomain}},
+                        ],
+                    },
                 ))
         return detections
 
@@ -160,7 +190,18 @@ class BeaconingDetector(Detector):
                     8,
                     min(0.96, 0.6 + periodicity / 3),
                     periodicity,
-                    {"connections": len(timestamps), "average_interval_seconds": round(avg, 2), "interval_stddev": round(spread, 2), "port": port},
+                    {
+                        "connections": len(timestamps),
+                        "average_interval_seconds": round(avg, 2),
+                        "interval_stddev": round(spread, 2),
+                        "port": port,
+                        "periodicity": round(periodicity, 4),
+                        "thresholds": [
+                            {"feature": "connections", "operator": ">=", "threshold": 5, "observed": len(timestamps)},
+                            {"feature": "average_interval_seconds", "operator": ">=", "threshold": 15, "observed": round(avg, 2)},
+                            {"feature": "periodicity", "operator": ">=", "threshold": 0.85, "observed": round(periodicity, 4)},
+                        ],
+                    },
                 ))
         return detections
 
@@ -190,7 +231,13 @@ class LateralMovementDetector(Detector):
                     8,
                     min(0.95, 0.6 + len(destinations) / 20),
                     min(1.0, len(destinations) / 15),
-                    {"destination_count": len(destinations), "ports": sorted(self.watched_ports)},
+                    {
+                        "destination_count": len(destinations),
+                        "ports": sorted(self.watched_ports),
+                        "thresholds": [
+                            {"feature": "internal_admin_service_destinations", "operator": ">=", "threshold": 5, "observed": len(destinations)},
+                        ],
+                    },
                 ))
         return detections
 
@@ -214,7 +261,14 @@ class DataExfiltrationDetector(Detector):
                     8,
                     min(0.96, 0.55 + min(ratio, 50) / 100),
                     min(1.0, ratio / 50),
-                    {"bytes_out": bytes_out, "upload_download_ratio": ratio},
+                    {
+                        "bytes_out": bytes_out,
+                        "upload_download_ratio": ratio,
+                        "thresholds": [
+                            {"feature": "bytes_out", "operator": ">=", "threshold": 50_000_000, "observed": bytes_out},
+                            {"feature": "upload_download_ratio", "operator": ">=", "threshold": 8, "observed": ratio},
+                        ],
+                    },
                 ))
         return detections
 
@@ -244,6 +298,10 @@ class HostBaselineAnomalyDetector(Detector):
                     "baseline_observations": observations,
                     "reasons": item.get("baseline_anomaly_reasons", []),
                     "signature_required": False,
+                    "thresholds": [
+                        {"feature": "baseline_status", "operator": "=", "threshold": "established", "observed": item.get("baseline_status")},
+                        {"feature": "baseline_deviation", "operator": ">=", "threshold": 0.65, "observed": deviation},
+                    ],
                 },
                 recommended_action="block",
                 model_version="pondsec-host-baseline-v1",
@@ -303,6 +361,9 @@ class PretrainedIdsModelDetector(Detector):
                     "attack_class_probability": round(class_probability, 6),
                     "feature_values": score["feature_values"],
                     "pretrained_model": True,
+                    "thresholds": [
+                        {"feature": "attack_probability", "operator": ">=", "threshold": 0.55, "observed": round(attack_probability, 6)},
+                    ],
                 },
                 recommended_action="block",
                 model_version=score["model_version"],
@@ -335,7 +396,12 @@ class UnusualTlsFingerprintDetector(Detector):
                     6,
                     min(0.9, 0.5 + len(fingerprints) / 30),
                     min(1.0, len(fingerprints) / 20),
-                    {"fingerprint_count": len(fingerprints)},
+                    {
+                        "fingerprint_count": len(fingerprints),
+                        "thresholds": [
+                            {"feature": "fingerprint_count", "operator": ">=", "threshold": 8, "observed": len(fingerprints)},
+                        ],
+                    },
                 ))
         return detections
 
@@ -358,7 +424,14 @@ class UnusualDestinationDetector(Detector):
                     6,
                     min(0.9, 0.5 + destinations / 200),
                     min(1.0, destinations / 100),
-                    {"destination_count": destinations, "burst_score": item.get("burst_score")},
+                    {
+                        "destination_count": destinations,
+                        "burst_score": item.get("burst_score"),
+                        "thresholds": [
+                            {"feature": "destination_count", "operator": ">=", "threshold": 50, "observed": destinations},
+                            {"feature": "burst_score", "operator": ">=", "threshold": 0.2, "observed": item.get("burst_score")},
+                        ],
+                    },
                 ))
         return detections
 
@@ -393,6 +466,9 @@ class SuricataAlertAdapter(Detector):
                     "suricata_severity": severity,
                     "suricata_action": metadata.get("action"),
                     "drop_reason": metadata.get("drop_reason"),
+                    "thresholds": [
+                        {"feature": "signature_id", "operator": "present", "threshold": "present", "observed": metadata.get("signature_id")},
+                    ],
                 },
             ))
         return detections

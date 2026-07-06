@@ -25,7 +25,7 @@ from pondsec_ndr.response.engine import ResponseDenied, activate_block, propose_
 from pondsec_ndr.response.pf import PFTableEnforcer
 from pondsec_ndr.sensor import harden_sensor, sensor_status
 from pondsec_ndr.service import PondSecService
-from pondsec_ndr.storage.database import EventStore
+from pondsec_ndr.storage.database import EventStore, SCHEMA_VERSION
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -208,7 +208,7 @@ def dispatch(args: argparse.Namespace, config: Any, store: EventStore) -> tuple[
         return {"items": _decode_rows(store.list_rows("detections"))}, 0
     if command == "incidents":
         if args.section_command == "list":
-            return {"items": _decode_rows(store.list_rows("incidents"))}, 0
+            return {"items": _decode_rows(store.list_rows("incidents")), "summary": store.incident_status_summary()}, 0
         status_map = {"close": "closed", "reopen": "open", "false-positive": "false_positive"}
         changed = store.update_incident_status(args.incident_id, status_map[args.section_command], actor="cli")
         return {"status": "ok" if changed else "not_found", "incident_id": args.incident_id}, 0 if changed else 1
@@ -275,7 +275,7 @@ def dispatch(args: argparse.Namespace, config: Any, store: EventStore) -> tuple[
     if command == "database":
         if args.database_command == "migrate":
             store.migrate()
-            return {"status": "ok", "schema_version": 1}, 0
+            return {"status": "ok", "schema_version": SCHEMA_VERSION}, 0
         payload = store.check()
         return payload, 0 if payload["status"] == "ok" else 1
     if command == "sensor":

@@ -22,6 +22,8 @@ def correlate_detections(detections: list[dict[str, Any]]) -> list[dict[str, Any
         if risk_score < 35:
             continue
         title = _title(category, source_ip, len(items))
+        first_seen = min(str(item.get("timestamp") or now) for item in items)
+        last_seen = max(str(item.get("timestamp") or now) for item in items)
         basis = f"{source_ip}:{category}:{','.join(sorted(item['detection_id'] for item in items))}"
         incidents.append({
             "incident_id": str(uuid5(NAMESPACE_URL, basis)),
@@ -35,7 +37,20 @@ def correlate_detections(detections: list[dict[str, Any]]) -> list[dict[str, Any
             "category": category,
             "created_at": now,
             "updated_at": now,
-            "evidence": {"detections": items},
+            "first_seen": first_seen,
+            "last_seen": last_seen,
+            "event_count": max(1, sum(_evidence_event_count(item) for item in items)),
+            "detection_count": len(items),
+            "evidence": {
+                "detections": items,
+                "correlation": {
+                    "rule": "same source and category in the current analysis window",
+                    "detection_count": len(items),
+                    "first_seen": first_seen,
+                    "last_seen": last_seen,
+                    "risk_factors": factors,
+                },
+            },
             "risk_factors": factors,
             "detection_ids": [item["detection_id"] for item in items],
         })
@@ -54,3 +69,14 @@ def _common_destination(detections: list[dict[str, Any]]) -> str | None:
     if len(values) == 1:
         return next(iter(values))
     return None
+
+
+def _evidence_event_count(detection: dict[str, Any]) -> int:
+    evidence = detection.get("evidence", {})
+    if not isinstance(evidence, dict):
+        return 1
+    for key in ("event_count", "connections", "destination_count", "unique_destinations", "unique_ports", "failed_connections"):
+        value = evidence.get(key)
+        if isinstance(value, int) and value > 0:
+            return value
+    return 1
