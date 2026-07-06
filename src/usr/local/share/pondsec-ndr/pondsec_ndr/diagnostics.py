@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import importlib.metadata
 import importlib.util
+import io
+import json
 import os
 from pathlib import Path
 import pwd
@@ -11,10 +13,12 @@ import grp
 import shlex
 import stat
 import subprocess
+import tarfile
 from typing import Any
 
 from pondsec_ndr.config import PondSecConfig
 from pondsec_ndr.models.manager import model_inventory
+from pondsec_ndr.privacy import privacy_status, sanitize_for_export, sanitized_config
 from pondsec_ndr.response.pf import PFTableEnforcer
 from pondsec_ndr.storage.database import EventStore
 
@@ -101,6 +105,43 @@ def self_test(config: PondSecConfig, store: EventStore) -> dict[str, Any]:
         "ml_runtime": ml_runtime,
         "host_baselines": host_baselines,
         "errors": errors,
+    }
+
+
+def diagnostic_archive(config: PondSecConfig, store: EventStore, output_path: Path) -> dict[str, Any]:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    payloads = {
+        "diagnostics.json": diagnostics(config, store),
+        "service_status.json": service_status(config, store),
+        "database.json": store.check(),
+        "models.json": {"items": model_inventory(config.data_dir)},
+        "privacy.json": privacy_status(config),
+        "sanitized_config.json": sanitized_config(config),
+        "permissions.json": {
+            "eve_access": eve_access_status(config),
+            "pf_blocking": _pf_blocking_status(),
+            "pf_tables": _pf_tables_status(),
+        },
+        "README.json": {
+            "archive_type": "pondsec-ndr-diagnostics",
+            "contains_sensitive_payloads": False,
+            "contains_private_keys": False,
+            "contains_passwords": False,
+            "note": "Generated for support. Traffic metadata is summarized and configuration is sanitized.",
+        },
+    }
+    with tarfile.open(output_path, "w:gz") as archive:
+        for name, payload in payloads.items():
+            safe_payload = sanitize_for_export(payload, anonymize=False)
+            data = json.dumps(safe_payload, indent=2, sort_keys=True, default=str).encode("utf-8")
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            archive.addfile(info, io.BytesIO(data))
+    return {
+        "status": "ok",
+        "output": str(output_path),
+        "files": sorted(payloads),
+        "sensitive_payloads_included": False,
     }
 
 

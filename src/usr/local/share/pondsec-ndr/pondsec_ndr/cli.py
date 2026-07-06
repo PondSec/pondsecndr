@@ -16,11 +16,13 @@ from pondsec_ndr.collectors.eve import EveCollector
 from pondsec_ndr.config import ensure_directories, load_config
 from pondsec_ndr.correlation import correlate_detections
 from pondsec_ndr.detection.detectors import default_detectors
+from pondsec_ndr.diagnostics import diagnostic_archive
 from pondsec_ndr.diagnostics import diagnostics as diagnostics_payload
 from pondsec_ndr.diagnostics import self_test, service_status
 from pondsec_ndr.features.aggregator import aggregate_features
 from pondsec_ndr.models.manager import ModelError, download_model_artifacts, model_inventory, write_runtime_selftest
 from pondsec_ndr.models.runtime import MODEL_ID, SYNTHETIC_AI_VALIDATION_VECTOR, ModelRuntimeUnavailable, SaidimnIdsCnnRuntime
+from pondsec_ndr.privacy import export_privacy_bundle, privacy_status, purge_telemetry_before
 from pondsec_ndr.response.engine import ResponseDenied, activate_block, propose_block_for_incident, propose_manual_block, remove_block, validate_ip_or_network
 from pondsec_ndr.response.pf import PFTableEnforcer
 from pondsec_ndr.sensor import harden_sensor, sensor_status
@@ -41,6 +43,18 @@ def main(argv: list[str] | None = None) -> int:
     diagnostics = sub.add_parser("diagnostics")
     diagnostics_sub = diagnostics.add_subparsers(dest="diagnostics_command")
     diagnostics_sub.add_parser("self-test")
+    diagnostics_archive = diagnostics_sub.add_parser("archive")
+    diagnostics_archive.add_argument("--output", required=True)
+
+    privacy = sub.add_parser("privacy")
+    privacy_sub = privacy.add_subparsers(dest="privacy_command", required=True)
+    privacy_sub.add_parser("status")
+    privacy_export = privacy_sub.add_parser("export")
+    privacy_export.add_argument("--output", required=True)
+    privacy_export.add_argument("--no-anonymize", action="store_true")
+    privacy_export.add_argument("--include-events", action="store_true")
+    privacy_purge = privacy_sub.add_parser("purge")
+    privacy_purge.add_argument("--older-than-days", type=int, required=True)
 
     dashboard = sub.add_parser("dashboard")
     dashboard_sub = dashboard.add_subparsers(dest="dashboard_command", required=True)
@@ -196,7 +210,25 @@ def dispatch(args: argparse.Namespace, config: Any, store: EventStore) -> tuple[
         if args.diagnostics_command == "self-test":
             payload = self_test(config, store)
             return payload, 0 if payload["status"] == "ok" else 1
+        if args.diagnostics_command == "archive":
+            payload = diagnostic_archive(config, store, Path(args.output))
+            return payload, 0 if payload["status"] == "ok" else 1
         return diagnostics_payload(config, store), 0
+    if command == "privacy":
+        if args.privacy_command == "status":
+            return privacy_status(config), 0
+        if args.privacy_command == "export":
+            payload = export_privacy_bundle(
+                config,
+                store,
+                Path(args.output),
+                anonymize=not args.no_anonymize,
+                include_events=args.include_events,
+            )
+            return payload, 0
+        if args.privacy_command == "purge":
+            payload = purge_telemetry_before(store, args.older_than_days)
+            return payload, 0
     if command == "dashboard":
         payload = store.dashboard_summary() if args.dashboard_command == "summary" else store.dashboard_timeline()
         payload["metrics"] = payload.get("metrics", {})

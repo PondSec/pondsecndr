@@ -1278,9 +1278,25 @@ class EventStore:
 
     def cleanup(self, retention_days: int) -> int:
         cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).isoformat()
+        return self.purge_before(cutoff, include_open_incidents=False)
+
+    def purge_before(self, cutoff: str, include_open_incidents: bool = False) -> int:
         with self.connect() as conn:
             before = conn.total_changes
             conn.execute("DELETE FROM events WHERE timestamp < ?", (cutoff,))
             conn.execute("DELETE FROM features WHERE timestamp < ?", (cutoff,))
             conn.execute("DELETE FROM detections WHERE timestamp < ?", (cutoff,))
+            incident_clause = "COALESCE(updated_at, created_at) < ?"
+            values: list[Any] = [cutoff]
+            if not include_open_incidents:
+                incident_clause += " AND status != 'open'"
+            old_incidents = [
+                row["incident_id"]
+                for row in conn.execute(f"SELECT incident_id FROM incidents WHERE {incident_clause}", values).fetchall()
+            ]
+            if old_incidents:
+                placeholders = ",".join("?" for _ in old_incidents)
+                conn.execute(f"DELETE FROM incident_detections WHERE incident_id IN ({placeholders})", old_incidents)
+                conn.execute(f"DELETE FROM incidents WHERE incident_id IN ({placeholders})", old_incidents)
+                conn.execute(f"DELETE FROM responses WHERE incident_id IN ({placeholders})", old_incidents)
             return conn.total_changes - before

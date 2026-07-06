@@ -15,11 +15,12 @@ from pondsec_ndr.collectors.filterlog import FilterLogCollector, normalize_filte
 from pondsec_ndr.config import PondSecConfig, ResponseConfig
 from pondsec_ndr.correlation import correlate_detections
 from pondsec_ndr.detection.detectors import BeaconingDetector, DNSTunnelingDetector, PortScanDetector, SuricataAlertAdapter
-from pondsec_ndr.diagnostics import eve_access_status
+from pondsec_ndr.diagnostics import diagnostic_archive, eve_access_status
 from pondsec_ndr.features.aggregator import aggregate_features, shannon_entropy
 from pondsec_ndr.models.cicids_features import CICIDS2017_FEATURES, cicids_vector_from_feature
 from pondsec_ndr.models.manager import model_inventory
 from pondsec_ndr.normalizers.suricata import normalize_eve
+from pondsec_ndr.privacy import export_privacy_bundle, purge_telemetry_before
 from pondsec_ndr.response.engine import ResponseDenied, activate_block, is_protected_target, propose_block_for_incident, propose_manual_block, remove_block
 from pondsec_ndr.response.pf import PFTableEnforcer
 from pondsec_ndr.sensor import eve_types_from_suricata_yaml, patch_suricata_yaml_text, required_eve_types
@@ -254,6 +255,44 @@ class BackendTests(unittest.TestCase):
             host = store.list_rows("hosts")[0]
             fingerprints = json.loads(host["known_tls_fingerprints_json"])
             self.assertEqual(fingerprints, ['{"hash":"abc123","string":"771,4865-4866"}'])
+
+    def test_privacy_export_anonymizes_addresses(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = EventStore(root / "pondsec-ndr.db")
+            store.migrate()
+            store.insert_events([
+                normalize_eve(flow_event("2026-07-05T10:00:00+00:00", "192.168.10.51", "198.51.100.51", 443))
+            ])
+            output = root / "privacy-export.json"
+            result = export_privacy_bundle(PondSecConfig(data_dir=root), store, output, anonymize=True, include_events=True)
+            self.assertEqual(result["status"], "ok")
+            text = output.read_text(encoding="utf-8")
+            self.assertNotIn("192.168.10.51", text)
+            self.assertNotIn("198.51.100.51", text)
+            self.assertIn("anon-ip4", text)
+
+    def test_privacy_purge_deletes_old_telemetry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            store.insert_events([
+                normalize_eve(flow_event("2020-01-01T10:00:00+00:00", "192.168.10.52", "198.51.100.52", 443))
+            ])
+            result = purge_telemetry_before(store, older_than_days=1)
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(store.list_rows("events"), [])
+
+    def test_diagnostic_archive_excludes_sensitive_payloads(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = EventStore(root / "pondsec-ndr.db")
+            store.migrate()
+            output = root / "diagnostics.tar.gz"
+            result = diagnostic_archive(PondSecConfig(data_dir=root), store, output)
+            self.assertEqual(result["status"], "ok")
+            self.assertTrue(output.exists())
+            self.assertFalse(result["sensitive_payloads_included"])
 
     def test_correlation_creates_explainable_incident(self) -> None:
         events = [
