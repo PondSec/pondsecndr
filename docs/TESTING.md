@@ -19,6 +19,9 @@ The test suite covers:
 - Verified external model download with SHA-256 checks in a temporary directory.
 - Safe response proposal, allowlist denial, protected target denial, PF table activation/removal, and controlled protection validation.
 - CLI health and configuration validation.
+- Package shell syntax, conservative deinstall defaults, full cleanup controls,
+  PF block cleanup fallback, install/remove message content, and signed
+  repository documentation requirements.
 
 See [VALIDATION.md](VALIDATION.md) for firewall-level validation results.
 
@@ -47,3 +50,4 @@ Target firewall validation must include:
 - Diagnostics self-test.
 - Controlled detect-and-block validation with `pondsec-ndrctl protection validate --json`.
 - Uninstall and residual path checks.
+- Signed repository install from `PondSec.conf`.
