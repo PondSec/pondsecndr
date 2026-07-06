@@ -30,6 +30,26 @@ Then build through the OPNsense tools workflow.
 - Service executable: `/usr/local/sbin/pondsec-ndr`
 - CLI executable: `/usr/local/sbin/pondsec-ndrctl`
 - rc.d script: `/usr/local/etc/rc.d/pondsec_ndr`
+- pkg install/remove message: `pkg-message`
+
+## Install And Deinstall Scripts
+
+`pkg-install` creates the dedicated `pondsecndr` user/group, verifies NumPy,
+and creates runtime directories with restrictive ownership.
+
+`pkg-deinstall` is conservative by default. It stops the service, removes the
+runtime directory, and asks whether configuration, telemetry database, model
+artifacts, and PondSec-created PF blocks should be retained or removed.
+
+Unattended package tests can control the prompts through:
+
+- `PONDSEC_KEEP_CONFIG`
+- `PONDSEC_KEEP_DATABASE`
+- `PONDSEC_KEEP_MODELS`
+- `PONDSEC_REMOVE_PF_BLOCKS`
+
+Defaults are chosen to avoid accidental forensic data loss and to avoid removing
+PF entries without administrator intent.
 
 ## External Model Artifacts
 
@@ -72,6 +92,9 @@ The repository alone is not enough to appear automatically in every OPNsense
 plugin list. The package must be available from a configured OPNsense package
 repository.
 
+The signed community repository workflow is documented in
+`docs/RELEASE_REPOSITORY.md`.
+
 ## Packaging Risks
 
 - Final Python package dependency names must be checked against the target OPNsense release.
@@ -79,3 +102,5 @@ repository.
 - The rc.d script must be tested under FreeBSD/OPNsense, not only macOS/Linux.
 - Optional PyTorch packages must not become hard dependencies until
   FreeBSD/OPNsense compatibility and resource use are verified.
+- A generated SPDX or CycloneDX SBOM should be attached to public releases in
+  addition to `docs/SBOM.md`.

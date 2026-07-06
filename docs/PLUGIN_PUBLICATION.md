@@ -6,19 +6,24 @@ OPNsense-installable `os-pondsec-ndr` package.
 ## Current Status
 
 - The repository has the expected OPNsense plugin layout: `Makefile`,
-  `pkg-descr`, `pkg-install`, `pkg-deinstall`, and `src/...`.
+  `pkg-descr`, `pkg-install`, `pkg-deinstall`, `pkg-message`, and `src/...`.
 - The package name is `os-pondsec-ndr`.
 - NumPy is declared as a package dependency in `Makefile` and verified in
   `pkg-install`.
 - The verified pretrained NumPy model runtime artifact is included in `src/`.
 - The plugin has been development-deployed and validated on
   `HWFirewall01.internal` / `192.168.99.2`.
+- Conservative deinstall prompts are implemented for configuration, database,
+  model artifacts, and PF block cleanup.
+- The signed community repository workflow is documented and a helper script is
+  present at `tools/build_signed_repo.sh`.
 - The repository is not yet upstreamed into `opnsense/plugins` and no signed
   PondSec package repository has been published yet.
 
 Result: users cannot yet install PondSec NDR from the default OPNsense plugin
-list. They can install it only through a development deploy or a package built
-from an OPNsense plugins tree.
+list. They can install it through a development deploy, a package built from an
+OPNsense plugins tree, or a configured signed PondSec repository after that
+repository is published.
 
 ## Official OPNsense Path
 
@@ -74,8 +79,33 @@ community package repository:
 5. Add the repository configuration to test firewalls.
 6. Install through OPNsense firmware/package tooling.
 
-This path still needs signing, update policy, rollback policy, and trust
-documentation before it is safe for non-development users.
+The concrete signed repository procedure is in `docs/RELEASE_REPOSITORY.md`.
+
+## Package Lifecycle Acceptance Tests
+
+Before a public beta repository is announced, run and record:
+
+1. Fresh package installation.
+2. Upgrade from the previous package version.
+3. Service restart.
+4. OPNsense restart.
+5. Suricata EVE and filterlog log rotation.
+6. Database migration with backup and rollback.
+7. Deinstallation with retained configuration.
+8. Deinstallation with full cleanup and PF block removal.
+9. Reinstallation with existing configuration.
+10. Disabled or missing Suricata.
+11. Missing model artifact.
+12. Full or read-only data partition.
+13. Model self-test.
+14. Synthetic AI validation flow.
+15. Benign AI validation flow.
+16. Monitor mode with no PF block.
+17. Prevent mode with allowlist and protected-source gates.
+18. Sanitized diagnostic archive creation.
+
+Every failed item blocks publication until fixed or documented as an explicit
+known limitation.
 
 ## Sources
 
@@ -85,3 +115,7 @@ documentation before it is safe for non-development users.
   https://docs.opnsense.org/development/examples/helloworld.html
 - OPNsense tools repository:
   https://github.com/opnsense/tools
+- FreeBSD pkg repository signing:
+  https://man.freebsd.org/cgi/man.cgi?query=pkg-repo&sektion=8
+- FreeBSD pkg repository verification config:
+  https://man.freebsd.org/cgi/man.cgi?query=pkg.conf&sektion=5

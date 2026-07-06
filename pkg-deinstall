@@ -2,11 +2,110 @@
 
 set -eu
 
+DATA_DIR=${PONDSEC_NDR_DATA_DIR:-/var/db/pondsec-ndr}
+CONFIG_DIR=${PONDSEC_NDR_CONFIG_DIR:-/usr/local/etc/pondsec-ndr}
+RUN_DIR=${PONDSEC_NDR_RUN_DIR:-/var/run/pondsec-ndr}
+PF_TABLE=${PONDSEC_NDR_PF_BLOCK_TABLE:-virusprot}
+
+ask_keep()
+{
+    var_name=$1
+    prompt=$2
+    default=$3
+    current=$(eval "printf '%s' \"\${$var_name:-}\"")
+    if [ -n "$current" ]; then
+        printf '%s' "$current"
+        return
+    fi
+    if [ -t 0 ]; then
+        printf '%s [%s]: ' "$prompt" "$default" >/dev/tty
+        read answer </dev/tty || answer=""
+        answer=${answer:-$default}
+        printf '%s' "$answer"
+        return
+    fi
+    printf '%s' "$default"
+}
+
+is_yes()
+{
+    case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+        y|yes|1|true|on) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+remove_pf_blocks()
+{
+    db="${DATA_DIR}/pondsec-ndr.db"
+    if [ ! -f "$db" ]; then
+        return
+    fi
+    if command -v sqlite3 >/dev/null 2>&1; then
+        block_sources=$(sqlite3 -noheader "$db" "SELECT DISTINCT source_ip FROM block_entries WHERE status IN ('active','proposed') AND source_ip IS NOT NULL;" 2>/dev/null || true)
+    elif command -v python3 >/dev/null 2>&1; then
+        block_sources=$(python3 - "$db" <<'PY' 2>/dev/null || true
+import sqlite3
+import sys
+
+with sqlite3.connect(sys.argv[1]) as conn:
+    rows = conn.execute(
+        "SELECT DISTINCT source_ip FROM block_entries "
+        "WHERE status IN ('active','proposed') AND source_ip IS NOT NULL"
+    ).fetchall()
+for row in rows:
+    print(row[0])
+PY
+)
+    else
+        return
+    fi
+    printf '%s\n' "$block_sources" | while IFS= read -r source_ip; do
+        [ -n "$source_ip" ] || continue
+        /sbin/pfctl -t "$PF_TABLE" -T delete "$source_ip" >/dev/null 2>&1 || true
+    done
+    if command -v sqlite3 >/dev/null 2>&1; then
+        sqlite3 "$db" "UPDATE block_entries SET status='removed', removal_reason='package_deinstall' WHERE status IN ('active','proposed');" 2>/dev/null || true
+    elif command -v python3 >/dev/null 2>&1; then
+        python3 - "$db" <<'PY' 2>/dev/null || true
+import sqlite3
+import sys
+
+with sqlite3.connect(sys.argv[1]) as conn:
+    conn.execute(
+        "UPDATE block_entries SET status='removed', removal_reason='package_deinstall' "
+        "WHERE status IN ('active','proposed')"
+    )
+PY
+    fi
+}
+
 case "$2" in
 DEINSTALL)
     if service pondsec_ndr onestatus >/dev/null 2>&1; then
         service pondsec_ndr onestop || true
     fi
+    keep_config=$(ask_keep PONDSEC_KEEP_CONFIG "Keep PondSec NDR configuration?" yes)
+    keep_database=$(ask_keep PONDSEC_KEEP_DATABASE "Keep PondSec NDR database and telemetry?" yes)
+    keep_models=$(ask_keep PONDSEC_KEEP_MODELS "Keep downloaded model artifacts?" yes)
+    remove_blocks=$(ask_keep PONDSEC_REMOVE_PF_BLOCKS "Remove PondSec-created PF block entries?" no)
+
+    if is_yes "$remove_blocks"; then
+        remove_pf_blocks
+    fi
+
+    rm -rf "$RUN_DIR"
+    if ! is_yes "$keep_config"; then
+        rm -rf "$CONFIG_DIR"
+    fi
+    if ! is_yes "$keep_database"; then
+        rm -f "${DATA_DIR}/pondsec-ndr.db" "${DATA_DIR}/pondsec-ndr.db-wal" "${DATA_DIR}/pondsec-ndr.db-shm"
+        rm -rf "${DATA_DIR}/collector_offsets" "${DATA_DIR}/backups"
+    fi
+    if ! is_yes "$keep_models"; then
+        rm -rf "${DATA_DIR}/models"
+    fi
+    rmdir "$DATA_DIR" 2>/dev/null || true
     ;;
 esac
 

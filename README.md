@@ -101,6 +101,11 @@ The plugin is laid out like an OPNsense plugin and is intended to build as `os-p
 See [docs/OPNSENSE_INSTALLATION.md](docs/OPNSENSE_INSTALLATION.md),
 [docs/PACKAGING.md](docs/PACKAGING.md), and
 [docs/PLUGIN_PUBLICATION.md](docs/PLUGIN_PUBLICATION.md).
+The signed community repository path is documented in
+[docs/RELEASE_REPOSITORY.md](docs/RELEASE_REPOSITORY.md). Security reporting,
+SBOM, and license notices are tracked in [SECURITY.md](SECURITY.md),
+[docs/SBOM.md](docs/SBOM.md), and
+[docs/THIRD_PARTY_NOTICES.md](docs/THIRD_PARTY_NOTICES.md).
 
 Firewall-level validation notes are tracked in [docs/VALIDATION.md](docs/VALIDATION.md).
 

@@ -1,0 +1,30 @@
+[
+{ type: install
+  message: <<EOM
+PondSec NDR has been installed.
+
+Recommended first checks:
+  service configd restart
+  configctl pondsecndr diagnostics
+  configctl pondsecndr model_selftest
+
+Suricata EVE JSON is the recommended telemetry source. Optional TLS inspection
+through an already configured local Zenarmor or Squid deployment can improve
+HTTP/TLS visibility, but PondSec NDR does not enable TLS interception by itself.
+
+The default mode is monitor/learning. AI and baseline anomaly alarms should stay
+in learning mode for the configured baseline period unless an administrator
+accepts the false-positive risk of early activation.
+EOM
+}
+{ type: remove
+  message: <<EOM
+PondSec NDR package files were removed.
+
+The deinstall script can keep or remove configuration, database telemetry,
+model artifacts, and PondSec-created PF table entries. For unattended cleanup,
+set PONDSEC_KEEP_CONFIG, PONDSEC_KEEP_DATABASE, PONDSEC_KEEP_MODELS, and
+PONDSEC_REMOVE_PF_BLOCKS before running pkg delete.
+EOM
+}
+]
