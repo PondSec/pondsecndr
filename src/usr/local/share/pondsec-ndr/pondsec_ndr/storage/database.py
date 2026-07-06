@@ -1204,8 +1204,6 @@ class EventStore:
             item["current"] = False
             item["superseded_by_current"] = key in current_keys
             history.append(item)
-            if key not in current_keys:
-                visible.append(item)
         return {
             "items": visible,
             "history": history,
