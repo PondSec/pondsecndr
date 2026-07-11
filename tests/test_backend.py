@@ -25,6 +25,7 @@ from pondsec_ndr.collectors.zenarmor import ZenarmorCollector, ZenarmorSyslogCol
 from pondsec_ndr.config import DetectionConfig, DnsmasqConfig, InterfaceConfig, PondSecConfig, ResponseConfig, ZeekConfig, ZenarmorConfig, load_config
 from pondsec_ndr.correlation import correlate_detections
 from pondsec_ndr.detection.detectors import (
+    AuthServicePressureDetector,
     BeaconingDetector,
     CredentialBruteforceDetector,
     DNSTunnelingDetector,
@@ -848,15 +849,44 @@ class BackendTests(unittest.TestCase):
         detections = DNSTunnelingDetector().detect(events, features)
         self.assertEqual(len(detections), 1)
 
-    def test_credential_bruteforce_detector_finds_auth_pressure(self) -> None:
+    def test_auth_service_pressure_detector_does_not_label_tcp_resets_as_bruteforce(self) -> None:
         events = [
             normalize_eve(flow_event(f"2026-07-05T10:00:{i:02d}+00:00", "192.168.20.55", "192.168.30.21", 22, "reset"))
-            for i in range(14)
+            for i in range(16)
+        ]
+        self.assertEqual(CredentialBruteforceDetector().detect(events, aggregate_features(events)), [])
+        detections = AuthServicePressureDetector().detect(events, aggregate_features(events))
+        self.assertEqual(len(detections), 1)
+        self.assertEqual(detections[0]["detector_id"], "pondsec.auth_service_pressure")
+        self.assertEqual(detections[0]["category"], "reconnaissance")
+        self.assertEqual(detections[0]["recommended_action"], "investigate")
+
+    def test_credential_bruteforce_detector_requires_explicit_auth_failure_evidence(self) -> None:
+        events = [
+            normalize_eve({
+                "timestamp": f"2026-07-05T10:00:{i:02d}+00:00",
+                "event_type": "http",
+                "src_ip": "192.168.20.55",
+                "src_port": 51000 + i,
+                "dest_ip": "192.168.30.21",
+                "dest_port": 8080,
+                "proto": "TCP",
+                "http": {
+                    "hostname": "auth.validation.pondsec.test",
+                    "http_method": "GET",
+                    "url": "/basic",
+                    "status": 401,
+                    "protocol": "HTTP/1.1",
+                },
+            })
+            for i in range(9)
         ]
         detections = CredentialBruteforceDetector().detect(events, aggregate_features(events))
         self.assertEqual(len(detections), 1)
         self.assertEqual(detections[0]["category"], "credential_abuse")
         self.assertEqual(detections[0]["recommended_action"], "block")
+        self.assertTrue(detections[0]["evidence"]["explicit_auth_evidence"])
+        self.assertEqual(detections[0]["evidence"]["http_auth_failures"], 9)
 
     def test_exploit_attempt_detector_labels_safe_suricata_marker(self) -> None:
         event = normalize_eve({
@@ -878,6 +908,29 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(len(detections), 1)
         self.assertEqual(detections[0]["category"], "exploit_attempt")
         self.assertEqual(detections[0]["destination_ip"], "192.168.30.44")
+
+    def test_exploit_attempt_detector_labels_safe_http_validation_marker(self) -> None:
+        event = normalize_eve({
+            "timestamp": "2026-07-05T11:00:00+00:00",
+            "event_type": "http",
+            "src_ip": "192.168.20.55",
+            "src_port": 45123,
+            "dest_ip": "192.168.30.44",
+            "dest_port": 18080,
+            "proto": "TCP",
+            "http": {
+                "hostname": "validation.pondsec.test",
+                "http_method": "GET",
+                "url": "/pondsec-validation-exploit/cve-2026-0001",
+                "status": 200,
+                "protocol": "HTTP/1.1",
+            },
+        })
+        detections = ExploitAttemptDetector().detect([event], [])
+        self.assertEqual(len(detections), 1)
+        self.assertEqual(detections[0]["category"], "exploit_attempt")
+        self.assertEqual(detections[0]["destination_ip"], "192.168.30.44")
+        self.assertTrue(detections[0]["evidence"]["validation_marker"])
 
     def test_supply_chain_detector_finds_callback_fanout(self) -> None:
         flow_events = [
@@ -919,6 +972,28 @@ class BackendTests(unittest.TestCase):
         detections = SupplyChainCallbackDetector().detect(events, aggregate_features(events))
         self.assertEqual(len(detections), 1)
         self.assertEqual(detections[0]["category"], "supply_chain")
+
+    def test_supply_chain_detector_labels_safe_http_validation_marker(self) -> None:
+        event = normalize_eve({
+            "timestamp": "2026-07-05T11:00:00+00:00",
+            "event_type": "http",
+            "src_ip": "192.168.10.70",
+            "src_port": 45123,
+            "dest_ip": "192.168.30.44",
+            "dest_port": 18080,
+            "proto": "TCP",
+            "http": {
+                "hostname": "validation.pondsec.test",
+                "http_method": "GET",
+                "url": "/packages/npm/pondsec-validation-supply-chain/update-callback",
+                "status": 200,
+                "protocol": "HTTP/1.1",
+            },
+        })
+        detections = SupplyChainCallbackDetector().detect([event], [])
+        self.assertEqual(len(detections), 1)
+        self.assertEqual(detections[0]["category"], "supply_chain")
+        self.assertTrue(detections[0]["evidence"]["validation_marker"])
 
     def test_unusual_destination_detector_finds_one_minute_fanout(self) -> None:
         events = [

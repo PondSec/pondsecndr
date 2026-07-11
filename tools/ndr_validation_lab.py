@@ -99,6 +99,37 @@ def _dns(offset_seconds: int, source_ip: str, resolver_ip: str, index: int, *, i
     }
 
 
+def _http(
+    offset_seconds: int,
+    source_ip: str,
+    destination_ip: str,
+    destination_port: int,
+    index: int,
+    *,
+    hostname: str,
+    path: str,
+    status: int = 200,
+    interface: str = "igb0_vlan10",
+) -> dict[str, Any]:
+    return {
+        "timestamp": _ts(offset_seconds),
+        "event_type": "http",
+        "in_iface": interface,
+        "src_ip": source_ip,
+        "src_port": 46000 + index,
+        "dest_ip": destination_ip,
+        "dest_port": destination_port,
+        "proto": "TCP",
+        "http": {
+            "hostname": hostname,
+            "http_method": "GET",
+            "url": path,
+            "status": status,
+            "protocol": "HTTP/1.1",
+        },
+    }
+
+
 def _tls(offset_seconds: int, source_ip: str, destination_ip: str, index: int, *, interface: str = "igb0_vlan10") -> dict[str, Any]:
     return {
         "timestamp": _ts(offset_seconds),
@@ -164,8 +195,22 @@ def _credential_access() -> list[dict[str, Any]]:
         _flow(index, "192.168.20.55", f"192.168.30.{20 + index}", 445 if index % 2 else 3389, index, interface="igb0_vlan20", reason="reset")
         for index in range(14)
     ]
+    events.extend(
+        _http(
+            14 + index,
+            "192.168.20.55",
+            "192.168.30.21",
+            8080,
+            index,
+            hostname="auth.validation.pondsec.test",
+            path="/basic",
+            status=401,
+            interface="igb0_vlan20",
+        )
+        for index in range(9)
+    )
     events.append(_alert(
-        18,
+        28,
         "192.168.20.55",
         "192.168.30.21",
         9101001,
@@ -287,6 +332,20 @@ def _multi_stage_intrusion() -> list[dict[str, Any]]:
     events.extend(
         _flow(520 + index, "192.168.30.50", f"192.168.20.{30 + index}", 445 if index % 2 else 3389, 200 + index, interface="re0", reason="reset")
         for index in range(14)
+    )
+    events.extend(
+        _http(
+            540 + index,
+            "192.168.30.50",
+            "192.168.20.30",
+            8080,
+            240 + index,
+            hostname="auth.validation.pondsec.test",
+            path="/basic",
+            status=401,
+            interface="re0",
+        )
+        for index in range(9)
     )
     events.extend(
         _flow(

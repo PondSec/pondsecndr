@@ -12,6 +12,32 @@ from pondsec_ndr.models.runtime import MODEL_ID, ModelRuntimeUnavailable, Saidim
 from pondsec_ndr.schema import is_private_ip
 
 
+def _normalised_indicator_text(*values: Any) -> str:
+    text = " ".join(str(value or "").lower() for value in values)
+    return text.translate(str.maketrans({"-": " ", "_": " ", "/": " ", ".": " "}))
+
+
+def _event_indicator_text(event: dict[str, Any]) -> str:
+    metadata = event.get("metadata", {})
+    headers = metadata.get("headers") if isinstance(metadata.get("headers"), dict) else {}
+    return _normalised_indicator_text(
+        metadata.get("signature"),
+        metadata.get("category"),
+        metadata.get("rrname"),
+        metadata.get("sni"),
+        metadata.get("hostname"),
+        metadata.get("url_path"),
+        metadata.get("http_method"),
+        metadata.get("status"),
+        metadata.get("auth_result"),
+        *(headers or {}).values(),
+    )
+
+
+def _has_validation_marker(text: str) -> bool:
+    return "pondsec validation" in text or "validation marker" in text or ("pondsec" in text and "validation" in text)
+
+
 class PortScanDetector(Detector):
     detector_id = "pondsec.portscan"
 
@@ -245,48 +271,141 @@ class LateralMovementDetector(Detector):
 class CredentialBruteforceDetector(Detector):
     detector_id = "pondsec.credential_bruteforce"
     auth_ports = {22, 25, 88, 110, 135, 139, 143, 389, 445, 465, 587, 636, 993, 995, 1433, 3306, 3389, 5432, 5900, 5985, 5986}
-    failure_reasons = {"timeout", "reject", "reset", "denied", "failed"}
+    auth_failure_results = {"denied", "failed", "failure", "invalid", "login_failed", "rejected", "unauthorized"}
+    http_failure_statuses = {401, 403}
+    marker_terms = (
+        "credential",
+        "brute force",
+        "bruteforce",
+        "password spraying",
+        "password spray",
+        "login failure",
+        "authentication failure",
+    )
 
     def detect(self, events: list[dict[str, Any]], features: list[dict[str, Any]]) -> list[dict[str, Any]]:
         by_source: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for event in events:
             src = event.get("source", {}).get("ip")
-            port = event.get("destination", {}).get("port")
-            metadata = event.get("metadata", {})
-            reason = str(metadata.get("flow_reason") or metadata.get("auth_result") or "").lower()
-            if src and port in self.auth_ports and (event.get("event_type") != "flow" or reason in self.failure_reasons):
+            if src and self._has_auth_failure_evidence(event):
                 by_source[src].append(event)
 
         detections = []
         for src, source_events in by_source.items():
             destinations = {str(event.get("destination", {}).get("ip")) for event in source_events if event.get("destination", {}).get("ip")}
             ports = {int(event.get("destination", {}).get("port")) for event in source_events if event.get("destination", {}).get("port") is not None}
-            failed = sum(1 for event in source_events if str(event.get("metadata", {}).get("flow_reason") or "").lower() in self.failure_reasons)
-            if len(source_events) < 12 and not (failed >= 8 and len(destinations) >= 3):
+            http_statuses = sorted({
+                int(event.get("metadata", {}).get("status"))
+                for event in source_events
+                if str(event.get("metadata", {}).get("status") or "").isdigit()
+            })
+            marker_count = sum(1 for event in source_events if self._is_credential_marker(event))
+            auth_result_failures = sum(1 for event in source_events if self._has_failed_auth_result(event))
+            http_failures = sum(1 for event in source_events if self._has_http_auth_failure(event))
+            failed = marker_count + auth_result_failures + http_failures
+            has_spray_shape = failed >= 6 and len(destinations) >= 3
+            has_bruteforce_shape = failed >= 8 and len(destinations) >= 1
+            if not marker_count and not has_spray_shape and not has_bruteforce_shape:
                 continue
             spray_score = min(1.0, (len(destinations) / 12) + (failed / 40))
             detections.append(make_detection(
                 self.detector_id,
                 "credential_abuse",
                 "Possible brute-force or credential spraying",
-                "Repeated failed or denied connections to authentication services resemble credential pressure.",
+                "Explicit authentication failures or security markers resemble brute-force or credential-spraying behavior.",
                 src,
                 next(iter(destinations)) if len(destinations) == 1 else "auth_services",
-                8 if failed >= 8 else 7,
-                min(0.96, 0.62 + len(source_events) / 80 + len(destinations) / 60),
+                8 if failed >= 8 or marker_count else 7,
+                min(0.96, 0.66 + failed / 80 + len(destinations) / 60 + marker_count / 10),
                 spray_score,
+                {
+                    "event_count": len(source_events),
+                    "auth_failure_events": failed,
+                    "http_auth_failures": http_failures,
+                    "auth_result_failures": auth_result_failures,
+                    "marker_events": marker_count,
+                    "destination_count": len(destinations),
+                    "auth_ports": sorted(ports),
+                    "http_statuses": http_statuses,
+                    "explicit_auth_evidence": True,
+                    "thresholds": [
+                        {"feature": "auth_failure_events", "operator": ">=", "threshold": 8, "observed": failed},
+                        {"feature": "auth_failure_destinations", "operator": ">=", "threshold": 3, "observed": len(destinations)},
+                        {"feature": "credential_marker", "operator": "present", "threshold": "present", "observed": marker_count},
+                    ],
+                },
+                recommended_action="block",
+            ))
+        return detections
+
+    def _has_auth_failure_evidence(self, event: dict[str, Any]) -> bool:
+        return self._has_http_auth_failure(event) or self._has_failed_auth_result(event) or self._is_credential_marker(event)
+
+    def _has_http_auth_failure(self, event: dict[str, Any]) -> bool:
+        if event.get("event_type") != "http":
+            return False
+        status = event.get("metadata", {}).get("status")
+        try:
+            return int(status) in self.http_failure_statuses
+        except (TypeError, ValueError):
+            return False
+
+    def _has_failed_auth_result(self, event: dict[str, Any]) -> bool:
+        result = str(event.get("metadata", {}).get("auth_result") or "").lower()
+        return result in self.auth_failure_results
+
+    def _is_credential_marker(self, event: dict[str, Any]) -> bool:
+        if event.get("event_type") not in {"alert", "drop"}:
+            return False
+        text = _event_indicator_text(event)
+        return any(term in text for term in self.marker_terms)
+
+
+class AuthServicePressureDetector(Detector):
+    detector_id = "pondsec.auth_service_pressure"
+    auth_ports = CredentialBruteforceDetector.auth_ports
+    failure_reasons = {"timeout", "reject", "reset", "denied", "failed"}
+
+    def detect(self, events: list[dict[str, Any]], features: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        by_source: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for event in events:
+            if event.get("event_type") != "flow":
+                continue
+            src = event.get("source", {}).get("ip")
+            port = event.get("destination", {}).get("port")
+            reason = str(event.get("metadata", {}).get("flow_reason") or "").lower()
+            if src and port in self.auth_ports and reason in self.failure_reasons:
+                by_source[src].append(event)
+
+        detections = []
+        for src, source_events in by_source.items():
+            destinations = {str(event.get("destination", {}).get("ip")) for event in source_events if event.get("destination", {}).get("ip")}
+            ports = {int(event.get("destination", {}).get("port")) for event in source_events if event.get("destination", {}).get("port") is not None}
+            failed = len(source_events)
+            if len(source_events) < 16 and not (failed >= 10 and len(destinations) >= 3):
+                continue
+            detections.append(make_detection(
+                self.detector_id,
+                "reconnaissance",
+                "Authentication service pressure",
+                "Repeated connection failures hit authentication services, but no explicit failed-login evidence was observed.",
+                src,
+                next(iter(destinations)) if len(destinations) == 1 else "auth_services",
+                5 if len(destinations) < 3 else 6,
+                min(0.82, 0.48 + len(source_events) / 100 + len(destinations) / 90),
+                min(1.0, len(source_events) / 40),
                 {
                     "event_count": len(source_events),
                     "failed_connections": failed,
                     "destination_count": len(destinations),
                     "auth_ports": sorted(ports),
-                    "signature_required": False,
+                    "explicit_auth_evidence": False,
                     "thresholds": [
-                        {"feature": "auth_service_events", "operator": ">=", "threshold": 12, "observed": len(source_events)},
-                        {"feature": "failed_auth_service_connections", "operator": ">=", "threshold": 8, "observed": failed},
+                        {"feature": "auth_service_connection_failures", "operator": ">=", "threshold": 16, "observed": len(source_events)},
+                        {"feature": "auth_service_destinations", "operator": ">=", "threshold": 3, "observed": len(destinations)},
                     ],
                 },
-                recommended_action="block",
+                recommended_action="investigate",
             ))
         return detections
 
@@ -336,6 +455,7 @@ class SupplyChainCallbackDetector(Detector):
         "software update",
         "update callback",
         "ci/cd",
+        "ci cd",
         "build agent",
     )
 
@@ -343,38 +463,38 @@ class SupplyChainCallbackDetector(Detector):
         detections = []
         marked_sources: set[str] = set()
         for event in events:
-            if event.get("event_type") not in {"alert", "drop"}:
+            if not self._is_marker_event(event):
                 continue
             metadata = event.get("metadata", {})
-            haystack = " ".join(str(value or "").lower() for value in (
-                metadata.get("signature"),
-                metadata.get("category"),
-            ))
-            if any(term in haystack for term in self.marker_terms):
-                src = event.get("source", {}).get("ip")
-                if src:
-                    marked_sources.add(str(src))
-                    detections.append(make_detection(
-                        self.detector_id,
-                        "supply_chain",
-                        "Possible supply-chain callback",
-                        "A security marker or reporting export indicates package, installer or update callback behavior.",
-                        str(src),
-                        event.get("destination", {}).get("ip"),
-                        8,
-                        0.88,
-                        0.7,
-                        {
-                            "signature_id": metadata.get("signature_id"),
-                            "signature": metadata.get("signature"),
-                            "suricata_category": metadata.get("category"),
-                            "event_source": metadata.get("event_source"),
-                            "thresholds": [
-                                {"feature": "supply_chain_marker", "operator": "present", "threshold": "present", "observed": metadata.get("signature")},
-                            ],
-                        },
-                        recommended_action="block",
-                    ))
+            src = event.get("source", {}).get("ip")
+            if src:
+                marked_sources.add(str(src))
+                detections.append(make_detection(
+                    self.detector_id,
+                    "supply_chain",
+                    "Possible supply-chain callback",
+                    "A security marker or reporting export indicates package, installer or update callback behavior.",
+                    str(src),
+                    event.get("destination", {}).get("ip"),
+                    8,
+                    0.88,
+                    0.7,
+                    {
+                        "signature_id": metadata.get("signature_id"),
+                        "signature": metadata.get("signature"),
+                        "suricata_category": metadata.get("category"),
+                        "event_source": metadata.get("event_source"),
+                        "event_type": event.get("event_type"),
+                        "hostname": metadata.get("hostname") or metadata.get("sni"),
+                        "url_path": metadata.get("url_path"),
+                        "rrname": metadata.get("rrname"),
+                        "validation_marker": _has_validation_marker(_event_indicator_text(event)),
+                        "thresholds": [
+                            {"feature": "supply_chain_marker", "operator": "present", "threshold": "present", "observed": metadata.get("signature") or metadata.get("url_path") or metadata.get("rrname") or metadata.get("sni")},
+                        ],
+                    },
+                    recommended_action="block",
+                ))
 
         for item in features:
             source_ip = item["source_ip"]
@@ -411,6 +531,15 @@ class SupplyChainCallbackDetector(Detector):
                 ))
         return detections
 
+    def _is_marker_event(self, event: dict[str, Any]) -> bool:
+        text = _event_indicator_text(event)
+        has_supply_context = any(term in text for term in self.marker_terms)
+        if not has_supply_context:
+            return False
+        if event.get("event_type") in {"alert", "drop"}:
+            return True
+        return event.get("event_type") in {"dns", "http", "tls"} and _has_validation_marker(text)
+
 
 class ExploitAttemptDetector(Detector):
     detector_id = "pondsec.exploit_attempt"
@@ -428,8 +557,11 @@ class ExploitAttemptDetector(Detector):
         "shellshock",
         "log4j",
         "cve-",
+        "cve",
         "attempted-admin",
+        "attempted admin",
         "attempted-user",
+        "attempted user",
         "web attack",
         "privilege gain",
     )
@@ -437,16 +569,12 @@ class ExploitAttemptDetector(Detector):
     def detect(self, events: list[dict[str, Any]], features: list[dict[str, Any]]) -> list[dict[str, Any]]:
         detections = []
         for event in events:
-            if event.get("event_type") not in {"alert", "drop"}:
-                continue
             metadata = event.get("metadata", {})
-            haystack = " ".join(str(value or "").lower() for value in (
-                metadata.get("signature"),
-                metadata.get("category"),
-            ))
-            if not any(term in haystack for term in self.exploit_terms):
+            text = _event_indicator_text(event)
+            if not self._is_exploit_marker(event, text):
                 continue
             severity = int(metadata.get("severity") or 2)
+            validation_marker = _has_validation_marker(text)
             detections.append(make_detection(
                 "pondsec.exploit_blocked" if event.get("event_type") == "drop" else self.detector_id,
                 "exploit_attempt",
@@ -455,7 +583,7 @@ class ExploitAttemptDetector(Detector):
                 event.get("source", {}).get("ip"),
                 event.get("destination", {}).get("ip"),
                 max(7, min(10, 11 - severity)),
-                0.9 if event.get("event_type") == "drop" else 0.86,
+                0.9 if event.get("event_type") == "drop" else 0.86 if event.get("event_type") in {"alert", "drop"} else 0.82,
                 0.75,
                 {
                     "signature_id": metadata.get("signature_id"),
@@ -463,13 +591,26 @@ class ExploitAttemptDetector(Detector):
                     "suricata_category": metadata.get("category"),
                     "suricata_action": metadata.get("action"),
                     "event_source": metadata.get("event_source"),
+                    "event_type": event.get("event_type"),
+                    "hostname": metadata.get("hostname") or metadata.get("sni"),
+                    "url_path": metadata.get("url_path"),
+                    "rrname": metadata.get("rrname"),
+                    "validation_marker": validation_marker,
                     "thresholds": [
-                        {"feature": "exploit_marker", "operator": "present", "threshold": "present", "observed": metadata.get("signature")},
+                        {"feature": "exploit_marker", "operator": "present", "threshold": "present", "observed": metadata.get("signature") or metadata.get("url_path") or metadata.get("rrname") or metadata.get("sni")},
                     ],
                 },
                 recommended_action="block",
             ))
         return detections
+
+    def _is_exploit_marker(self, event: dict[str, Any], text: str) -> bool:
+        has_exploit_context = any(term in text for term in self.exploit_terms)
+        if not has_exploit_context:
+            return False
+        if event.get("event_type") in {"alert", "drop"}:
+            return True
+        return event.get("event_type") in {"http", "tls", "dns"} and _has_validation_marker(text)
 
 
 class MalwareCallbackDetector(Detector):
@@ -757,6 +898,7 @@ def default_detectors() -> list[Detector]:
         HostBaselineAnomalyDetector(),
         UnusualDestinationDetector(),
         CredentialBruteforceDetector(),
+        AuthServicePressureDetector(),
         LateralMovementDetector(),
         DataExfiltrationDetector(),
         UnusualTlsFingerprintDetector(),
