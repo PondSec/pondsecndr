@@ -519,6 +519,28 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(providers["zeek_logs"]["health_status"], "not_configured")
             self.assertIn("flow", providers["netflow"]["event_types"])
 
+    def test_diagnostics_exposes_response_readiness(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = EventStore(root / "pondsec-ndr.db")
+            store.migrate()
+            store.set_health("healthy", 123, {})
+            payload = diagnostics_payload(
+                PondSecConfig(
+                    enabled=True,
+                    data_dir=root,
+                    response=ResponseConfig(mode="observe", automatic_blocking=False),
+                    detection=DetectionConfig(machine_learning=True, learning_mode=True, learning_days=14),
+                ),
+                store,
+            )
+            self.assertEqual(payload["response_mode"], "observe")
+            self.assertFalse(payload["readiness"]["automatic_blocking"])
+            self.assertEqual(payload["readiness"]["response_mode"], "observe")
+            response_check = next(item for item in payload["readiness"]["checks"] if item["id"] == "response_policy")
+            self.assertEqual(response_check["status"], "ok")
+            self.assertIn("will not change PF", response_check["detail"])
+
     def test_correlation_creates_explainable_incident(self) -> None:
         events = [
             normalize_eve(flow_event(f"2026-07-05T10:00:{i:02d}+00:00", "192.168.10.90", "192.168.20.90", 20 + i))

@@ -456,6 +456,7 @@ def _readiness_status(
             ),
             "recommendation": learning_status.get("warning") or "AI alarms are armed for production use.",
         },
+        _response_policy_readiness(config, learning_status),
         {
             "id": "pf_response",
             "label": "PF response rule",
@@ -493,10 +494,56 @@ def _readiness_status(
     return {
         "status": status,
         "mode": config.mode,
+        "response_mode": config.response.mode,
+        "automatic_blocking": config.response.automatic_blocking,
         "service_status": health.get("status"),
         "required_ok": len(required) - len(failed) - len(warnings),
         "required_total": len(required),
         "checks": checks,
+    }
+
+
+def _response_policy_readiness(config: PondSecConfig, learning_status: dict[str, Any]) -> dict[str, Any]:
+    response = config.response
+    if response.mode == "observe":
+        status = "ok"
+        detail = "Observe mode is active; PondSec will not change PF tables automatically."
+        recommendation = "Stay in Observe during learning. Move to Recommend or Enforce only after baselines and protected assets are verified."
+    elif response.mode == "recommend":
+        status = "ok"
+        detail = "Recommend mode is active; PondSec can create response proposals without changing PF tables."
+        recommendation = "Review proposals and protected assets before enabling Enforce."
+    elif response.mode == "enforce":
+        blockers = []
+        if not response.automatic_blocking:
+            blockers.append("automatic blocking is disabled")
+        if learning_status.get("active"):
+            blockers.append("learning phase is active")
+        if not response.ai_full_decision_mode:
+            blockers.append("AI full decision mode is disabled")
+        if response.kill_switch:
+            blockers.append("response kill switch is active")
+        if response.maintenance_mode:
+            blockers.append("maintenance mode is active")
+        status = "ok" if not blockers else "warning"
+        detail = "Enforce mode is armed." if not blockers else "Enforce mode is not armed: " + "; ".join(blockers) + "."
+        recommendation = "" if not blockers else "Keep Observe or Recommend until every response-policy precondition is satisfied."
+    else:
+        status = "failed"
+        detail = f"Unknown response mode: {response.mode}."
+        recommendation = "Select Observe, Recommend, or Enforce."
+    return {
+        "id": "response_policy",
+        "label": "Automatic response posture",
+        "requirement": "required for safe enforcement",
+        "status": status,
+        "detail": detail,
+        "recommendation": recommendation,
+        "mode": response.mode,
+        "automatic_blocking": response.automatic_blocking,
+        "ai_full_decision_mode": response.ai_full_decision_mode,
+        "kill_switch": response.kill_switch,
+        "maintenance_mode": response.maintenance_mode,
     }
 
 
