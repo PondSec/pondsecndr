@@ -81,6 +81,17 @@ def evaluate_automatic_response_policy(
         reasons.append(f"invalid response policy mode: {mode}")
 
     all_reasons = reasons + activation_reasons
+    decision_layers = _decision_layers(
+        config,
+        incident,
+        target_ip,
+        target_is_internal,
+        summary,
+        learning_status,
+        reasons,
+        activation_reasons,
+        policy_status,
+    )
     return {
         "status": policy_status,
         "target_ip": target_ip,
@@ -92,6 +103,7 @@ def evaluate_automatic_response_policy(
         "activation_reasons": activation_reasons,
         "learning_status": learning_status,
         "evidence": summary,
+        "decision_layers": decision_layers,
         "thresholds": {
             "minimum_risk_score": config.response.minimum_risk_score,
             "minimum_severity": config.response.minimum_severity,
@@ -104,6 +116,80 @@ def evaluate_automatic_response_policy(
             "baseline_stable_observations": config.response.baseline_stable_observations,
             "internal_isolation_cooldown_seconds": config.response.internal_isolation_cooldown_seconds,
             "max_internal_isolations_per_hour": config.response.max_internal_isolations_per_hour,
+        },
+    }
+
+
+def _decision_layers(
+    config: PondSecConfig,
+    incident: dict[str, Any],
+    target_ip: str,
+    target_is_internal: bool,
+    summary: dict[str, Any],
+    learning_status: dict[str, Any],
+    blocking_reasons: list[str],
+    activation_reasons: list[str],
+    policy_status: str,
+) -> dict[str, Any]:
+    risk_score = int(incident.get("risk_score") or 0)
+    severity = int(incident.get("severity") or 0)
+    confidence_percent = float(incident.get("confidence") or 0.0) * 100
+    event_count = int(incident.get("event_count") or 0)
+    detection_count = int(incident.get("detection_count") or summary["detections_considered"] or 0)
+    threshold_passes = {
+        "risk_score": risk_score >= config.response.minimum_risk_score,
+        "severity": severity >= config.response.minimum_severity,
+        "confidence": confidence_percent >= config.response.minimum_confidence,
+    }
+    evidence_passes = {
+        "event_count": event_count >= config.response.min_internal_event_count,
+        "detection_count": detection_count >= config.response.min_internal_detection_count,
+        "category_count": len(summary["categories"]) >= config.response.min_internal_categories,
+        "supporting_indicator_count": len(summary["supporting_indicators"]) >= config.response.min_supporting_indicators,
+        "independent_engine_count": len(summary["independent_engines"]) >= config.response.min_independent_engines,
+        "strong_attack_category": bool(set(summary["categories"]) & STRONG_INTERNAL_CATEGORIES),
+        "not_ml_only": not summary["ml_only"],
+        "not_noisy_single_signal": not set(summary["categories"]).issubset(NOISY_SINGLE_SIGNAL_CATEGORIES),
+        "not_prevented_only": not summary["all_prevented_or_blocked"],
+    }
+    compromise_ready = target_is_internal and all(threshold_passes.values()) and all(evidence_passes.values())
+    containment_allowed = policy_status in {"recommend", "enforce"}
+    execution_allowed = policy_status == "enforce"
+    return {
+        "detection": {
+            "status": "observed" if detection_count > 0 else "insufficient_evidence",
+            "event_count": event_count,
+            "detection_count": detection_count,
+            "categories": summary["categories"],
+            "detector_ids": summary["detector_ids"],
+            "engines": summary["independent_engines"],
+            "data_sources": summary["data_sources"],
+        },
+        "compromise_assessment": {
+            "status": "likely_compromised" if compromise_ready else "unconfirmed",
+            "target": target_ip,
+            "target_internal": target_is_internal,
+            "threshold_passes": threshold_passes,
+            "evidence_passes": evidence_passes,
+            "learning_status": learning_status.get("status"),
+            "statement": (
+                "Internal compromise is likely based on independent corroborated evidence."
+                if compromise_ready
+                else "Compromise is not confirmed by the required independent evidence."
+            ),
+        },
+        "containment_decision": {
+            "status": "eligible" if containment_allowed else "denied",
+            "mode": config.response.mode,
+            "blocking_reasons": blocking_reasons,
+        },
+        "execution": {
+            "status": "allowed" if execution_allowed else "not_allowed",
+            "activation_reasons": activation_reasons,
+            "automatic_blocking": config.response.automatic_blocking,
+            "ai_full_decision_mode": config.response.ai_full_decision_mode,
+            "kill_switch": config.response.kill_switch,
+            "maintenance_mode": config.response.maintenance_mode,
         },
     }
 

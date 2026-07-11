@@ -1248,12 +1248,17 @@ class BackendTests(unittest.TestCase):
             store.insert_incidents([robust_internal_incident("incident-internal-isolation-target")])
             seed_host_baseline(store, "192.168.30.3")
             config = PondSecConfig(
-                response=ResponseConfig(mode="enforce", automatic_blocking=True, isolate_internal=True),
+                response=ResponseConfig(mode="enforce", automatic_blocking=True, isolate_internal=True, ai_full_decision_mode=True),
                 detection=DetectionConfig(machine_learning=True, learning_mode=False),
             )
             proposal = propose_block_for_incident(store, config, "incident-internal-isolation-target", actor="test", automatic=True)
             self.assertEqual(proposal["source_ip"], "192.168.30.3")
             self.assertIn("Isolation proposal", proposal["reason"])
+            layers = proposal["policy_decision"]["decision_layers"]
+            self.assertEqual(layers["detection"]["status"], "observed")
+            self.assertEqual(layers["compromise_assessment"]["status"], "likely_compromised")
+            self.assertEqual(layers["containment_decision"]["status"], "eligible")
+            self.assertEqual(layers["execution"]["status"], "allowed")
 
     def test_response_engine_denies_weak_internal_auto_isolation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
