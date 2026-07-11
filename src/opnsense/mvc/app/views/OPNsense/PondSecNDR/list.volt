@@ -68,6 +68,7 @@ $(function() {
         'Archive': 'Archivieren',
         'Reopen': 'Wieder oeffnen',
         'Propose block': 'Block vorschlagen',
+        'Manual block': 'Manuell blocken',
         'Release block/isolation': 'Block/Isolation freigeben',
         'Delete': 'Loeschen',
         'Activate': 'Aktivieren',
@@ -77,6 +78,8 @@ $(function() {
         'Keep separate': 'Getrennt lassen',
         'Open case view': 'Case-Ansicht oeffnen',
         'Open entity resolution': 'Entity-Aufloesung oeffnen',
+        'Back to incidents': 'Zurueck zu Incidents',
+        'Back to hosts': 'Zurueck zu Hosts',
         'Overview': 'Ueberblick',
         'Attack graph': 'Angriffsgraph',
         'Timeline': 'Timeline',
@@ -164,6 +167,7 @@ $(function() {
         'Details available': 'Details verfuegbar',
         'Action completed': 'Aktion abgeschlossen',
         'Delete this incident? Active responses must be released first.': 'Diesen Incident loeschen? Aktive Responses muessen zuerst freigegeben werden.',
+        'Manually block this incident response target now?': 'Response-Ziel dieses Incidents jetzt manuell blocken?',
         'IP, category, detector, message': 'IP, Kategorie, Detektor, Meldung',
         'IP': 'IP',
         'Baseline': 'Baseline',
@@ -623,6 +627,7 @@ $(function() {
         var id = encodeURIComponent(incident.incident_id || '');
         var response = (caseSummary || {}).response || {};
         var buttons = [];
+        buttons.push('<button id="incident_detail_inline_close" class="btn btn-sm btn-default pondsec-inline-close" type="button"><i class="fa fa-times"></i> Back to incidents</button>');
         if (incident.status === 'open') {
             buttons.push('<button class="btn btn-sm btn-default pondsec-row-action" data-action="close-incident" data-id="' + id + '"><i class="fa fa-check"></i> Close</button>');
             buttons.push('<button class="btn btn-sm btn-warning pondsec-row-action" data-action="false-positive" data-id="' + id + '"><i class="fa fa-ban"></i> False positive</button>');
@@ -631,6 +636,7 @@ $(function() {
             buttons.push('<button class="btn btn-sm btn-default pondsec-row-action" data-action="reopen-incident" data-id="' + id + '"><i class="fa fa-undo"></i> Reopen</button>');
         }
         buttons.push('<button class="btn btn-sm btn-primary pondsec-row-action" data-action="propose-block" data-id="' + id + '"><i class="fa fa-shield"></i> Propose block</button>');
+        buttons.push('<button class="btn btn-sm btn-danger pondsec-row-action" data-action="manual-block" data-id="' + id + '"><i class="fa fa-lock"></i> Manual block</button>');
         if (response.release_available) {
             buttons.push('<button class="btn btn-sm btn-danger pondsec-row-action" data-action="release-case" data-id="' + id + '"><i class="fa fa-unlock"></i> Release block/isolation</button>');
         }
@@ -974,6 +980,9 @@ $(function() {
         if (action === 'propose-block') {
             return '/api/pondsecndr/blocklist/propose/' + id;
         }
+        if (action === 'manual-block') {
+            return '/api/pondsecndr/blocklist/manualIncident/' + id;
+        }
         if (action === 'activate-block') {
             return '/api/pondsecndr/blocklist/activate/' + id;
         }
@@ -1001,6 +1010,9 @@ $(function() {
 
     function runAction(action, id) {
         if (action === 'delete-incident' && !window.confirm(t('Delete this incident? Active responses must be released first.'))) {
+            return;
+        }
+        if (action === 'manual-block' && !window.confirm(t('Manually block this incident response target now?'))) {
             return;
         }
         var url = actionEndpoint(action, id);
@@ -1216,7 +1228,7 @@ $(function() {
         );
         $('#host_records').html(renderHostRecordRows(host.host_records || []));
         $('#host_history').html(renderEntityHistory(host.history || []));
-        $('#host_detail_panel').addClass('open');
+        $('#host_detail_panel').scrollTop(0).addClass('open');
     }
 
     function openHostDetail(id) {
@@ -1300,7 +1312,7 @@ $(function() {
         $('#incident_promotion_decision').html(renderPromotionDecision(promotion));
         $('#incident_response_decisions').html(renderResponseDecisions(responseDecisions));
         renderCaseDetail({type: 'Case summary', title: 'Case overview', item: caseSummary});
-        $('#incident_detail_panel').addClass('open');
+        $('#incident_detail_panel').scrollTop(0).addClass('open');
         activateCaseTab('overview');
     }
 
@@ -1353,18 +1365,26 @@ $(function() {
         event.stopPropagation();
         renderCaseDetail(caseDetailLookup[$(this).data('detail-id')]);
     });
-    $('#incident_detail_close').on('click', function() {
+    function closeIncidentDetail() {
         $('#incident_detail_panel').removeClass('open');
         currentIncidentId = null;
-    });
-    $('#host_detail_close').on('click', function() {
+    }
+    function closeHostDetail() {
         $('#host_detail_panel').removeClass('open');
+    }
+    $('#incident_detail_close, #incident_detail_back').on('click', function() {
+        closeIncidentDetail();
+    });
+    $(document).on('click', '#incident_detail_inline_close', function() {
+        closeIncidentDetail();
+    });
+    $('#host_detail_close, #host_detail_back').on('click', function() {
+        closeHostDetail();
     });
     $(document).on('keydown', function(event) {
         if (event.key === 'Escape') {
-            $('#incident_detail_panel').removeClass('open');
-            $('#host_detail_panel').removeClass('open');
-            currentIncidentId = null;
+            closeIncidentDetail();
+            closeHostDetail();
         }
     });
     function activateCaseTab(tab) {
@@ -1555,6 +1575,9 @@ $(function() {
     flex-wrap: wrap;
     gap: 6px;
 }
+.pondsec-inline-close {
+    margin-right: 12px;
+}
 .pondsec-actions .btn {
     border-radius: 5px;
 }
@@ -1625,13 +1648,29 @@ $(function() {
     align-items: flex-start;
     background: #151d26;
     display: flex;
-    gap: 14px;
+    gap: 16px;
     justify-content: space-between;
     margin-bottom: 14px;
-    padding-bottom: 10px;
+    padding: 0 0 12px;
     position: sticky;
-    top: -22px;
-    z-index: 2;
+    top: 0;
+    z-index: 20;
+}
+.pondsec-case-head-main {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+.pondsec-case-head-controls {
+    align-items: center;
+    display: flex;
+    flex: 0 0 auto;
+    gap: 10px;
+    justify-content: flex-end;
+    padding-top: 48px;
+}
+.pondsec-panel-back,
+.pondsec-panel-close {
+    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.22);
 }
 .pondsec-panel-close {
     align-items: center;
@@ -1641,14 +1680,26 @@ $(function() {
     color: #f4f8fc;
     display: inline-flex;
     flex: 0 0 auto;
-    height: 38px;
+    height: 42px;
     justify-content: center;
-    min-width: 38px;
-    position: sticky;
-    right: 0;
-    top: 0;
-    z-index: 5;
+    min-width: 42px;
+    width: 42px;
 }
+.pondsec-panel-back {
+    align-items: center;
+    background: #202a36;
+    border: 1px solid #506174;
+    border-radius: 6px;
+    color: #f4f8fc;
+    display: inline-flex;
+    gap: 8px;
+    height: 42px;
+    justify-content: center;
+    padding: 0 13px;
+    white-space: nowrap;
+}
+.pondsec-panel-back:hover,
+.pondsec-panel-back:focus,
 .pondsec-panel-close:hover,
 .pondsec-panel-close:focus {
     background: #2a3544;
@@ -1658,6 +1709,9 @@ $(function() {
 .pondsec-panel-close i {
     font-size: 16px;
     line-height: 1;
+}
+.pondsec-panel-back i {
+    font-size: 14px;
 }
 .pondsec-case-head h3 {
     color: #f5f8fb;
@@ -2211,6 +2265,14 @@ $(function() {
         padding: 16px;
         width: 100vw;
     }
+    .pondsec-case-head {
+        flex-direction: column;
+    }
+    .pondsec-case-head-controls {
+        justify-content: space-between;
+        order: -1;
+        width: 100%;
+    }
     .pondsec-analysis-grid,
     .pondsec-case-grid.wide,
     .pondsec-stage-lane,
@@ -2257,11 +2319,14 @@ $(function() {
 
 <aside id="incident_detail_panel" class="pondsec-case-panel">
     <div class="pondsec-case-head">
-        <div>
+        <div class="pondsec-case-head-main">
             <h3 id="incident_detail_title">Incident</h3>
             <div id="incident_detail_meta" class="pondsec-case-meta-row"></div>
         </div>
-        <button id="incident_detail_close" class="pondsec-panel-close" type="button" aria-label="Close case detail"><i class="fa fa-times"></i></button>
+        <div class="pondsec-case-head-controls">
+            <button id="incident_detail_back" class="pondsec-panel-back" type="button" aria-label="Back to incidents"><i class="fa fa-arrow-left"></i><span>Back to incidents</span></button>
+            <button id="incident_detail_close" class="pondsec-panel-close" type="button" aria-label="Close case detail"><i class="fa fa-times"></i></button>
+        </div>
     </div>
     <div id="incident_case_actions" class="pondsec-actions pondsec-case-actions"></div>
     <nav class="pondsec-case-tabs" aria-label="Case analysis tabs">
@@ -2358,11 +2423,14 @@ $(function() {
 
 <aside id="host_detail_panel" class="pondsec-case-panel">
     <div class="pondsec-case-head">
-        <div>
+        <div class="pondsec-case-head-main">
             <h3 id="host_detail_title">Host</h3>
             <div id="host_detail_meta" class="pondsec-case-meta-row"></div>
         </div>
-        <button id="host_detail_close" class="pondsec-panel-close" type="button" aria-label="Close host detail"><i class="fa fa-times"></i></button>
+        <div class="pondsec-case-head-controls">
+            <button id="host_detail_back" class="pondsec-panel-back" type="button" aria-label="Back to hosts"><i class="fa fa-arrow-left"></i><span>Back to hosts</span></button>
+            <button id="host_detail_close" class="pondsec-panel-close" type="button" aria-label="Close host detail"><i class="fa fa-times"></i></button>
+        </div>
     </div>
     <section class="pondsec-case-section">
         <h4>Entity resolution</h4>
