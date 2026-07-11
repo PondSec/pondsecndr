@@ -1066,6 +1066,91 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(proposal["automatic"], 0)
             self.assertEqual(store.list_rows("block_entries")[0]["source_ip"], "192.168.10.200")
 
+    def test_response_engine_keeps_external_scanner_as_response_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            store.insert_incidents([{
+                "incident_id": "incident-external-scanner-target",
+                "title": "External scanner",
+                "status": "open",
+                "risk_score": 91,
+                "severity": 9,
+                "confidence": 0.96,
+                "source_ip": "8.8.8.8",
+                "destination_ip": "192.168.30.3",
+                "category": "reconnaissance",
+                "created_at": "2026-07-05T10:00:00+00:00",
+                "updated_at": "2026-07-05T10:00:00+00:00",
+                "evidence": {
+                    "entity_roles": {"external_actor": "8.8.8.8", "victim": "192.168.30.3", "response_target": "8.8.8.8"},
+                    "detections": [{
+                        "detection_id": "d-scanner-target",
+                        "category": "signature",
+                        "source_ip": "8.8.8.8",
+                        "destination_ip": "192.168.30.3",
+                        "severity": 9,
+                        "confidence": 0.96,
+                        "title": "Poor Reputation IP Scanner",
+                    }],
+                },
+                "risk_factors": [],
+            }])
+            config = PondSecConfig(response=ResponseConfig(minimum_risk_score=50, minimum_confidence=50))
+            proposal = propose_block_for_incident(store, config, "incident-external-scanner-target", actor="test")
+            self.assertEqual(proposal["source_ip"], "8.8.8.8")
+
+    def test_response_engine_isolates_internal_actor_in_multistage_case(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            store.insert_incidents([{
+                "incident_id": "incident-internal-isolation-target",
+                "title": "Multi-stage internal behavior",
+                "status": "open",
+                "risk_score": 96,
+                "severity": 10,
+                "confidence": 0.97,
+                "source_ip": "8.8.4.4",
+                "destination_ip": "192.168.30.3",
+                "category": "multi_stage",
+                "created_at": "2026-07-05T10:00:00+00:00",
+                "updated_at": "2026-07-05T10:20:00+00:00",
+                "evidence": {
+                    "entity_roles": {
+                        "external_actor": "8.8.4.4",
+                        "victim": "192.168.30.3",
+                        "affected_host": "192.168.30.3",
+                        "response_target": "8.8.4.4",
+                    },
+                    "detections": [
+                        {
+                            "detection_id": "d-internal-c2",
+                            "category": "command_and_control",
+                            "source_ip": "192.168.30.3",
+                            "destination_ip": "1.1.1.1",
+                            "severity": 9,
+                            "confidence": 0.94,
+                            "title": "Outbound beaconing",
+                        },
+                        {
+                            "detection_id": "d-internal-exfil",
+                            "category": "exfiltration",
+                            "source_ip": "192.168.30.3",
+                            "destination_ip": "1.0.0.1",
+                            "severity": 10,
+                            "confidence": 0.97,
+                            "title": "Large outbound transfer",
+                        },
+                    ],
+                },
+                "risk_factors": [],
+            }])
+            config = PondSecConfig(response=ResponseConfig(minimum_risk_score=50, minimum_confidence=50, isolate_internal=True))
+            proposal = propose_block_for_incident(store, config, "incident-internal-isolation-target", actor="test", automatic=True)
+            self.assertEqual(proposal["source_ip"], "192.168.30.3")
+            self.assertIn("Isolation proposal", proposal["reason"])
+
     def test_response_engine_adds_manual_block_proposal_without_pf_side_effects(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = EventStore(Path(tmp) / "pondsec-ndr.db")

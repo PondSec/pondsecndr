@@ -22,6 +22,14 @@ PROTECTED_NETWORKS = [
     ipaddress.ip_network("0.0.0.0/32"),
 ]
 
+INTERNAL_ISOLATION_CATEGORIES = {
+    "anomaly",
+    "machine_learning",
+    "lateral_movement",
+    "command_and_control",
+    "exfiltration",
+}
+
 
 class ResponseDenied(ValueError):
     """Raised when a response action is not safe."""
@@ -74,9 +82,9 @@ def propose_block_for_incident(
     incident = store.get_incident(incident_id)
     if incident is None:
         raise ResponseDenied("incident not found")
-    source_ip = incident.get("source_ip")
+    source_ip = _response_target_for_incident(incident)
     if not source_ip:
-        raise ResponseDenied("incident has no source IP")
+        raise ResponseDenied("incident has no response target")
     if is_protected_target(source_ip, config):
         raise ResponseDenied("source IP is protected")
     if config.response.enforce_allowlist and is_allowlisted(source_ip, store.allowlist_values()):
@@ -103,7 +111,7 @@ def propose_block_for_incident(
         "incident_id": incident_id,
         "source_ip": source_ip,
         "destination": incident.get("destination_ip"),
-        "reason": f"Response proposal for incident {incident_id}",
+        "reason": _response_reason(incident, source_ip),
         "risk_score": incident["risk_score"],
         "confidence": incident["confidence"],
         "policy_id": None,
@@ -112,6 +120,52 @@ def propose_block_for_incident(
         "automatic": automatic,
         "status": "proposed",
     }, actor=actor)
+
+
+def _response_target_for_incident(incident: dict[str, Any]) -> str | None:
+    evidence = incident.get("evidence") if isinstance(incident.get("evidence"), dict) else {}
+    roles = evidence.get("entity_roles") if isinstance(evidence.get("entity_roles"), dict) else {}
+    source_ip = incident.get("source_ip")
+    if source_ip and is_private_ip(str(source_ip)):
+        return str(source_ip)
+    internal_actor = _internal_behavior_actor(evidence)
+    if internal_actor:
+        return internal_actor
+    response_target = roles.get("response_target") if isinstance(roles, dict) else None
+    if response_target and is_private_ip(str(response_target)):
+        return str(response_target)
+    return str(source_ip) if source_ip else None
+
+
+def _internal_behavior_actor(evidence: dict[str, Any]) -> str | None:
+    detections = evidence.get("detections") if isinstance(evidence.get("detections"), list) else []
+    by_source: dict[str, set[str]] = {}
+    max_score: dict[str, int] = {}
+    for detection in detections:
+        if not isinstance(detection, dict):
+            continue
+        source = detection.get("source_ip")
+        if not source or not is_private_ip(str(source)):
+            continue
+        category = str(detection.get("category") or "").lower()
+        if category not in INTERNAL_ISOLATION_CATEGORIES:
+            continue
+        by_source.setdefault(str(source), set()).add(category)
+        max_score[str(source)] = max(max_score.get(str(source), 0), int(detection.get("severity") or 0))
+    candidates = []
+    for source, categories in by_source.items():
+        if len(categories) >= 2 or categories & {"command_and_control", "exfiltration", "lateral_movement"}:
+            candidates.append((source, len(categories), max_score.get(source, 0)))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: (item[1], item[2]), reverse=True)
+    return candidates[0][0]
+
+
+def _response_reason(incident: dict[str, Any], target: str) -> str:
+    if target != incident.get("source_ip") and is_private_ip(target):
+        return f"Isolation proposal for internal host {target} from incident {incident.get('incident_id')}"
+    return f"Response proposal for incident {incident.get('incident_id')}"
 
 
 def propose_manual_block(

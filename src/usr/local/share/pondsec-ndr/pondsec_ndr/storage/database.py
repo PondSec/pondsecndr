@@ -1191,7 +1191,7 @@ class EventStore:
         if incident_id:
             clauses.append("incident_id = ?")
             values.append(incident_id)
-        elif source_ip:
+        if source_ip:
             clauses.append("source_ip = ?")
             values.append(source_ip)
         with self.connect() as conn:
