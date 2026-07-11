@@ -6,6 +6,7 @@ $(function() {
     var rows = [];
     var summary = {};
     var caseDetailLookup = {};
+    var currentIncidentId = null;
 
     function escapeHtml(value) {
         return $('<div/>').text(value === null || value === undefined ? '' : String(value)).html();
@@ -140,6 +141,14 @@ $(function() {
         caseDetailLookup = {};
     }
 
+    function decodeId(id) {
+        try {
+            return decodeURIComponent(String(id || ''));
+        } catch (err) {
+            return String(id || '');
+        }
+    }
+
     function registerCaseDetail(type, title, item) {
         var id = 'case-detail-' + Object.keys(caseDetailLookup).length;
         caseDetailLookup[id] = {type: type, title: title, item: item || {}};
@@ -193,6 +202,25 @@ $(function() {
             '</div>';
         }).join('') + (response.release_available ? '<div class="pondsec-case-kv pondsec-case-action"><span>Response action</span><strong><button class="btn btn-xs btn-danger pondsec-row-action" data-action="release-case" data-id="' + encodeURIComponent(incident.incident_id || '') + '">Release block/isolation</button></strong><em class="pondsec-certainty confirmed">audited</em></div>' : ''));
         $('#incident_entry_reason').text(entry.reason || '');
+    }
+
+    function renderCaseActions(incident, caseSummary) {
+        var id = encodeURIComponent(incident.incident_id || '');
+        var response = (caseSummary || {}).response || {};
+        var buttons = [];
+        if (incident.status === 'open') {
+            buttons.push('<button class="btn btn-sm btn-default pondsec-row-action" data-action="close-incident" data-id="' + id + '"><i class="fa fa-check"></i> Close</button>');
+            buttons.push('<button class="btn btn-sm btn-warning pondsec-row-action" data-action="false-positive" data-id="' + id + '"><i class="fa fa-ban"></i> False positive</button>');
+            buttons.push('<button class="btn btn-sm btn-default pondsec-row-action" data-action="archive-incident" data-id="' + id + '"><i class="fa fa-archive"></i> Archive</button>');
+        } else {
+            buttons.push('<button class="btn btn-sm btn-default pondsec-row-action" data-action="reopen-incident" data-id="' + id + '"><i class="fa fa-undo"></i> Reopen</button>');
+        }
+        buttons.push('<button class="btn btn-sm btn-primary pondsec-row-action" data-action="propose-block" data-id="' + id + '"><i class="fa fa-shield"></i> Propose block</button>');
+        if (response.release_available) {
+            buttons.push('<button class="btn btn-sm btn-danger pondsec-row-action" data-action="release-case" data-id="' + id + '"><i class="fa fa-unlock"></i> Release block/isolation</button>');
+        }
+        buttons.push('<button class="btn btn-sm btn-danger pondsec-row-action" data-action="delete-incident" data-id="' + id + '"><i class="fa fa-trash"></i> Delete</button>');
+        $('#incident_case_actions').html(buttons.join(''));
     }
 
     function renderCertainty(summaryData) {
@@ -342,7 +370,7 @@ $(function() {
     }
 
     function renderAttackStages(stages) {
-        stages = stages || [];
+        stages = (stages || []).filter(function(stage) { return stage.status !== 'not_seen'; });
         if (!stages.length) {
             return '<div class="pondsec-empty">No attack stage analysis recorded.</div>';
         }
@@ -477,9 +505,11 @@ $(function() {
         if (row.status === 'open') {
             buttons += '<button class="btn btn-xs btn-default pondsec-row-action" data-action="close-incident" data-id="' + id + '">Close</button>';
             buttons += '<button class="btn btn-xs btn-primary pondsec-row-action" data-action="propose-block" data-id="' + id + '">Propose block</button>';
+            buttons += '<button class="btn btn-xs btn-default pondsec-row-action" data-action="archive-incident" data-id="' + id + '">Archive</button>';
         } else {
             buttons += '<button class="btn btn-xs btn-default pondsec-row-action" data-action="reopen-incident" data-id="' + id + '">Reopen</button>';
         }
+        buttons += '<button class="btn btn-xs btn-danger pondsec-row-action" data-action="delete-incident" data-id="' + id + '">Delete</button>';
         return '<div class="pondsec-actions">' + buttons + '</div>';
     }
 
@@ -501,6 +531,15 @@ $(function() {
         }
         if (action === 'reopen-incident') {
             return '/api/pondsecndr/incidents/reopen/' + id;
+        }
+        if (action === 'archive-incident') {
+            return '/api/pondsecndr/incidents/archive/' + id;
+        }
+        if (action === 'delete-incident') {
+            return '/api/pondsecndr/incidents/delete/' + id;
+        }
+        if (action === 'false-positive') {
+            return '/api/pondsecndr/incidents/falsePositive/' + id;
         }
         if (action === 'propose-block') {
             return '/api/pondsecndr/blocklist/propose/' + id;
@@ -531,13 +570,25 @@ $(function() {
     }
 
     function runAction(action, id) {
+        if (action === 'delete-incident' && !window.confirm('Delete this incident? Active responses must be released first.')) {
+            return;
+        }
         var url = actionEndpoint(action, id);
         if (!url) {
             return;
         }
+        var plainId = decodeId(id);
         ajaxCall(url, {}, function(data) {
             $('#pondsec_action_result').html(renderActionResult(data));
             loadRows();
+            if (plainId && currentIncidentId === plainId) {
+                if (action === 'delete-incident' && data && data.status === 'ok') {
+                    $('#incident_detail_panel').removeClass('open');
+                    currentIncidentId = null;
+                } else {
+                    openIncidentDetail(id);
+                }
+            }
         });
     }
 
@@ -671,6 +722,7 @@ $(function() {
         var relatedCases = analysis.related_cases || [];
         var threatIntel = analysis.threat_intelligence || {};
         resetCaseDetails();
+        currentIncidentId = incident.incident_id || null;
         $('#incident_detail_title').text(incident.title || incident.incident_id || 'Incident');
         $('#incident_detail_meta').html(
             badge(incident.status) + badge(story.attack_stage || incident.category || 'unknown') +
@@ -679,6 +731,7 @@ $(function() {
             '<span class="pondsec-case-meta">Confidence ' + escapeHtml(formatPercent(incident.confidence)) + '</span>' +
             '<span class="pondsec-case-meta">Window ' + escapeHtml(formatDate(story.first_seen)) + ' - ' + escapeHtml(formatDate(story.last_seen)) + '</span>'
         );
+        renderCaseActions(incident, caseSummary);
         renderNarrative(narrative);
         renderCaseSummary(caseSummary, incident);
         renderCertainty(caseSummary);
@@ -711,6 +764,7 @@ $(function() {
         }).join('') : '<div class="pondsec-empty">No risk factors recorded.</div>');
         renderCaseDetail({type: 'Case summary', title: 'Case overview', item: caseSummary});
         $('#incident_detail_panel').addClass('open');
+        activateCaseTab('overview');
     }
 
     function openIncidentDetail(id) {
@@ -760,6 +814,17 @@ $(function() {
     });
     $('#incident_detail_close').on('click', function() {
         $('#incident_detail_panel').removeClass('open');
+        currentIncidentId = null;
+    });
+    function activateCaseTab(tab) {
+        tab = tab || 'overview';
+        $('.pondsec-case-tab').toggleClass('active', false);
+        $('.pondsec-case-tab[data-case-tab="' + tab + '"]').toggleClass('active', true);
+        $('[data-case-tab-panel]').hide();
+        $('[data-case-tab-panel="' + tab + '"]').show();
+    }
+    $(document).on('click', '.pondsec-case-tab', function() {
+        activateCaseTab($(this).data('case-tab'));
     });
 
     loadRows();
@@ -975,15 +1040,16 @@ $(function() {
     border-left: 1px solid #2a3544;
     bottom: 54px;
     box-shadow: -12px 0 32px rgba(0, 0, 0, 0.32);
+    left: 304px;
     max-width: none;
     overflow-y: auto;
-    padding: 24px;
+    padding: 26px 30px;
     position: fixed;
     right: 0;
-    top: 92px;
+    top: 104px;
     transform: translateX(105%);
     transition: transform 0.22s ease;
-    width: min(1320px, calc(100vw - 300px));
+    width: auto;
     z-index: 9999;
 }
 .pondsec-case-panel.open {
@@ -1000,6 +1066,40 @@ $(function() {
     color: #f5f8fb;
     font-size: 22px;
     margin: 0 0 10px;
+}
+.pondsec-case-actions {
+    background: #1b2430;
+    border: 1px solid #2a3544;
+    border-radius: 6px;
+    margin-bottom: 12px;
+    padding: 10px;
+}
+.pondsec-case-tabs {
+    align-items: center;
+    border-bottom: 1px solid #2a3544;
+    display: flex;
+    gap: 8px;
+    margin: 0 0 14px;
+    overflow-x: auto;
+    padding-bottom: 10px;
+}
+.pondsec-case-tab {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    color: #9fafbf;
+    font-weight: 700;
+    padding: 9px 12px;
+    white-space: nowrap;
+}
+.pondsec-case-tab:hover {
+    background: #1b2430;
+    color: #e7eef7;
+}
+.pondsec-case-tab.active {
+    background: rgba(73, 166, 255, 0.13);
+    border-color: rgba(73, 166, 255, 0.42);
+    color: #65b7ff;
 }
 .pondsec-case-meta-row {
     display: flex;
@@ -1405,6 +1505,7 @@ $(function() {
     }
     .pondsec-case-panel {
         bottom: 0;
+        left: 0;
         top: 0;
         width: 100vw;
     }
@@ -1458,66 +1559,87 @@ $(function() {
         </div>
         <button id="incident_detail_close" class="btn btn-default" type="button"><i class="fa fa-times"></i></button>
     </div>
-    <section class="pondsec-case-section">
-        <h4>Host story</h4>
-        <div id="incident_story" class="pondsec-case-grid"></div>
-    </section>
-    <section class="pondsec-case-section">
-        <h4>Case summary</h4>
-        <div id="incident_case_summary" class="pondsec-case-grid wide"></div>
-        <p id="incident_entry_reason" class="pondsec-entry-reason"></p>
-    </section>
-    <section class="pondsec-case-section">
-        <h4>Case narrative</h4>
-        <div id="incident_narrative" class="pondsec-narrative"></div>
-    </section>
-    <div class="pondsec-analysis-grid">
-        <section class="pondsec-case-section pondsec-graph-card">
-            <h4>Attack graph</h4>
-            <div id="incident_attack_graph"></div>
-            <div id="incident_graph_legend" class="pondsec-legend-row"></div>
+    <div id="incident_case_actions" class="pondsec-actions pondsec-case-actions"></div>
+    <nav class="pondsec-case-tabs" aria-label="Case analysis tabs">
+        <button class="pondsec-case-tab active" type="button" data-case-tab="overview">Overview</button>
+        <button class="pondsec-case-tab" type="button" data-case-tab="graph">Attack graph</button>
+        <button class="pondsec-case-tab" type="button" data-case-tab="timeline">Timeline</button>
+        <button class="pondsec-case-tab" type="button" data-case-tab="evidence">Evidence</button>
+        <button class="pondsec-case-tab" type="button" data-case-tab="intel">CVE context</button>
+        <button class="pondsec-case-tab" type="button" data-case-tab="related">Related cases</button>
+    </nav>
+    <div data-case-tab-panel="overview">
+        <section class="pondsec-case-section">
+            <h4>Case narrative</h4>
+            <div id="incident_narrative" class="pondsec-narrative"></div>
         </section>
         <section class="pondsec-case-section">
-            <h4>Selected evidence</h4>
-            <div id="incident_focus_title" class="pondsec-focus-title">Case overview</div>
-            <div id="incident_focus_body"></div>
-            <div id="incident_focus_evidence" class="pondsec-focus-evidence"></div>
+            <h4>Case summary</h4>
+            <div id="incident_case_summary" class="pondsec-case-grid wide"></div>
+            <p id="incident_entry_reason" class="pondsec-entry-reason"></p>
+        </section>
+        <section class="pondsec-case-section">
+            <h4>Host story</h4>
+            <div id="incident_story" class="pondsec-case-grid"></div>
+        </section>
+        <section class="pondsec-case-section">
+            <h4>Attack stages</h4>
+            <div id="incident_attack_stages" class="pondsec-stage-lane"></div>
+        </section>
+        <section class="pondsec-case-section">
+            <h4>What to check next</h4>
+            <ul id="incident_guidance" class="pondsec-guidance"></ul>
         </section>
     </div>
-    <section class="pondsec-case-section">
-        <h4>Attack stages</h4>
-        <div id="incident_attack_stages" class="pondsec-stage-lane"></div>
-    </section>
-    <section class="pondsec-case-section">
-        <h4>Affected targets</h4>
-        <div id="incident_targets"></div>
-    </section>
-    <section class="pondsec-case-section">
-        <h4>Visual timeline</h4>
-        <div id="incident_timeline" class="pondsec-timeline-stack"></div>
-    </section>
-    <section class="pondsec-case-section">
-        <h4>CVE context</h4>
-        <div id="incident_threat_intel"></div>
-    </section>
-    <section class="pondsec-case-section">
-        <h4>Related cases</h4>
-        <div id="incident_related_cases"></div>
-    </section>
-    <section class="pondsec-case-section">
-        <h4>Confidence boundaries</h4>
-        <div id="incident_certainty" class="pondsec-certainty-grid"></div>
-    </section>
-    <section class="pondsec-case-section">
-        <h4>What to check next</h4>
-        <ul id="incident_guidance" class="pondsec-guidance"></ul>
-    </section>
-    <section class="pondsec-case-section">
-        <h4>Notable features</h4>
-        <div id="incident_features" class="pondsec-feature-grid"></div>
-    </section>
-    <section class="pondsec-case-section">
-        <h4>Risk factors</h4>
-        <div id="incident_risk_factors" class="pondsec-feature-grid"></div>
-    </section>
+    <div data-case-tab-panel="graph" style="display:none">
+        <div class="pondsec-analysis-grid">
+            <section class="pondsec-case-section pondsec-graph-card">
+                <h4>Attack graph</h4>
+                <div id="incident_attack_graph"></div>
+                <div id="incident_graph_legend" class="pondsec-legend-row"></div>
+            </section>
+            <section class="pondsec-case-section">
+                <h4>Selected evidence</h4>
+                <div id="incident_focus_title" class="pondsec-focus-title">Case overview</div>
+                <div id="incident_focus_body"></div>
+                <div id="incident_focus_evidence" class="pondsec-focus-evidence"></div>
+            </section>
+        </div>
+    </div>
+    <div data-case-tab-panel="timeline" style="display:none">
+        <section class="pondsec-case-section">
+            <h4>Visual timeline</h4>
+            <div id="incident_timeline" class="pondsec-timeline-stack"></div>
+        </section>
+    </div>
+    <div data-case-tab-panel="evidence" style="display:none">
+        <section class="pondsec-case-section">
+            <h4>Affected targets</h4>
+            <div id="incident_targets"></div>
+        </section>
+        <section class="pondsec-case-section">
+            <h4>Confidence boundaries</h4>
+            <div id="incident_certainty" class="pondsec-certainty-grid"></div>
+        </section>
+        <section class="pondsec-case-section">
+            <h4>Notable features</h4>
+            <div id="incident_features" class="pondsec-feature-grid"></div>
+        </section>
+        <section class="pondsec-case-section">
+            <h4>Risk factors</h4>
+            <div id="incident_risk_factors" class="pondsec-feature-grid"></div>
+        </section>
+    </div>
+    <div data-case-tab-panel="intel" style="display:none">
+        <section class="pondsec-case-section">
+            <h4>CVE context</h4>
+            <div id="incident_threat_intel"></div>
+        </section>
+    </div>
+    <div data-case-tab-panel="related" style="display:none">
+        <section class="pondsec-case-section">
+            <h4>Related cases</h4>
+            <div id="incident_related_cases"></div>
+        </section>
+    </div>
 </aside>

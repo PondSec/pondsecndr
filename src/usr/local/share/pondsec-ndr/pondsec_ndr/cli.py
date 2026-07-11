@@ -77,6 +77,10 @@ def main(argv: list[str] | None = None) -> int:
     close_incident.add_argument("incident_id")
     reopen_incident = incidents_sub.add_parser("reopen")
     reopen_incident.add_argument("incident_id")
+    archive_incident = incidents_sub.add_parser("archive")
+    archive_incident.add_argument("incident_id")
+    delete_incident = incidents_sub.add_parser("delete")
+    delete_incident.add_argument("incident_id")
     false_positive = incidents_sub.add_parser("false-positive")
     false_positive.add_argument("incident_id")
     release_incident = incidents_sub.add_parser("release")
@@ -281,7 +285,10 @@ def dispatch(args: argparse.Namespace, config: Any, store: EventStore) -> tuple[
         if args.section_command == "keep-separate":
             store.audit_case_action("keep_separate", args.primary_id, {"related_incident_id": args.related_id}, actor="cli")
             return {"status": "ok", "primary_id": args.primary_id, "related_incident_id": args.related_id}, 0
-        status_map = {"close": "closed", "reopen": "open", "false-positive": "false_positive"}
+        if args.section_command == "delete":
+            payload = store.delete_incident(args.incident_id, actor="cli")
+            return payload, 0 if payload["status"] == "ok" else 1
+        status_map = {"close": "closed", "reopen": "open", "archive": "archived", "false-positive": "false_positive"}
         changed = store.update_incident_status(args.incident_id, status_map[args.section_command], actor="cli")
         return {"status": "ok" if changed else "not_found", "incident_id": args.incident_id}, 0 if changed else 1
     if command == "hosts":
@@ -1057,7 +1064,7 @@ def _incident_analysis(
             "suppressed_count": incident.get("suppressed_count"),
         },
         "attack_graph": graph,
-        "attack_stages": [stages[name] for name in ATTACK_STAGES],
+        "attack_stages": [stages[name] for name in ATTACK_STAGES if stages[name]["status"] != "not_seen"],
         "timeline": sorted(timeline, key=lambda item: str(item.get("timestamp") or "")),
         "visual_timeline": visual_timeline,
         "notable_features": notable_features[:20],
@@ -1118,12 +1125,66 @@ def _stage_for_detection(detection: dict[str, Any], incident: dict[str, Any]) ->
     if "portscan" in detector_id or "scan" in title or category == "reconnaissance":
         return "reconnaissance"
     if category == "signature":
+        if _signature_indicates_reconnaissance(detection):
+            return "reconnaissance"
         return "initial_access"
     if category == "machine_learning":
         return "execution"
     if category == "anomaly":
         return incident.get("attack_stage") if incident.get("attack_stage") in ATTACK_STAGES else "execution"
     return incident.get("attack_stage") if incident.get("attack_stage") in ATTACK_STAGES else "execution"
+
+
+def _signature_indicates_reconnaissance(detection: dict[str, Any]) -> bool:
+    evidence = detection.get("evidence") if isinstance(detection.get("evidence"), dict) else {}
+    haystack = " ".join(
+        str(value or "").lower()
+        for value in (
+            detection.get("detector_id"),
+            detection.get("title"),
+            detection.get("description"),
+            evidence.get("signature"),
+            evidence.get("category"),
+            evidence.get("suricata_category"),
+            evidence.get("metadata"),
+        )
+    )
+    recon_terms = (
+        "reputation",
+        "poor reputation",
+        "cins",
+        "scanner",
+        "internet scanner",
+        "crawler",
+        "bot",
+        "spider",
+        "masscan",
+        "nmap",
+        "zmap",
+        "shodan",
+        "censys",
+        "shadowserver",
+        "binaryedge",
+        "stretchoid",
+        "scan",
+    )
+    exploit_terms = (
+        "exploit",
+        "attempted-admin",
+        "attempted-user",
+        "web attack",
+        "sql injection",
+        "xss",
+        "path traversal",
+        "command injection",
+        "remote code execution",
+        "rce",
+        "shell",
+        "cve-",
+    )
+    if any(term in haystack for term in exploit_terms):
+        return False
+    return any(term in haystack for term in recon_terms)
 
 
 def _edge_kind_for_stage(stage: str, category: str | None = None) -> str:

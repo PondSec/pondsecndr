@@ -40,6 +40,33 @@ class IncidentsController extends ApiControllerBase
         return $this->runBackendJson('incident_reopen ' . $id);
     }
 
+    public function archiveAction($id = null)
+    {
+        if (!$this->isSafeId($id)) {
+            $this->response->setStatusCode(400, 'Bad Request');
+            return ['status' => 'error', 'message' => 'invalid incident id'];
+        }
+        return $this->runBackendJson('incident_archive ' . $id);
+    }
+
+    public function deleteAction($id = null)
+    {
+        if (!$this->isSafeId($id)) {
+            $this->response->setStatusCode(400, 'Bad Request');
+            return ['status' => 'error', 'message' => 'invalid incident id'];
+        }
+        return $this->runBackendJson('incident_delete ' . $id);
+    }
+
+    public function falsePositiveAction($id = null)
+    {
+        if (!$this->isSafeId($id)) {
+            $this->response->setStatusCode(400, 'Bad Request');
+            return ['status' => 'error', 'message' => 'invalid incident id'];
+        }
+        return $this->runBackendJson('incident_false_positive ' . $id);
+    }
+
     public function releaseAction($id = null)
     {
         if (!$this->isSafeId($id)) {

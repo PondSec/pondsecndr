@@ -574,6 +574,53 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(analysis["threat_intelligence"]["cves"][0]["evidence_level"], "exploitation_attempt_observed")
         self.assertFalse(analysis["threat_intelligence"]["cves"][0]["automatic_block_basis_allowed"])
 
+    def test_reputation_signature_is_reconnaissance_not_initial_access(self) -> None:
+        incident = {
+            "incident_id": "reputation-case",
+            "title": "Signature from 199.45.155.75",
+            "status": "open",
+            "risk_score": 72,
+            "severity": 7,
+            "confidence": 0.9,
+            "source_ip": "199.45.155.75",
+            "destination_ip": "192.168.30.3",
+            "category": "signature",
+            "created_at": "2026-07-05T10:00:00+00:00",
+            "updated_at": "2026-07-05T10:00:00+00:00",
+            "first_seen": "2026-07-05T10:00:00+00:00",
+            "last_seen": "2026-07-05T10:00:00+00:00",
+            "event_count": 1,
+            "detection_count": 1,
+            "suppressed_count": 0,
+            "affected_targets": ["192.168.30.3"],
+            "attack_stage": "reconnaissance",
+            "evidence": {
+                "detections": [{
+                    "detection_id": "d-reputation",
+                    "detector_id": "pondsec.suricata_alert",
+                    "detector_version": "1",
+                    "category": "signature",
+                    "title": "ET CINS Active Threat Intelligence Poor Reputation IP group 34",
+                    "description": "Known internet scanner reputation list hit.",
+                    "timestamp": "2026-07-05T10:00:00+00:00",
+                    "source_ip": "199.45.155.75",
+                    "destination_ip": "192.168.30.3",
+                    "severity": 7,
+                    "confidence": 0.9,
+                    "anomaly_score": 0.5,
+                    "evidence": {"suricata_action": "blocked", "signature": "Poor Reputation IP Scanner"},
+                    "recommended_action": "Review source reputation",
+                }],
+            },
+            "risk_factors": [],
+        }
+        analysis = _incident_analysis(incident)
+        stages = {item["stage"]: item for item in analysis["attack_stages"]}
+        self.assertIn("reconnaissance", stages)
+        self.assertEqual(stages["reconnaissance"]["status"], "prevented")
+        self.assertNotIn("initial_access", stages)
+        self.assertIn("Successful initial access", analysis["case_narrative"]["not_confirmed"])
+
     def test_incident_analysis_infers_entity_roles_for_legacy_case_without_saved_roles(self) -> None:
         incident = {
             "incident_id": "legacy-case",
@@ -907,6 +954,63 @@ class BackendTests(unittest.TestCase):
             result = service.run_once(max_lines=10)
             self.assertGreaterEqual(result["detections"], 1)
             self.assertEqual(result["learning_status"]["status"], "override")
+
+    def test_delete_incident_removes_case_without_active_response(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            store.insert_incidents([{
+                "incident_id": "incident-delete-test",
+                "title": "Delete test",
+                "status": "open",
+                "risk_score": 71,
+                "severity": 7,
+                "confidence": 0.8,
+                "source_ip": "192.168.10.11",
+                "destination_ip": "198.51.100.11",
+                "category": "reconnaissance",
+                "created_at": "2026-07-05T10:00:00+00:00",
+                "updated_at": "2026-07-05T10:00:00+00:00",
+                "evidence": {},
+                "risk_factors": [],
+            }])
+            result = store.delete_incident("incident-delete-test", actor="test")
+            self.assertEqual(result["status"], "ok")
+            self.assertIsNone(store.get_incident("incident-delete-test"))
+
+    def test_delete_incident_denies_active_response_blocks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            store.insert_incidents([{
+                "incident_id": "incident-delete-blocked-test",
+                "title": "Delete blocked test",
+                "status": "open",
+                "risk_score": 91,
+                "severity": 9,
+                "confidence": 0.96,
+                "source_ip": "192.168.10.12",
+                "destination_ip": "198.51.100.12",
+                "category": "command_and_control",
+                "created_at": "2026-07-05T10:00:00+00:00",
+                "updated_at": "2026-07-05T10:00:00+00:00",
+                "evidence": {},
+                "risk_factors": [],
+            }])
+            store.add_block_entry({
+                "block_id": "block-delete-deny",
+                "incident_id": "incident-delete-blocked-test",
+                "source_ip": "192.168.10.12",
+                "destination": "198.51.100.12",
+                "reason": "test isolation",
+                "risk_score": 91,
+                "confidence": 0.96,
+                "expires_at": "2099-01-01T00:00:00+00:00",
+                "status": "active",
+            }, actor="test")
+            result = store.delete_incident("incident-delete-blocked-test", actor="test")
+            self.assertEqual(result["status"], "denied")
+            self.assertIsNotNone(store.get_incident("incident-delete-blocked-test"))
 
     def test_eve_access_status_checks_service_user_read_permission(self) -> None:
         current_user = pwd.getpwuid(os.getuid()).pw_name

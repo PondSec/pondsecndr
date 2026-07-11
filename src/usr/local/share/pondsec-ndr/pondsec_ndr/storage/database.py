@@ -1068,6 +1068,41 @@ class EventStore:
                 )
             return changed > 0
 
+    def delete_incident(self, incident_id: str, actor: str = "system") -> dict[str, Any]:
+        with self.connect() as conn:
+            row = conn.execute("SELECT incident_id, title, source_ip FROM incidents WHERE incident_id = ?", (incident_id,)).fetchone()
+            if not row:
+                return {"status": "not_found", "incident_id": incident_id}
+            active_blocks = conn.execute(
+                """
+                SELECT block_id, status, source_ip
+                FROM block_entries
+                WHERE incident_id = ?
+                  AND status IN ('proposed', 'active')
+                  AND expires_at > ?
+                ORDER BY created_at DESC
+                """,
+                (incident_id, now_iso()),
+            ).fetchall()
+            if active_blocks:
+                return {
+                    "status": "denied",
+                    "incident_id": incident_id,
+                    "message": "release active case response before deleting this incident",
+                    "active_blocks": [dict(item) for item in active_blocks],
+                }
+            source_ip = row["source_ip"]
+            conn.execute("DELETE FROM incident_detections WHERE incident_id = ?", (incident_id,))
+            conn.execute("DELETE FROM responses WHERE incident_id = ?", (incident_id,))
+            conn.execute("DELETE FROM incidents WHERE incident_id = ?", (incident_id,))
+            if source_ip:
+                conn.execute(
+                    "UPDATE hosts SET open_incidents = (SELECT count(*) FROM incidents WHERE status = 'open' AND source_ip = ?) WHERE ip = ?",
+                    (source_ip, source_ip),
+                )
+            self._audit(conn, actor, "incident.delete", incident_id, {"title": row["title"], "source_ip": source_ip})
+            return {"status": "ok", "incident_id": incident_id}
+
     def add_allowlist_entry(self, value: str, reason: str | None = None, expires_at: str | None = None, actor: str = "system") -> dict[str, Any]:
         entry = {
             "allowlist_id": str(uuid4()),

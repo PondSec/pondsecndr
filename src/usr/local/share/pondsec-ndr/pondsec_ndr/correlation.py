@@ -276,7 +276,7 @@ def _evidence_event_count(detection: dict[str, Any]) -> int:
 def _stage_for_category(category: str) -> str:
     return {
         "reconnaissance": "reconnaissance",
-        "signature": "initial_access",
+        "signature": "reconnaissance",
         "machine_learning": "execution",
         "anomaly": "execution",
         "lateral_movement": "lateral_movement",
