@@ -1945,6 +1945,7 @@ class EventStore:
 
     def host_inventory(self, limit: int = 100) -> dict[str, Any]:
         with self.connect() as conn:
+            total_entities = int(conn.execute("SELECT count(*) FROM entities").fetchone()[0])
             entities = conn.execute(
                 """
                 SELECT *
@@ -1967,7 +1968,7 @@ class EventStore:
         items: list[dict[str, Any]] = []
         for row in entities:
             entity = dict(row)
-            entity_hosts = hosts_by_entity.get(entity["entity_id"], [])
+            entity_hosts = [self._compact_host_record(host) for host in hosts_by_entity.get(entity["entity_id"], [])]
             current_ips = sorted({host["ip"] for host in entity_hosts if host.get("ip")})
             roles = self._safe_json_list(entity.pop("roles_json", "[]"))
             tags = self._safe_json_list(entity.pop("tags_json", "[]"))
@@ -1988,6 +1989,7 @@ class EventStore:
             }
             items.append(item)
         for host in unassigned[:max(0, int(limit) - len(items))]:
+            compact_host = self._compact_host_record(host)
             items.append({
                 "entity_id": host.get("entity_id"),
                 "ip": host.get("ip"),
@@ -2006,16 +2008,36 @@ class EventStore:
                 "first_seen": host.get("first_seen"),
                 "last_seen": host.get("last_seen"),
                 "history": [],
-                "host_records": [host],
+                "host_records": [compact_host],
             })
         return {
             "items": items,
             "summary": {
-                "entities": len(items),
+                "entities": total_entities,
+                "returned_entities": len(items),
                 "host_records": len(host_rows),
                 "resolved_host_records": sum(len(value) for value in hosts_by_entity.values()),
                 "unassigned_host_records": len(unassigned),
             },
+        }
+
+    @staticmethod
+    def _compact_host_record(host: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "ip": host.get("ip"),
+            "entity_id": host.get("entity_id"),
+            "hostname": host.get("hostname"),
+            "mac": host.get("mac"),
+            "interface": host.get("interface"),
+            "vlan": host.get("vlan"),
+            "first_seen": host.get("first_seen"),
+            "last_seen": host.get("last_seen"),
+            "risk_score": host.get("risk_score"),
+            "open_incidents": host.get("open_incidents"),
+            "learning_status": host.get("learning_status"),
+            "baseline_deviation": host.get("baseline_deviation"),
+            "block_status": host.get("block_status"),
+            "allowlist_status": host.get("allowlist_status"),
         }
 
     def incident_status_summary(self) -> dict[str, Any]:
