@@ -1797,6 +1797,55 @@ class BackendTests(unittest.TestCase):
         self.assertLess(promotion["promotion_score"], promotion["promotion_threshold"])
         self.assertTrue(any(item["name"] == "normal_https_fanout" for item in promotion["negative_evidence"]))
 
+    def test_correlation_keeps_https_fanout_out_of_dns_tunnel_incident(self) -> None:
+        detections = [
+            {
+                "detection_id": "d-normal-https-fanout",
+                "detector_id": "pondsec.horizontal_scan",
+                "detector_version": "1",
+                "category": "reconnaissance",
+                "title": "Possible horizontal scan",
+                "description": "Host contacted the same service across many destinations.",
+                "timestamp": "2026-07-05T10:00:00+00:00",
+                "source_ip": "192.168.10.20",
+                "destination_ip": "port:443",
+                "severity": 7,
+                "confidence": 0.75,
+                "anomaly_score": 0.3,
+                "evidence": {"destination_count": 11, "port": 443},
+                "recommended_action": "investigate",
+            },
+            {
+                "detection_id": "d-dns-tunnel",
+                "detector_id": "pondsec.dns_tunneling",
+                "detector_version": "1",
+                "category": "command_and_control",
+                "title": "Possible DNS tunneling",
+                "description": "Repeated DNS queries contain long high-entropy labels.",
+                "timestamp": "2026-07-05T10:01:00+00:00",
+                "source_ip": "192.168.10.20",
+                "destination_ip": "192.168.20.5",
+                "severity": 8,
+                "confidence": 0.97,
+                "anomaly_score": 1.0,
+                "evidence": {
+                    "suspicious_dns_events": 18,
+                    "unique_dns_names": 18,
+                    "dns_entropy": 5.14,
+                    "dns_name_length": 62,
+                },
+                "recommended_action": "investigate",
+            },
+        ]
+        incidents = correlate_detections(detections)
+        self.assertEqual(len(incidents), 1)
+        self.assertEqual(incidents[0]["category"], "command_and_control")
+        self.assertEqual(incidents[0]["detection_count"], 1)
+        self.assertEqual(incidents[0]["detection_ids"], ["d-dns-tunnel"])
+        self.assertEqual(detections[0]["evidence"]["detection_state"], "suppressed")
+        self.assertEqual(detections[1]["evidence"]["detection_state"], "promoted")
+        self.assertEqual(detections[0]["evidence"]["promotion"]["reason"], "normal_https_fanout")
+
     def test_correlation_promotes_credential_pressure_with_beaconing(self) -> None:
         detections = [
             {

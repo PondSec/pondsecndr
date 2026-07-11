@@ -58,7 +58,13 @@ def correlate_detections(detections: list[dict[str, Any]], window_seconds: int =
     incidents: list[dict[str, Any]] = []
     now = datetime.now(timezone.utc).isoformat()
     for case in cases:
-        items = case["detections"]
+        items, detached_weak = _detach_contextual_weak_detections(case["detections"])
+        for detection in detached_weak:
+            risk, _factors = score_detection_group([detection])
+            categories = [str(detection.get("category") or "unknown")]
+            roles = _entity_roles([detection])
+            _promotable, promotion = _incident_promotion([detection], categories, risk, roles)
+            _annotate_detection_promotion([detection], promotion, "suppressed")
         risk_score, factors = score_detection_group(items)
         if risk_score < 35:
             promotion = _suppression_decision(items, categories=[], reason="risk_score_below_incident_floor", score=risk_score)
@@ -287,6 +293,25 @@ def _annotate_detection_promotion(detections: list[dict[str, Any]], promotion: d
             detection["evidence"] = evidence
         evidence["detection_state"] = state
         evidence["promotion"] = promotion
+
+
+def _detach_contextual_weak_detections(detections: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if len(detections) <= 1:
+        return detections, []
+    weak = [detection for detection in detections if _is_web_fanout_detection(detection)]
+    if not weak or len(weak) == len(detections):
+        return detections, []
+    weak_ids = {id(detection) for detection in weak}
+    return [detection for detection in detections if id(detection) not in weak_ids], weak
+
+
+def _is_web_fanout_detection(detection: dict[str, Any]) -> bool:
+    if detection.get("detector_id") != "pondsec.horizontal_scan":
+        return False
+    evidence = detection.get("evidence") if isinstance(detection.get("evidence"), dict) else {}
+    port = _safe_int(evidence.get("port"))
+    source = _text_or_none(detection.get("source_ip"))
+    return bool(port in WEB_FANOUT_PORTS and source and _is_internal_address(source))
 
 
 def _entity_consistency(detections: list[dict[str, Any]]) -> bool:
