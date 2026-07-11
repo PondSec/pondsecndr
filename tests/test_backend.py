@@ -2045,6 +2045,47 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(merged["attack_stage"], "multi_stage")
             self.assertTrue(merged["evidence"]["correlation"]["deduplicated"])
 
+    def test_incident_dedup_does_not_count_duplicate_detections_again(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            incident = {
+                "incident_id": "incident-repeat-1",
+                "title": "Repeated calculation",
+                "status": "open",
+                "risk_score": 82,
+                "severity": 8,
+                "confidence": 0.9,
+                "source_ip": "192.168.10.77",
+                "destination_ip": "auth_services",
+                "category": "credential_abuse",
+                "created_at": "2026-07-05T10:00:00+00:00",
+                "updated_at": "2026-07-05T10:00:00+00:00",
+                "first_seen": "2026-07-05T10:00:00+00:00",
+                "last_seen": "2026-07-05T10:00:20+00:00",
+                "event_count": 18,
+                "detection_count": 1,
+                "affected_targets": ["auth_services"],
+                "attack_stage": "initial_access",
+                "evidence": {"detections": [{"detection_id": "d-repeat", "source_ip": "192.168.10.77", "destination_ip": "auth_services"}]},
+                "risk_factors": [{"name": "credential", "value": 82}],
+                "detection_ids": ["d-repeat"],
+            }
+            duplicate = dict(
+                incident,
+                incident_id="incident-repeat-2",
+                updated_at="2026-07-05T10:01:00+00:00",
+                last_seen="2026-07-05T10:01:00+00:00",
+            )
+            self.assertEqual(store.insert_incidents([incident]), 1)
+            self.assertEqual(store.insert_incidents([duplicate]), 0)
+            merged = store.get_incident("incident-repeat-1")
+            self.assertIsNotNone(merged)
+            assert merged is not None
+            self.assertEqual(merged["detection_count"], 1)
+            self.assertEqual(merged["event_count"], 18)
+            self.assertEqual(merged["suppressed_count"], 1)
+
     def test_incident_dedup_keeps_different_internal_sources_on_aggregate_port_separate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = EventStore(Path(tmp) / "pondsec-ndr.db")

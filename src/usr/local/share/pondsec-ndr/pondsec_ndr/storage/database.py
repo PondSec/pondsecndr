@@ -1992,6 +1992,17 @@ class EventStore:
             merged.append(factor)
         return merged[-50:]
 
+    @staticmethod
+    def _detection_ids_from_evidence(evidence: dict[str, Any]) -> set[str]:
+        detections = evidence.get("detections", []) if isinstance(evidence, dict) else []
+        if not isinstance(detections, list):
+            return set()
+        return {
+            str(item["detection_id"])
+            for item in detections
+            if isinstance(item, dict) and item.get("detection_id")
+        }
+
     def _insert_incident(self, conn: sqlite3.Connection, incident: dict[str, Any]) -> None:
         conn.execute(
             """
@@ -2028,6 +2039,19 @@ class EventStore:
         last_seen = max(str(existing["last_seen"] or existing["updated_at"]), incoming["last_seen"])
         existing_detection_count = int(existing["detection_count"] or 0)
         existing_event_count = int(existing["event_count"] or 0)
+        existing_detection_ids = self._detection_ids_from_evidence(existing_evidence)
+        incoming_detection_ids = set(incoming["detection_ids"]) | self._detection_ids_from_evidence(incoming["evidence"])
+        new_detection_ids = incoming_detection_ids - existing_detection_ids
+        merged_detection_count = (
+            existing_detection_count
+            if not new_detection_ids
+            else existing_detection_count + len(new_detection_ids)
+        )
+        merged_event_count = (
+            existing_event_count
+            if not new_detection_ids
+            else existing_event_count + incoming["event_count"]
+        )
         existing_suppressed = int(existing["suppressed_count"] or 0)
         merged_category = existing["category"]
         if incoming.get("category") and incoming.get("category") != existing["category"]:
@@ -2072,8 +2096,8 @@ class EventStore:
                 max(str(existing["updated_at"]), incoming["updated_at"]),
                 first_seen,
                 last_seen,
-                existing_event_count + incoming["event_count"],
-                existing_detection_count + max(0, incoming["detection_count"]),
+                merged_event_count,
+                merged_detection_count,
                 json.dumps(targets, sort_keys=True),
                 merged_attack_stage,
                 incoming["validation_tag"],
