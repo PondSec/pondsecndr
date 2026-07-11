@@ -308,7 +308,7 @@ def dispatch(args: argparse.Namespace, config: Any, store: EventStore) -> tuple[
         changed = store.update_incident_status(args.incident_id, status_map[args.section_command], actor="cli")
         return {"status": "ok" if changed else "not_found", "incident_id": args.incident_id}, 0 if changed else 1
     if command == "hosts":
-        return {"items": _decode_rows(store.list_rows("hosts"))}, 0
+        return _decode_entity_inventory(store.host_inventory()), 0
     if command == "allowlist":
         if args.section_command == "list":
             return {"items": _decode_rows(store.list_rows("allowlist_entries"))}, 0
@@ -1843,6 +1843,17 @@ def _decode_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 del item[key]
         decoded.append(item)
     return decoded
+
+
+def _decode_entity_inventory(payload: dict[str, Any]) -> dict[str, Any]:
+    result = dict(payload)
+    items = []
+    for item in result.get("items", []):
+        decoded = dict(item)
+        decoded["host_records"] = _decode_rows(decoded.get("host_records", []))
+        items.append(decoded)
+    result["items"] = items
+    return result
 
 
 def _decode_blocklist_view(payload: dict[str, Any]) -> dict[str, Any]:

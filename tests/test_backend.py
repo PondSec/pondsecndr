@@ -928,7 +928,7 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(row[5], "reconnaissance")
             self.assertEqual(row[6], "legacy-upgrade")
             self.assertEqual(row[7], 0)
-            self.assertEqual(version, 2)
+            self.assertEqual(version, 3)
             self.assertTrue(any((db_path.parent / "backups").glob("pondsec-ndr.db.schema0-to-2.*.bak")))
 
     def test_store_canonicalizes_structured_tls_fingerprints(self) -> None:
@@ -965,8 +965,67 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(store.insert_events([event]), 1)
             host = store.list_rows("hosts")[0]
             self.assertEqual(host["ip"], "192.168.10.20")
+            self.assertTrue(host["entity_id"])
             self.assertEqual(host["mac"], "aa:bb:cc:dd:ee:ff")
             self.assertEqual(host["hostname"], "laptop-20")
+            inventory = store.host_inventory()
+            self.assertEqual(inventory["summary"]["entities"], 1)
+            self.assertEqual(inventory["items"][0]["mac"], "aa:bb:cc:dd:ee:ff")
+            self.assertIn("dhcp_client", inventory["items"][0]["roles"])
+
+    def test_entity_resolution_keeps_dhcp_ip_change_on_same_entity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            first = normalize_dnsmasq_lease(
+                "1783261000 aa:bb:cc:dd:ee:ff 192.168.10.20 laptop-20 01:aa:bb:cc:dd:ee:ff",
+                "2026-07-05T10:00:00+00:00",
+            )
+            second = normalize_dnsmasq_lease(
+                "1783347400 aa:bb:cc:dd:ee:ff 192.168.10.45 laptop-20 01:aa:bb:cc:dd:ee:ff",
+                "2026-07-06T10:00:00+00:00",
+            )
+            assert first is not None
+            assert second is not None
+            self.assertEqual(store.insert_events([first]), 1)
+            self.assertEqual(store.insert_events([second]), 1)
+            hosts = store.list_rows("hosts")
+            self.assertEqual(len(hosts), 2)
+            self.assertEqual(len({host["entity_id"] for host in hosts}), 1)
+            inventory = store.host_inventory()
+            self.assertEqual(inventory["summary"]["entities"], 1)
+            entity = inventory["items"][0]
+            self.assertEqual(entity["primary_ip"], "192.168.10.45")
+            self.assertEqual(entity["current_ips"], ["192.168.10.20", "192.168.10.45"])
+            self.assertEqual(entity["previous_ips"], ["192.168.10.20", "192.168.10.45"])
+            self.assertEqual(entity["confidence"], 0.98)
+
+    def test_entity_resolution_uses_zenarmor_device_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            raw = parse_zenarmor_line(
+                '<6>2026-07-11T15:19:47+02:00 HWFirewall01.internal zenarmor[79555]: '
+                'daemon=zenarmor, index=conn, data={"start_time":1783775983000,'
+                '"transport_proto":"TCP","interface":"igb0_vlan10","vlanid":"10",'
+                '"ip_src_saddr":"192.168.10.146","ip_src_port":38736,'
+                '"ip_dst_saddr":"13.217.9.161","ip_dst_port":443,'
+                '"is_blocked":0,"app_name":"Dynamic Classifier",'
+                '"device":{"id":"b4107a5a9bc9","name":"Kitchen Display",'
+                '"vendor":"Amazon Technologies Inc.","os":"Android OS"}}'
+            )
+            event = normalize_zenarmor_event(raw, sensor_name="zenarmor-local")
+            assert event is not None
+            self.assertEqual(store.insert_events([event]), 1)
+            inventory = store.host_inventory()
+            self.assertEqual(inventory["summary"]["entities"], 1)
+            entity = inventory["items"][0]
+            self.assertEqual(entity["mac"], "b4:10:7a:5a:9b:c9")
+            self.assertEqual(entity["hostname"], "Kitchen Display")
+            self.assertEqual(entity["interface"], "igb0_vlan10")
+            self.assertEqual(entity["vlan"], "10")
+            self.assertEqual(entity["os_name"], "Android OS")
+            self.assertIn("source:zenarmor", entity["tags"])
 
     def test_privacy_export_anonymizes_addresses(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

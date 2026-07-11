@@ -12,10 +12,10 @@ import pwd
 import grp
 import sqlite3
 from typing import Any, Iterator
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 INCIDENT_DEDUPE_WINDOW_SECONDS = 1800
 OPEN_INCIDENT_STATUSES = ("open",)
 ARCHIVED_INCIDENT_STATUSES = ("closed", "false_positive", "archived")
@@ -90,6 +90,32 @@ def _is_private_address(value: str | None) -> bool:
         return False
 
 
+def _normalize_mac(value: Any) -> str | None:
+    if not value:
+        return None
+    text = str(value).strip().lower().replace("-", ":")
+    if "." in text and ":" not in text:
+        text = text.replace(".", "")
+    if ":" not in text and len(text) == 12:
+        text = ":".join(text[index:index + 2] for index in range(0, 12, 2))
+    parts = [part.zfill(2) for part in text.split(":") if part]
+    if len(parts) != 6:
+        return None
+    if any(len(part) != 2 or not all(char in "0123456789abcdef" for char in part) for part in parts):
+        return None
+    return ":".join(parts)
+
+
+def _stable_entity_id(ip: str | None, mac: str | None, hostname: str | None = None) -> str:
+    if mac:
+        basis = f"pondsec-entity:mac:{mac}"
+    elif hostname:
+        basis = f"pondsec-entity:hostname:{str(hostname).strip().lower()}"
+    else:
+        basis = f"pondsec-entity:ip:{ip or 'unknown'}"
+    return str(uuid5(NAMESPACE_URL, basis))
+
+
 SCHEMA = [
     """
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -130,6 +156,7 @@ SCHEMA = [
     """
     CREATE TABLE IF NOT EXISTS hosts (
         ip TEXT PRIMARY KEY,
+        entity_id TEXT,
         hostname TEXT,
         mac TEXT,
         interface TEXT,
@@ -145,6 +172,43 @@ SCHEMA = [
         baseline_deviation REAL DEFAULT 0,
         block_status TEXT NOT NULL DEFAULT 'none',
         allowlist_status TEXT NOT NULL DEFAULT 'none'
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS entities (
+        entity_id TEXT PRIMARY KEY,
+        primary_ip TEXT,
+        mac TEXT,
+        hostname TEXT,
+        interface TEXT,
+        vlan TEXT,
+        zone TEXT,
+        os_name TEXT,
+        confidence REAL NOT NULL DEFAULT 0.2,
+        roles_json TEXT NOT NULL DEFAULT '[]',
+        criticality TEXT NOT NULL DEFAULT 'normal',
+        tags_json TEXT NOT NULL DEFAULT '[]',
+        known_services_json TEXT NOT NULL DEFAULT '[]',
+        previous_ips_json TEXT NOT NULL DEFAULT '[]',
+        first_seen TEXT NOT NULL,
+        last_seen TEXT NOT NULL,
+        history_json TEXT NOT NULL DEFAULT '[]'
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS entity_observations (
+        observation_id TEXT PRIMARY KEY,
+        entity_id TEXT NOT NULL,
+        timestamp TEXT NOT NULL,
+        source TEXT NOT NULL,
+        ip TEXT,
+        mac TEXT,
+        hostname TEXT,
+        interface TEXT,
+        vlan TEXT,
+        zone TEXT,
+        confidence REAL NOT NULL,
+        evidence_json TEXT NOT NULL
     )
     """,
     """
@@ -328,6 +392,11 @@ SCHEMA = [
     "CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp)",
     "CREATE INDEX IF NOT EXISTS idx_events_source ON events(source_ip)",
     "CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type)",
+    "CREATE INDEX IF NOT EXISTS idx_hosts_entity ON hosts(entity_id)",
+    "CREATE INDEX IF NOT EXISTS idx_entities_mac ON entities(mac)",
+    "CREATE INDEX IF NOT EXISTS idx_entities_primary_ip ON entities(primary_ip)",
+    "CREATE INDEX IF NOT EXISTS idx_entity_observations_entity ON entity_observations(entity_id, timestamp)",
+    "CREATE INDEX IF NOT EXISTS idx_entity_observations_ip ON entity_observations(ip, timestamp)",
     "CREATE INDEX IF NOT EXISTS idx_detections_timestamp ON detections(timestamp)",
     "CREATE INDEX IF NOT EXISTS idx_detections_source ON detections(source_ip)",
     "CREATE INDEX IF NOT EXISTS idx_incidents_status ON incidents(status)",
@@ -346,6 +415,7 @@ INCIDENT_V2_COLUMNS = {
     "validation_tag",
     "suppressed_count",
 }
+HOST_V3_COLUMNS = {"entity_id"}
 
 
 def now_iso() -> str:
@@ -402,6 +472,10 @@ class EventStore:
                 if current_version > 0 or self._schema_needs_v2(conn):
                     self._backup_database(conn, current_version, 2)
                 self._migrate_to_v2(conn)
+            if current_version < 3:
+                if current_version > 0 or self._schema_needs_v3(conn):
+                    self._backup_database(conn, max(current_version, 2), 3)
+                self._migrate_to_v3(conn)
             for statement in deferred_indexes:
                 conn.execute(statement)
             conn.execute(
@@ -416,6 +490,12 @@ class EventStore:
     def _schema_needs_v2(self, conn: sqlite3.Connection) -> bool:
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(incidents)").fetchall()}
         return bool(columns) and not INCIDENT_V2_COLUMNS.issubset(columns)
+
+    def _schema_needs_v3(self, conn: sqlite3.Connection) -> bool:
+        host_columns = {row["name"] for row in conn.execute("PRAGMA table_info(hosts)").fetchall()}
+        entity_columns = {row["name"] for row in conn.execute("PRAGMA table_info(entities)").fetchall()}
+        observation_columns = {row["name"] for row in conn.execute("PRAGMA table_info(entity_observations)").fetchall()}
+        return (bool(host_columns) and not HOST_V3_COLUMNS.issubset(host_columns)) or not entity_columns or not observation_columns
 
     def _backup_database(self, conn: sqlite3.Connection, from_version: int, to_version: int) -> Path:
         backup_dir = self.db_path.parent / "backups"
@@ -493,6 +573,33 @@ class EventStore:
             (2, now_iso()),
         )
 
+    def _migrate_to_v3(self, conn: sqlite3.Connection) -> None:
+        host_columns = {row["name"] for row in conn.execute("PRAGMA table_info(hosts)").fetchall()}
+        if "entity_id" not in host_columns:
+            conn.execute("ALTER TABLE hosts ADD COLUMN entity_id TEXT")
+        rows = conn.execute(
+            """
+            SELECT ip, hostname, mac, interface, vlan, first_seen, last_seen,
+                   known_ports_json
+            FROM hosts
+            """
+        ).fetchall()
+        for row in rows:
+            entity_id = self._resolve_entity(conn, {
+                "ip": row["ip"],
+                "hostname": row["hostname"],
+                "mac": row["mac"],
+                "interface": row["interface"],
+                "vlan": row["vlan"],
+                "known_services": self._safe_json_list(row["known_ports_json"]),
+                "raw_sources": ["migration"],
+            }, row["last_seen"] or row["first_seen"] or now_iso())
+            conn.execute("UPDATE hosts SET entity_id = ? WHERE ip = ?", (entity_id, row["ip"]))
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+            (3, now_iso()),
+        )
+
     def check(self) -> dict[str, Any]:
         with self.connect() as conn:
             result = conn.execute("PRAGMA integrity_check").fetchone()[0]
@@ -550,28 +657,52 @@ class EventStore:
                 "ports": set(),
                 "fingerprints": set(),
                 "interface": event.get("source", {}).get("interface"),
-                "hostname": metadata.get("hostname"),
-                "mac": metadata.get("mac"),
-                "vlan": metadata.get("vlan"),
+                "hostname": metadata.get("hostname") or metadata.get("device_name"),
+                "mac": metadata.get("mac") or metadata.get("device_id"),
+                "vlan": metadata.get("vlan") or metadata.get("vlan_id"),
+                "zone": metadata.get("zone") or event.get("direction"),
+                "os_name": metadata.get("os") or metadata.get("os_name") or metadata.get("device_os"),
+                "services": set(),
+                "sources": set(),
             })
             item["first"] = min(item["first"], event["timestamp"])
             item["last"] = max(item["last"], event["timestamp"])
             dst = event.get("destination", {}).get("ip")
             port = event.get("destination", {}).get("port")
             fingerprint = metadata.get("fingerprint")
-            if metadata.get("hostname"):
-                item["hostname"] = metadata.get("hostname")
-            if metadata.get("mac"):
-                item["mac"] = metadata.get("mac")
-            if metadata.get("vlan"):
-                item["vlan"] = metadata.get("vlan")
+            raw_source = event.get("raw_source") or metadata.get("event_source") or "unknown"
+            item["sources"].add(str(raw_source))
+            if metadata.get("hostname") or metadata.get("device_name"):
+                item["hostname"] = metadata.get("hostname") or metadata.get("device_name")
+            if metadata.get("mac") or metadata.get("device_id"):
+                item["mac"] = metadata.get("mac") or metadata.get("device_id")
+            if metadata.get("vlan") or metadata.get("vlan_id"):
+                item["vlan"] = metadata.get("vlan") or metadata.get("vlan_id")
+            if metadata.get("zone"):
+                item["zone"] = metadata.get("zone")
+            if metadata.get("os") or metadata.get("os_name") or metadata.get("device_os"):
+                item["os_name"] = metadata.get("os") or metadata.get("os_name") or metadata.get("device_os")
+            if metadata.get("interface") and not item.get("interface"):
+                item["interface"] = metadata.get("interface")
             if dst:
                 item["destinations"].add(dst)
             if port is not None:
                 item["ports"].add(port)
+                item["services"].add(str(port))
             if fingerprint:
                 item["fingerprints"].add(_stable_set_value(fingerprint))
         for ip, item in by_host.items():
+            entity_id = self._resolve_entity(conn, {
+                "ip": ip,
+                "mac": item.get("mac"),
+                "hostname": item.get("hostname"),
+                "interface": item.get("interface"),
+                "vlan": item.get("vlan"),
+                "zone": item.get("zone"),
+                "os_name": item.get("os_name"),
+                "known_services": sorted(item["services"]),
+                "raw_sources": sorted(item["sources"]),
+            }, item["last"])
             row = conn.execute("SELECT known_destinations_json, known_ports_json, known_tls_fingerprints_json, first_seen FROM hosts WHERE ip = ?", (ip,)).fetchone()
             if row:
                 destinations = set(json.loads(row["known_destinations_json"])) | item["destinations"]
@@ -581,18 +712,19 @@ class EventStore:
                 conn.execute(
                     """
                     UPDATE hosts
-                    SET first_seen = ?, last_seen = ?, interface = COALESCE(?, interface),
+                    SET entity_id = ?, first_seen = ?, last_seen = ?, interface = COALESCE(?, interface),
                         hostname = COALESCE(?, hostname), mac = COALESCE(?, mac), vlan = COALESCE(?, vlan),
                         known_destinations_json = ?, known_ports_json = ?,
                         known_tls_fingerprints_json = ?
                     WHERE ip = ?
                     """,
                     (
+                        entity_id,
                         first_seen,
                         item["last"],
                         item["interface"],
                         item.get("hostname"),
-                        item.get("mac"),
+                        _normalize_mac(item.get("mac")) or item.get("mac"),
                         item.get("vlan"),
                         json.dumps(sorted(destinations)),
                         json.dumps(sorted(ports)),
@@ -603,13 +735,14 @@ class EventStore:
             else:
                 conn.execute(
                     """
-                    INSERT INTO hosts(ip, hostname, mac, vlan, interface, first_seen, last_seen, known_destinations_json, known_ports_json, known_tls_fingerprints_json)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO hosts(ip, entity_id, hostname, mac, vlan, interface, first_seen, last_seen, known_destinations_json, known_ports_json, known_tls_fingerprints_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         ip,
+                        entity_id,
                         item.get("hostname"),
-                        item.get("mac"),
+                        _normalize_mac(item.get("mac")) or item.get("mac"),
                         item.get("vlan"),
                         item["interface"],
                         item["first"],
@@ -619,6 +752,211 @@ class EventStore:
                         json.dumps(sorted(item["fingerprints"])),
                     ),
                 )
+
+    def _resolve_entity(self, conn: sqlite3.Connection, evidence: dict[str, Any], observed_at: str) -> str:
+        ip = str(evidence.get("ip") or "") or None
+        mac = _normalize_mac(evidence.get("mac") or evidence.get("device_id"))
+        hostname = str(evidence.get("hostname") or "").strip() or None
+        interface = str(evidence.get("interface") or "").strip() or None
+        vlan = str(evidence.get("vlan") or "").strip() or None
+        zone = str(evidence.get("zone") or "").strip() or None
+        os_name = str(evidence.get("os_name") or evidence.get("os") or "").strip() or None
+        raw_sources = self._safe_json_list(evidence.get("raw_sources"))
+        known_services = [str(item) for item in self._safe_json_list(evidence.get("known_services")) if str(item)]
+        confidence = self._entity_confidence(evidence, mac, hostname)
+        row = self._find_entity(conn, ip, mac, hostname)
+        entity_id = row["entity_id"] if row else _stable_entity_id(ip, mac, hostname)
+        roles = set(self._safe_json_list(row["roles_json"] if row else []))
+        roles.update(self._infer_entity_roles(evidence, ip, os_name))
+        tags = set(self._safe_json_list(row["tags_json"] if row else []))
+        tags.update(f"source:{source}" for source in raw_sources if source)
+        previous_ips = set(self._safe_json_list(row["previous_ips_json"] if row else []))
+        if row and row["primary_ip"] and ip and row["primary_ip"] != ip:
+            previous_ips.add(str(row["primary_ip"]))
+        if ip:
+            previous_ips.add(ip)
+        services = set(self._safe_json_list(row["known_services_json"] if row else []))
+        services.update(known_services)
+        history = self._safe_json_list(row["history_json"] if row else [])
+        history.append({
+            "observed_at": observed_at,
+            "source": raw_sources or [str(evidence.get("source") or "unknown")],
+            "ip": ip,
+            "mac": mac,
+            "hostname": hostname,
+            "interface": interface,
+            "vlan": vlan,
+            "zone": zone,
+            "confidence": confidence,
+        })
+        history = history[-50:]
+        if row:
+            first_seen = min(str(row["first_seen"]), observed_at)
+            last_seen = max(str(row["last_seen"]), observed_at)
+            conn.execute(
+                """
+                UPDATE entities
+                SET primary_ip = COALESCE(?, primary_ip),
+                    mac = COALESCE(?, mac),
+                    hostname = COALESCE(?, hostname),
+                    interface = COALESCE(?, interface),
+                    vlan = COALESCE(?, vlan),
+                    zone = COALESCE(?, zone),
+                    os_name = COALESCE(?, os_name),
+                    confidence = max(confidence, ?),
+                    roles_json = ?,
+                    tags_json = ?,
+                    known_services_json = ?,
+                    previous_ips_json = ?,
+                    first_seen = ?,
+                    last_seen = ?,
+                    history_json = ?
+                WHERE entity_id = ?
+                """,
+                (
+                    ip,
+                    mac,
+                    hostname,
+                    interface,
+                    vlan,
+                    zone,
+                    os_name,
+                    confidence,
+                    json.dumps(sorted(roles)),
+                    json.dumps(sorted(tags)),
+                    json.dumps(sorted(services)),
+                    json.dumps(sorted(previous_ips)),
+                    first_seen,
+                    last_seen,
+                    json.dumps(history, sort_keys=True),
+                    entity_id,
+                ),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO entities(
+                    entity_id, primary_ip, mac, hostname, interface, vlan, zone,
+                    os_name, confidence, roles_json, criticality, tags_json,
+                    known_services_json, previous_ips_json, first_seen, last_seen,
+                    history_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    entity_id,
+                    ip,
+                    mac,
+                    hostname,
+                    interface,
+                    vlan,
+                    zone,
+                    os_name,
+                    confidence,
+                    json.dumps(sorted(roles)),
+                    "normal",
+                    json.dumps(sorted(tags)),
+                    json.dumps(sorted(services)),
+                    json.dumps(sorted(previous_ips)),
+                    observed_at,
+                    observed_at,
+                    json.dumps(history, sort_keys=True),
+                ),
+            )
+        conn.execute(
+            """
+            INSERT INTO entity_observations(
+                observation_id, entity_id, timestamp, source, ip, mac, hostname,
+                interface, vlan, zone, confidence, evidence_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(uuid4()),
+                entity_id,
+                observed_at,
+                ",".join(raw_sources) if raw_sources else str(evidence.get("source") or "unknown"),
+                ip,
+                mac,
+                hostname,
+                interface,
+                vlan,
+                zone,
+                confidence,
+                json.dumps(evidence, sort_keys=True, default=str),
+            ),
+        )
+        return entity_id
+
+    def _find_entity(self, conn: sqlite3.Connection, ip: str | None, mac: str | None, hostname: str | None) -> sqlite3.Row | None:
+        if mac:
+            row = conn.execute("SELECT * FROM entities WHERE mac = ? ORDER BY last_seen DESC LIMIT 1", (mac,)).fetchone()
+            if row:
+                return row
+        if hostname:
+            row = conn.execute("SELECT * FROM entities WHERE lower(hostname) = lower(?) ORDER BY last_seen DESC LIMIT 1", (hostname,)).fetchone()
+            if row:
+                return row
+        if ip:
+            row = conn.execute("SELECT * FROM entities WHERE primary_ip = ? ORDER BY last_seen DESC LIMIT 1", (ip,)).fetchone()
+            if row:
+                return row
+            rows = conn.execute("SELECT * FROM entities ORDER BY last_seen DESC LIMIT 1000").fetchall()
+            for candidate in rows:
+                if ip in self._safe_json_list(candidate["previous_ips_json"]):
+                    return candidate
+        return None
+
+    @staticmethod
+    def _entity_confidence(evidence: dict[str, Any], mac: str | None, hostname: str | None) -> float:
+        explicit = evidence.get("entity_confidence")
+        try:
+            if explicit is not None:
+                return max(0.0, min(1.0, float(explicit)))
+        except (TypeError, ValueError):
+            pass
+        if mac and hostname:
+            return 0.98
+        if mac:
+            return 0.95
+        if hostname:
+            return 0.72
+        return 0.45
+
+    @staticmethod
+    def _infer_entity_roles(evidence: dict[str, Any], ip: str | None, os_name: str | None) -> set[str]:
+        roles: set[str] = set()
+        sources = {str(item).lower() for item in EventStore._safe_json_list(evidence.get("raw_sources"))}
+        if "dnsmasq" in sources or evidence.get("dhcp_action"):
+            roles.add("dhcp_client")
+        if "zenarmor" in sources:
+            roles.add("network_client")
+        os_text = str(os_name or "").lower()
+        if "windows" in os_text:
+            roles.add("windows_client")
+        elif "linux" in os_text:
+            roles.add("linux_host")
+        elif "android" in os_text or "apple" in os_text or "ios" in os_text:
+            roles.add("client")
+        if ip and _is_private_address(ip):
+            roles.add("internal")
+        return roles
+
+    @staticmethod
+    def _safe_json_list(value: Any) -> list[Any]:
+        if value in (None, ""):
+            return []
+        if isinstance(value, list):
+            return value
+        if isinstance(value, set):
+            return sorted(value)
+        if isinstance(value, tuple):
+            return list(value)
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                return [value]
+            return parsed if isinstance(parsed, list) else [parsed]
+        return [value]
 
     def insert_features(self, features: list[dict[str, Any]]) -> int:
         if not features:
@@ -1589,7 +1927,7 @@ class EventStore:
         return parsed[0] if parsed else None
 
     def list_rows(self, table: str, limit: int = 100) -> list[dict[str, Any]]:
-        allowed = {"events", "detections", "incidents", "hosts", "block_entries", "allowlist_entries", "policies", "models", "audit_log", "incident_feedback"}
+        allowed = {"events", "detections", "incidents", "hosts", "entities", "entity_observations", "block_entries", "allowlist_entries", "policies", "models", "audit_log", "incident_feedback"}
         if table not in allowed:
             raise ValueError(f"unsupported table: {table}")
         order = "timestamp" if table in {"events", "detections", "audit_log"} else "rowid"
@@ -1597,9 +1935,88 @@ class EventStore:
             order = "updated_at"
         if table == "hosts":
             order = "last_seen"
+        if table == "entities":
+            order = "last_seen"
+        if table == "entity_observations":
+            order = "timestamp"
         with self.connect() as conn:
             rows = conn.execute(f"SELECT * FROM {table} ORDER BY {order} DESC LIMIT ?", (limit,)).fetchall()
         return [dict(row) for row in rows]
+
+    def host_inventory(self, limit: int = 100) -> dict[str, Any]:
+        with self.connect() as conn:
+            entities = conn.execute(
+                """
+                SELECT *
+                FROM entities
+                ORDER BY last_seen DESC
+                LIMIT ?
+                """,
+                (max(1, int(limit)),),
+            ).fetchall()
+            host_rows = conn.execute("SELECT * FROM hosts ORDER BY last_seen DESC").fetchall()
+        hosts_by_entity: dict[str, list[dict[str, Any]]] = {}
+        unassigned: list[dict[str, Any]] = []
+        for row in host_rows:
+            item = dict(row)
+            entity_id = item.get("entity_id")
+            if entity_id:
+                hosts_by_entity.setdefault(str(entity_id), []).append(item)
+            else:
+                unassigned.append(item)
+        items: list[dict[str, Any]] = []
+        for row in entities:
+            entity = dict(row)
+            entity_hosts = hosts_by_entity.get(entity["entity_id"], [])
+            current_ips = sorted({host["ip"] for host in entity_hosts if host.get("ip")})
+            roles = self._safe_json_list(entity.pop("roles_json", "[]"))
+            tags = self._safe_json_list(entity.pop("tags_json", "[]"))
+            known_services = self._safe_json_list(entity.pop("known_services_json", "[]"))
+            previous_ips = set(self._safe_json_list(entity.pop("previous_ips_json", "[]")))
+            history = self._safe_json_list(entity.pop("history_json", "[]"))
+            previous_ips.update(ip for ip in current_ips if ip != entity.get("primary_ip"))
+            item = {
+                **entity,
+                "ip": entity.get("primary_ip"),
+                "current_ips": current_ips,
+                "previous_ips": sorted(previous_ips),
+                "roles": roles,
+                "tags": tags,
+                "known_services": known_services,
+                "history": history,
+                "host_records": entity_hosts,
+            }
+            items.append(item)
+        for host in unassigned[:max(0, int(limit) - len(items))]:
+            items.append({
+                "entity_id": host.get("entity_id"),
+                "ip": host.get("ip"),
+                "primary_ip": host.get("ip"),
+                "current_ips": [host.get("ip")] if host.get("ip") else [],
+                "previous_ips": [],
+                "hostname": host.get("hostname"),
+                "mac": host.get("mac"),
+                "interface": host.get("interface"),
+                "vlan": host.get("vlan"),
+                "confidence": 0.2,
+                "roles": [],
+                "criticality": "normal",
+                "tags": [],
+                "known_services": json.loads(host.get("known_ports_json") or "[]"),
+                "first_seen": host.get("first_seen"),
+                "last_seen": host.get("last_seen"),
+                "history": [],
+                "host_records": [host],
+            })
+        return {
+            "items": items,
+            "summary": {
+                "entities": len(items),
+                "host_records": len(host_rows),
+                "resolved_host_records": sum(len(value) for value in hosts_by_entity.values()),
+                "unassigned_host_records": len(unassigned),
+            },
+        }
 
     def incident_status_summary(self) -> dict[str, Any]:
         with self.connect() as conn:

@@ -137,6 +137,15 @@ Logs are structured JSON under `/var/log/pondsec-ndr/`. Log entries include time
 
 SQLite uses WAL mode. Operators should monitor database size, retention, and cleanup activity.
 
+Schema version `3` adds entity resolution next to the legacy `hosts` table.
+`hosts` remains IP-oriented for compatibility, but each row can reference a
+stable `entity_id`. The `entities` view is the device-oriented inventory:
+MAC-first identity, current IPs, previous IPs, hostname, interface, VLAN, zone,
+OS, roles, criticality, tags, known services, confidence and bounded history.
+DHCP changes for the same MAC update the same entity instead of creating a new
+device identity. `entity_observations` stores the source evidence used for each
+match.
+
 ## Backup
 
 Back up:

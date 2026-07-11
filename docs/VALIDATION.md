@@ -79,6 +79,20 @@ Local validation:
   pre-learning suppression, diagnostics readiness output, and JSON config
   loading.
 
+## 2026-07-11: Entity Resolution Storage Foundation
+
+Implementation validation:
+
+- Added schema version `3` with `entities`, `entity_observations`, and
+  `hosts.entity_id`.
+- Host inventory now returns the entity-oriented device view while retaining
+  underlying host records for compatibility.
+- DHCP lease changes with the same MAC resolve to one stable entity and retain
+  both current/previous IP history.
+- Zenarmor device context contributes MAC, device name, OS, interface, VLAN,
+  source tag, role and service evidence to the entity inventory.
+- Local regression suite: `91` tests passed.
+
 ## 2026-07-05: OPNsense Firewall Development Install
 
 Target:

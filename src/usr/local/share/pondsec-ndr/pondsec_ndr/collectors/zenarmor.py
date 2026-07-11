@@ -345,7 +345,7 @@ def normalize_zenarmor_event(
         "event_id": "",
         "event_type": event_type,
         "timestamp": timestamp,
-        "source": {"ip": source_ip, "port": source_port, "interface": None},
+        "source": {"ip": source_ip, "port": source_port, "interface": _first(raw, "interface", "source.interface")},
         "destination": {"ip": destination_ip, "port": destination_port},
         "protocol": protocol,
         "direction": _traffic_direction(source_ip, destination_ip),
