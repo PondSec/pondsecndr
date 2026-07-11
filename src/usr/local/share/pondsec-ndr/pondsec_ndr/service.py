@@ -331,7 +331,7 @@ class PondSecService:
         detections: list[dict[str, Any]] = []
         enabled_detectors, learning_suppressed_detectors = self._enabled_detectors(learning_status)
         for detector in enabled_detectors:
-            detections.extend(detector.detect(events, features))
+            detections.extend(detector.detect(analysis_events, features))
         inserted_detections = self.store.insert_detections(detections)
 
         incidents = correlate_detections(detections, window_seconds=self.config.detection.correlation_window_minutes * 60)
@@ -377,6 +377,7 @@ class PondSecService:
                 + (netflow_stats.accepted_events if netflow_stats else 0)
             ),
             "inserted_events": inserted_events,
+            "generated_detections": len(detections),
             "inserted_detections": inserted_detections,
             "inserted_incidents": inserted_incidents,
             "suppressed_incidents": suppressed_incidents,
@@ -444,6 +445,7 @@ class PondSecService:
             "inserted_events": inserted_events,
             "analysis_window_seconds": analysis_window_seconds,
             "analysis_events": len(analysis_events),
+            "generated_detections": len(detections),
             "detections": inserted_detections,
             "incidents": inserted_incidents,
             "suppressed_incidents": suppressed_incidents,

@@ -2005,6 +2005,46 @@ class BackendTests(unittest.TestCase):
             self.assertGreaterEqual(second["analysis_events"], 12)
             self.assertGreaterEqual(second["detections"], 1)
 
+    def test_service_run_once_detects_split_beacon_with_recent_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            eve = root / "eve.json"
+            first_batch = [
+                json.dumps(flow_event(f"2026-07-05T10:00:{i * 20:02d}+00:00", "192.168.10.94", "1.1.1.1", 443, reason="timeout"))
+                for i in range(3)
+            ]
+            eve.write_text("\n".join(first_batch) + "\n", encoding="utf-8")
+            config = PondSecConfig(
+                enabled=True,
+                suricata_eve_path=str(eve),
+                data_dir=root / "db",
+                log_dir=root / "log",
+                run_dir=root / "run",
+                detection=DetectionConfig(machine_learning=False, learning_mode=False),
+            )
+            service = PondSecService(config)
+            first = service.run_once(max_lines=100)
+            self.assertEqual(first["status"], "healthy")
+            self.assertEqual(first["detections"], 0)
+
+            second_batch = [
+                json.dumps(flow_event(f"2026-07-05T10:01:{i * 20:02d}+00:00", "192.168.10.94", "1.1.1.1", 443, reason="timeout"))
+                for i in range(3)
+            ]
+            with eve.open("a", encoding="utf-8") as handle:
+                handle.write("\n".join(second_batch) + "\n")
+            second = service.run_once(max_lines=100)
+            self.assertEqual(second["status"], "healthy")
+            self.assertGreaterEqual(second["analysis_events"], 6)
+            self.assertGreaterEqual(second["generated_detections"], 1)
+            self.assertGreaterEqual(second["detections"], 1)
+            with EventStore(root / "db" / "pondsec-ndr.db").connect() as conn:
+                detector_ids = {
+                    row["detector_id"]
+                    for row in conn.execute("SELECT detector_id FROM detections WHERE source_ip = ?", ("192.168.10.94",))
+                }
+            self.assertIn("pondsec.beaconing", detector_ids)
+
     def test_service_run_once_applies_queue_backpressure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
