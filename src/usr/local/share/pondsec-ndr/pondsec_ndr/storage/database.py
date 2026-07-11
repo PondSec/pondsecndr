@@ -15,7 +15,7 @@ from typing import Any, Iterator
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 INCIDENT_DEDUPE_WINDOW_SECONDS = 1800
 OPEN_INCIDENT_STATUSES = ("open",)
 ARCHIVED_INCIDENT_STATUSES = ("closed", "false_positive", "archived")
@@ -39,6 +39,20 @@ BASELINE_STATUS_LABELS = {
     "uncertain": "unsicher",
     "learning": "im_aufbau",
     "established": "vollstaendig",
+}
+PEER_GROUPS = {
+    "windows_clients",
+    "linux_servers",
+    "iot",
+    "printers",
+    "firewalls",
+    "network_devices",
+    "hypervisors",
+    "dmz",
+    "management",
+    "servers",
+    "clients",
+    "unknown",
 }
 
 
@@ -258,6 +272,9 @@ SCHEMA = [
         os_name TEXT,
         confidence REAL NOT NULL DEFAULT 0.2,
         roles_json TEXT NOT NULL DEFAULT '[]',
+        peer_group TEXT NOT NULL DEFAULT 'unknown',
+        peer_group_source TEXT NOT NULL DEFAULT 'auto',
+        peer_group_confidence REAL NOT NULL DEFAULT 0.2,
         criticality TEXT NOT NULL DEFAULT 'normal',
         tags_json TEXT NOT NULL DEFAULT '[]',
         known_services_json TEXT NOT NULL DEFAULT '[]',
@@ -487,6 +504,7 @@ SCHEMA = [
     "CREATE INDEX IF NOT EXISTS idx_hosts_entity ON hosts(entity_id)",
     "CREATE INDEX IF NOT EXISTS idx_entities_mac ON entities(mac)",
     "CREATE INDEX IF NOT EXISTS idx_entities_primary_ip ON entities(primary_ip)",
+    "CREATE INDEX IF NOT EXISTS idx_entities_peer_group ON entities(peer_group)",
     "CREATE INDEX IF NOT EXISTS idx_entity_observations_entity ON entity_observations(entity_id, timestamp)",
     "CREATE INDEX IF NOT EXISTS idx_entity_observations_ip ON entity_observations(ip, timestamp)",
     "CREATE INDEX IF NOT EXISTS idx_host_baselines_status ON host_baselines(status, observation_count)",
@@ -512,6 +530,7 @@ INCIDENT_V2_COLUMNS = {
 }
 HOST_V3_COLUMNS = {"entity_id"}
 HOST_BASELINE_V4_COLUMNS = {"entity_id", "baseline_version", "status", "drift_score", "updated_at"}
+ENTITY_V5_COLUMNS = {"peer_group", "peer_group_source", "peer_group_confidence"}
 
 
 def now_iso() -> str:
@@ -576,6 +595,10 @@ class EventStore:
                 if current_version > 0 or self._schema_needs_v4(conn):
                     self._backup_database(conn, max(current_version, 3), 4)
                 self._migrate_to_v4(conn)
+            if current_version < 5:
+                if current_version > 0 or self._schema_needs_v5(conn):
+                    self._backup_database(conn, max(current_version, 4), 5)
+                self._migrate_to_v5(conn)
             for statement in deferred_indexes:
                 conn.execute(statement)
             conn.execute(
@@ -601,6 +624,10 @@ class EventStore:
         baseline_columns = {row["name"] for row in conn.execute("PRAGMA table_info(host_baselines)").fetchall()}
         version_columns = {row["name"] for row in conn.execute("PRAGMA table_info(baseline_versions)").fetchall()}
         return (bool(baseline_columns) and not HOST_BASELINE_V4_COLUMNS.issubset(baseline_columns)) or not version_columns
+
+    def _schema_needs_v5(self, conn: sqlite3.Connection) -> bool:
+        entity_columns = {row["name"] for row in conn.execute("PRAGMA table_info(entities)").fetchall()}
+        return bool(entity_columns) and not ENTITY_V5_COLUMNS.issubset(entity_columns)
 
     def _backup_database(self, conn: sqlite3.Connection, from_version: int, to_version: int) -> Path:
         backup_dir = self.db_path.parent / "backups"
@@ -803,6 +830,52 @@ class EventStore:
             ),
         )
 
+    def _migrate_to_v5(self, conn: sqlite3.Connection) -> None:
+        entity_columns = {row["name"] for row in conn.execute("PRAGMA table_info(entities)").fetchall()}
+        additions = {
+            "peer_group": "ALTER TABLE entities ADD COLUMN peer_group TEXT NOT NULL DEFAULT 'unknown'",
+            "peer_group_source": "ALTER TABLE entities ADD COLUMN peer_group_source TEXT NOT NULL DEFAULT 'auto'",
+            "peer_group_confidence": "ALTER TABLE entities ADD COLUMN peer_group_confidence REAL NOT NULL DEFAULT 0.2",
+        }
+        for column, statement in additions.items():
+            if column not in entity_columns:
+                conn.execute(statement)
+        rows = conn.execute(
+            """
+            SELECT entity_id, hostname, interface, vlan, zone, os_name,
+                   roles_json, known_services_json, peer_group,
+                   peer_group_source, peer_group_confidence
+            FROM entities
+            """
+        ).fetchall()
+        for row in rows:
+            if row["peer_group_source"] == "manual" and row["peer_group"] in PEER_GROUPS:
+                continue
+            roles = set(self._safe_json_list(row["roles_json"]))
+            services = [str(item) for item in self._safe_json_list(row["known_services_json"])]
+            peer_group, source, confidence = self._infer_peer_group(
+                roles=roles,
+                os_name=row["os_name"],
+                hostname=row["hostname"],
+                services=services,
+                vlan=row["vlan"],
+                zone=row["zone"],
+                interface=row["interface"],
+                evidence={},
+            )
+            conn.execute(
+                """
+                UPDATE entities
+                SET peer_group = ?, peer_group_source = ?, peer_group_confidence = ?
+                WHERE entity_id = ?
+                """,
+                (peer_group, source, confidence, row["entity_id"]),
+            )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+            (5, now_iso()),
+        )
+
     def check(self) -> dict[str, Any]:
         with self.connect() as conn:
             result = conn.execute("PRAGMA integrity_check").fetchone()[0]
@@ -971,6 +1044,24 @@ class EventStore:
         entity_id = row["entity_id"] if row else _stable_entity_id(ip, mac, hostname)
         roles = set(self._safe_json_list(row["roles_json"] if row else []))
         roles.update(self._infer_entity_roles(evidence, ip, os_name))
+        services = set(self._safe_json_list(row["known_services_json"] if row else []))
+        services.update(known_services)
+        existing_peer_source = str(row["peer_group_source"]) if row and "peer_group_source" in row.keys() else "auto"
+        if existing_peer_source == "manual":
+            peer_group = str(row["peer_group"] or "unknown")
+            peer_group_source = "manual"
+            peer_group_confidence = float(row["peer_group_confidence"] or 0.95)
+        else:
+            peer_group, peer_group_source, peer_group_confidence = self._infer_peer_group(
+                roles=roles,
+                os_name=os_name or (row["os_name"] if row else None),
+                hostname=hostname or (row["hostname"] if row else None),
+                services=sorted(str(item) for item in services),
+                vlan=vlan or (row["vlan"] if row else None),
+                zone=zone or (row["zone"] if row else None),
+                interface=interface or (row["interface"] if row else None),
+                evidence=evidence,
+            )
         tags = set(self._safe_json_list(row["tags_json"] if row else []))
         tags.update(f"source:{source}" for source in raw_sources if source)
         previous_ips = set(self._safe_json_list(row["previous_ips_json"] if row else []))
@@ -978,8 +1069,6 @@ class EventStore:
             previous_ips.add(str(row["primary_ip"]))
         if ip:
             previous_ips.add(ip)
-        services = set(self._safe_json_list(row["known_services_json"] if row else []))
-        services.update(known_services)
         history = self._safe_json_list(row["history_json"] if row else [])
         history.append({
             "observed_at": observed_at,
@@ -990,6 +1079,7 @@ class EventStore:
             "interface": interface,
             "vlan": vlan,
             "zone": zone,
+            "peer_group": peer_group,
             "confidence": confidence,
         })
         history = history[-50:]
@@ -1008,6 +1098,9 @@ class EventStore:
                     os_name = COALESCE(?, os_name),
                     confidence = max(confidence, ?),
                     roles_json = ?,
+                    peer_group = ?,
+                    peer_group_source = ?,
+                    peer_group_confidence = max(peer_group_confidence, ?),
                     tags_json = ?,
                     known_services_json = ?,
                     previous_ips_json = ?,
@@ -1026,6 +1119,9 @@ class EventStore:
                     os_name,
                     confidence,
                     json.dumps(sorted(roles)),
+                    peer_group,
+                    peer_group_source,
+                    peer_group_confidence,
                     json.dumps(sorted(tags)),
                     json.dumps(sorted(services)),
                     json.dumps(sorted(previous_ips)),
@@ -1040,10 +1136,11 @@ class EventStore:
                 """
                 INSERT INTO entities(
                     entity_id, primary_ip, mac, hostname, interface, vlan, zone,
-                    os_name, confidence, roles_json, criticality, tags_json,
+                    os_name, confidence, roles_json, peer_group, peer_group_source,
+                    peer_group_confidence, criticality, tags_json,
                     known_services_json, previous_ips_json, first_seen, last_seen,
                     history_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     entity_id,
@@ -1056,6 +1153,9 @@ class EventStore:
                     os_name,
                     confidence,
                     json.dumps(sorted(roles)),
+                    peer_group,
+                    peer_group_source,
+                    peer_group_confidence,
                     "normal",
                     json.dumps(sorted(tags)),
                     json.dumps(sorted(services)),
@@ -1142,6 +1242,55 @@ class EventStore:
         if ip and _is_private_address(ip):
             roles.add("internal")
         return roles
+
+    @staticmethod
+    def _infer_peer_group(
+        *,
+        roles: set[str],
+        os_name: str | None,
+        hostname: str | None,
+        services: list[str],
+        vlan: str | None,
+        zone: str | None,
+        interface: str | None,
+        evidence: dict[str, Any],
+    ) -> tuple[str, str, float]:
+        explicit = str(evidence.get("peer_group") or "").strip().lower()
+        if explicit in PEER_GROUPS:
+            return explicit, "metadata", 0.95
+
+        os_text = str(os_name or "").lower()
+        host_text = str(hostname or "").lower()
+        zone_text = str(zone or "").lower()
+        interface_text = str(interface or "").lower()
+        vlan_text = str(vlan or "").lower()
+        service_set = {str(item).lower() for item in services}
+        joined = " ".join([os_text, host_text, zone_text, interface_text, vlan_text])
+
+        if "management" in joined or "mgmt" in joined:
+            return "management", "auto", 0.82
+        if "dmz" in joined:
+            return "dmz", "auto", 0.8
+        if "firewall" in roles or any(token in joined for token in ("opnsense", "pfsense", "fortigate", "firewall")):
+            return "firewalls", "auto", 0.9
+        if "hypervisor" in roles or any(token in joined for token in ("esxi", "vmware", "proxmox", "hyper-v", "xcp-ng", "hypervisor")):
+            return "hypervisors", "auto", 0.88
+        if "network_device" in roles or any(token in joined for token in ("switch", "router", "access-point", "access point", "unifi", "ubnt", "mikrotik", "routeros")):
+            return "network_devices", "auto", 0.84
+        if "printer" in roles or any(token in joined for token in ("printer", "airprint", "brother", "canon", "epson", "hewlett", "laserjet")):
+            return "printers", "auto", 0.86
+        if "iot" in roles or any(token in joined for token in ("iot", "camera", "thermostat", "display", "echo", "ring", "tv", "roku", "chromecast")):
+            return "iot", "auto", 0.78
+        if "windows" in os_text and "server" not in os_text:
+            return "windows_clients", "auto", 0.8
+        server_ports = {"22", "25", "53", "80", "443", "445", "3306", "5432", "6379", "8080", "8443", "9200", "9300"}
+        if ("linux" in os_text and service_set & server_ports) or any(token in host_text for token in ("server", "srv", "nas")):
+            return "linux_servers", "auto", 0.76
+        if service_set & server_ports:
+            return "servers", "auto", 0.62
+        if roles & {"client", "network_client", "dhcp_client", "windows_client"}:
+            return "clients", "auto", 0.62
+        return "unknown", "auto", 0.2
 
     @staticmethod
     def _safe_json_list(value: Any) -> list[Any]:
@@ -2242,6 +2391,9 @@ class EventStore:
     def host_inventory(self, limit: int = 100) -> dict[str, Any]:
         with self.connect() as conn:
             total_entities = int(conn.execute("SELECT count(*) FROM entities").fetchone()[0])
+            peer_group_rows = conn.execute(
+                "SELECT peer_group, count(*) AS count FROM entities GROUP BY peer_group"
+            ).fetchall()
             entities = conn.execute(
                 """
                 SELECT *
@@ -2254,6 +2406,7 @@ class EventStore:
             host_rows = conn.execute("SELECT * FROM hosts ORDER BY last_seen DESC").fetchall()
         hosts_by_entity: dict[str, list[dict[str, Any]]] = {}
         unassigned: list[dict[str, Any]] = []
+        peer_groups = {row["peer_group"] or "unknown": int(row["count"]) for row in peer_group_rows}
         for row in host_rows:
             item = dict(row)
             entity_id = item.get("entity_id")
@@ -2298,6 +2451,9 @@ class EventStore:
                 "vlan": host.get("vlan"),
                 "confidence": 0.2,
                 "roles": [],
+                "peer_group": "unknown",
+                "peer_group_source": "fallback",
+                "peer_group_confidence": 0.2,
                 "criticality": "normal",
                 "tags": [],
                 "known_services": json.loads(host.get("known_ports_json") or "[]"),
@@ -2314,6 +2470,7 @@ class EventStore:
                 "host_records": len(host_rows),
                 "resolved_host_records": sum(len(value) for value in hosts_by_entity.values()),
                 "unassigned_host_records": len(unassigned),
+                "peer_groups": peer_groups,
             },
         }
 

@@ -155,6 +155,12 @@ learning threshold, host baselines keep adapting with a small weighted update
 instead of replacing old behavior, so the system can keep learning without
 forgetting its original normal profile.
 
+Schema version `5` adds entity peer groups. Each entity stores a `peer_group`,
+classification source and confidence. The automatic classifier uses existing
+role, OS, hostname, service, VLAN, interface and zone evidence to group devices
+as Windows clients, Linux servers, IoT, printers, firewalls, network devices,
+hypervisors, DMZ, management, generic servers, generic clients or unknown.
+
 ## Backup
 
 Back up:

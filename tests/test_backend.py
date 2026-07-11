@@ -928,7 +928,7 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(row[5], "reconnaissance")
             self.assertEqual(row[6], "legacy-upgrade")
             self.assertEqual(row[7], 0)
-            self.assertEqual(version, 4)
+            self.assertEqual(version, 5)
             self.assertTrue(any((db_path.parent / "backups").glob("pondsec-ndr.db.schema0-to-2.*.bak")))
 
     def test_host_baseline_versions_status_and_drift(self) -> None:
@@ -1058,6 +1058,8 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(inventory["summary"]["entities"], 1)
             self.assertEqual(inventory["items"][0]["mac"], "aa:bb:cc:dd:ee:ff")
             self.assertIn("dhcp_client", inventory["items"][0]["roles"])
+            self.assertEqual(inventory["items"][0]["peer_group"], "clients")
+            self.assertEqual(inventory["summary"]["peer_groups"], {"clients": 1})
 
     def test_entity_resolution_keeps_dhcp_ip_change_on_same_entity(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1085,6 +1087,7 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(entity["current_ips"], ["192.168.10.20", "192.168.10.45"])
             self.assertEqual(entity["previous_ips"], ["192.168.10.20", "192.168.10.45"])
             self.assertEqual(entity["confidence"], 0.98)
+            self.assertEqual(entity["peer_group"], "clients")
 
     def test_entity_resolution_uses_zenarmor_device_context(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1112,6 +1115,21 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(entity["vlan"], "10")
             self.assertEqual(entity["os_name"], "Android OS")
             self.assertIn("source:zenarmor", entity["tags"])
+            self.assertEqual(entity["peer_group"], "iot")
+            self.assertGreaterEqual(entity["peer_group_confidence"], 0.7)
+
+    def test_entity_resolution_assigns_linux_server_peer_group(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            event = normalize_eve(flow_event("2026-07-05T10:00:00+00:00", "192.168.10.95", "198.51.100.95", 22))
+            event["metadata"]["hostname"] = "app-server-1"
+            event["metadata"]["mac"] = "de:ad:be:ef:00:95"
+            event["metadata"]["os_name"] = "Linux"
+            self.assertEqual(store.insert_events([event]), 1)
+            inventory = store.host_inventory()
+            self.assertEqual(inventory["items"][0]["peer_group"], "linux_servers")
+            self.assertGreaterEqual(inventory["items"][0]["peer_group_confidence"], 0.7)
 
     def test_privacy_export_anonymizes_addresses(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -109,6 +109,20 @@ Implementation validation:
 - Targeted local unit tests covered status progression, slow adaptation, drift
   versioning, detector compatibility, and learning-mode suppression.
 
+## 2026-07-11: Entity Peer Group Assignment
+
+Implementation validation:
+
+- Added schema version `5` with `entities.peer_group`,
+  `peer_group_source`, and `peer_group_confidence`.
+- Automatic grouping uses existing entity evidence from DHCP/dnsmasq,
+  Zenarmor, Suricata and other normalized sources.
+- Inventory responses include per-entity peer group fields and a peer group
+  distribution summary.
+- Targeted local unit tests covered dnsmasq client grouping, DHCP IP-change
+  preservation, Zenarmor IoT grouping, Linux server grouping, and legacy
+  migration to schema `5`.
+
 ## 2026-07-05: OPNsense Firewall Development Install
 
 Target:
