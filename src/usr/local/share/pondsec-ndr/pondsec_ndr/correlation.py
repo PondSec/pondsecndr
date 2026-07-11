@@ -25,6 +25,7 @@ STRONG_INCIDENT_DETECTORS = {
     "pondsec.data_exfiltration",
     "pondsec.dns_tunneling",
     "pondsec.dns_sinkhole_hit",
+    "pondsec.email_threat",
     "pondsec.exploit_attempt",
     "pondsec.exploit_blocked",
     "pondsec.file_sandbox_verdict",

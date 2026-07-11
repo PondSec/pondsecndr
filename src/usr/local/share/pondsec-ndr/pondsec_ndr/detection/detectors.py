@@ -42,6 +42,8 @@ def _event_indicator_text(event: dict[str, Any]) -> str:
         metadata.get("file_verdict"),
         metadata.get("sandbox_verdict"),
         metadata.get("av_verdict"),
+        metadata.get("email_protocol"),
+        metadata.get("email_attachment"),
         metadata.get("http_method"),
         metadata.get("status"),
         metadata.get("auth_result"),
@@ -1184,6 +1186,82 @@ class FileSandboxVerdictDetector(Detector):
         return bool(port in EMAIL_PORTS or "mail" in app_text or "smtp" in app_text or "imap" in app_text or "pop3" in app_text or "webmail" in app_text)
 
 
+class EmailThreatDetector(Detector):
+    detector_id = "pondsec.email_threat"
+
+    def detect(self, events: list[dict[str, Any]], features: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        detections = []
+        for event in events:
+            metadata = _metadata(event)
+            if not FileSandboxVerdictDetector._email_context(event, metadata):
+                continue
+            filename = str(_first_metadata(metadata, "filename", "file_name") or "")
+            decision = str(_first_metadata(metadata, "decision", "action", "policy_action") or "").lower()
+            verdict_text = _normalised_indicator_text(
+                metadata.get("file_verdict"),
+                metadata.get("sandbox_verdict"),
+                metadata.get("av_verdict"),
+                metadata.get("threat_name"),
+                metadata.get("security_category"),
+                filename,
+            )
+            indicator_text = _event_indicator_text(event) + " " + verdict_text
+            provider_threat = bool(metadata.get("threat_name")) or _text_contains_any(indicator_text, HIGH_RISK_URL_TERMS)
+            malicious_file = any(term in verdict_text for term in MALICIOUS_VERDICTS) or _text_contains_any(verdict_text, MALWARE_TERMS)
+            suspicious_attachment = bool(filename and any(filename.lower().endswith(ext) for ext in SUSPICIOUS_FILE_EXTENSIONS))
+            provider_prevented = decision in BLOCK_DECISIONS or event.get("event_type") == "drop"
+            if not (provider_threat or malicious_file or (provider_prevented and suspicious_attachment)):
+                continue
+            if _text_contains_any(indicator_text, BENIGN_WEB_TERMS) and not (provider_threat or malicious_file or provider_prevented):
+                continue
+            category, threat_kind = _threat_category_from_text(indicator_text)
+            if malicious_file and category == "signature":
+                category, threat_kind = "malware", "malware"
+            if category == "signature":
+                category, threat_kind = "credential_abuse", "email_security"
+            source = event.get("source", {}).get("ip")
+            destination = event.get("destination", {}).get("ip") or _domain_or_host(event)
+            detections.append(make_detection(
+                self.detector_id,
+                category,
+                "Email-borne threat",
+                "Email, webmail or mail-protocol telemetry contains URL, attachment, sandbox or provider security evidence.",
+                source,
+                destination,
+                9 if malicious_file or provider_prevented else 8,
+                0.95 if malicious_file else 0.9 if provider_prevented or metadata.get("threat_name") else 0.84,
+                0.82 if malicious_file or provider_prevented else 0.68,
+                {
+                    "provider_id": _provider_id(event),
+                    "event_source": _provider_id(event),
+                    "email_protocol": metadata.get("email_protocol") or metadata.get("protocol"),
+                    "email_attachment": metadata.get("email_attachment"),
+                    "filename": filename or None,
+                    "mime_type": metadata.get("mime_type"),
+                    "file_size": metadata.get("file_size") or metadata.get("size") or metadata.get("seen_bytes") or metadata.get("total_bytes"),
+                    "file_verdict": metadata.get("file_verdict"),
+                    "sandbox_verdict": metadata.get("sandbox_verdict"),
+                    "av_verdict": metadata.get("av_verdict"),
+                    "domain": _domain_or_host(event),
+                    "url_path": metadata.get("url_path"),
+                    "tls_sni": metadata.get("tls_sni") or metadata.get("sni") or metadata.get("server_name"),
+                    "tls_inspected": metadata.get("tls_inspected"),
+                    "threat_name": metadata.get("threat_name"),
+                    "security_category": metadata.get("security_category"),
+                    "decision": decision or None,
+                    "provider_prevented": provider_prevented,
+                    "threat_kind": threat_kind,
+                    "suspicious_attachment": suspicious_attachment,
+                    "thresholds": [
+                        {"feature": "email_context", "operator": "present", "threshold": "mail/webmail/attachment", "observed": metadata.get("email_protocol") or metadata.get("application") or event.get("destination", {}).get("port")},
+                        {"feature": "email_threat_context", "operator": "present", "threshold": "provider threat, malicious verdict, or blocked suspicious attachment", "observed": metadata.get("threat_name") or metadata.get("security_category") or metadata.get("sandbox_verdict") or metadata.get("file_verdict") or decision},
+                    ],
+                },
+                recommended_action="investigate" if provider_prevented else "block",
+            ))
+        return detections
+
+
 class DnsSinkholeDetector(Detector):
     detector_id = "pondsec.dns_sinkhole_hit"
 
@@ -1534,6 +1612,7 @@ def default_detectors() -> list[Detector]:
         MalwareCallbackDetector(),
         ZenarmorSecurityEventDetector(),
         UrlThreatDetector(),
+        EmailThreatDetector(),
         FileSandboxVerdictDetector(),
         DnsSinkholeDetector(),
         ThreatIntelIndicatorDetector(),

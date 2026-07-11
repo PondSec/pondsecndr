@@ -318,6 +318,8 @@ def _engine_for_detection(detection: dict[str, Any]) -> str:
         return "zenarmor"
     if detector_id == "pondsec.file_sandbox_verdict":
         return "sandbox"
+    if detector_id == "pondsec.email_threat":
+        return "email_security"
     if detector_id == "pondsec.url_threat":
         return "url_filter"
     if detector_id == "pondsec.dns_sinkhole_hit":
@@ -380,6 +382,8 @@ def _supporting_indicators(detection: dict[str, Any], config: PondSecConfig) -> 
         indicators.add("malware_callback")
     if detector_id == "pondsec.file_sandbox_verdict":
         indicators.add("file_malware_verdict")
+    if detector_id == "pondsec.email_threat":
+        indicators.add("email_threat")
     if detector_id == "pondsec.url_threat":
         indicators.add("url_threat")
     if detector_id == "pondsec.zenarmor_security_event":

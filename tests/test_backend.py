@@ -30,6 +30,7 @@ from pondsec_ndr.detection.detectors import (
     CredentialBruteforceDetector,
     DNSTunnelingDetector,
     DnsSinkholeDetector,
+    EmailThreatDetector,
     ExploitAttemptDetector,
     FileSandboxVerdictDetector,
     HostBaselineAnomalyDetector,
@@ -1376,6 +1377,61 @@ class BackendTests(unittest.TestCase):
         assert event is not None
         self.assertEqual(ZenarmorSecurityEventDetector().detect([event], []), [])
         self.assertEqual(UrlThreatDetector().detect([event], []), [])
+
+    def test_email_threat_detector_labels_blocked_phishing_attachment(self) -> None:
+        event = normalize_zenarmor_event({
+            "timestamp": "2026-07-05T12:31:30+00:00",
+            "src_ip": "192.168.10.31",
+            "src_port": 52031,
+            "dst_ip": "203.0.113.31",
+            "dst_port": 443,
+            "protocol": "tcp",
+            "application": "Webmail",
+            "web_category": "Email",
+            "security_category": "phishing",
+            "decision": "block",
+            "url": "https://mail.validation.pondsec.test/attachment/invoice.iso",
+            "tls_sni": "mail.validation.pondsec.test",
+            "tls_inspected": "true",
+            "email_protocol": "webmail",
+            "email_attachment": "true",
+            "filename": "invoice.iso",
+            "sandbox_verdict": "malicious",
+            "threat_name": "phishing attachment validation",
+        }, sensor_name="zenarmor-local")
+        self.assertIsNotNone(event)
+        assert event is not None
+        detections = EmailThreatDetector().detect([event], [])
+        self.assertEqual(len(detections), 1)
+        self.assertEqual(detections[0]["detector_id"], "pondsec.email_threat")
+        self.assertEqual(detections[0]["category"], "credential_abuse")
+        self.assertTrue(detections[0]["evidence"]["provider_prevented"])
+        self.assertEqual(detections[0]["evidence"]["tls_inspected"], "true")
+        incidents = correlate_detections(detections)
+        self.assertEqual(len(incidents), 1)
+        self.assertEqual(incidents[0]["evidence"]["correlation"]["promotion"]["reason"], "strong_detector")
+
+    def test_email_threat_detector_ignores_benign_webmail_attachment(self) -> None:
+        event = normalize_zenarmor_event({
+            "timestamp": "2026-07-05T12:31:45+00:00",
+            "src_ip": "192.168.10.32",
+            "src_port": 52032,
+            "dst_ip": "198.51.100.32",
+            "dst_port": 443,
+            "protocol": "tcp",
+            "application": "Webmail",
+            "web_category": "Email",
+            "decision": "allowed",
+            "url": "https://mail.example.test/attachment/report.pdf",
+            "tls_sni": "mail.example.test",
+            "email_protocol": "webmail",
+            "email_attachment": "true",
+            "filename": "report.pdf",
+            "mime_type": "application/pdf",
+        })
+        self.assertIsNotNone(event)
+        assert event is not None
+        self.assertEqual(EmailThreatDetector().detect([event], []), [])
 
     def test_file_sandbox_detector_detects_eicar_hash_from_suricata_fileinfo(self) -> None:
         event = normalize_eve({
