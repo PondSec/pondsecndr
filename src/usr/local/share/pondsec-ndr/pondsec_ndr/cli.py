@@ -415,17 +415,43 @@ def reset_runtime_state(store: EventStore, config: Any, restart_service: bool = 
                 removed_paths.append(str(path))
         except OSError as exc:
             return {"status": "failed", "message": f"cannot remove runtime path {path}: {exc}", "reset": reset}
+    seeded_offsets = _seed_collector_offsets_at_end(config)
     service_start = _run_service_action("onestart") if restart_service else None
     return {
         "status": "ok",
         "reset": reset,
         "pf_flush": pf_flush,
         "removed_paths": removed_paths,
+        "seeded_offsets": seeded_offsets,
         "service_stop": service_stop,
         "service_start": service_start,
         "learning_phase": "restarted_on_next_service_start",
         "kept": ["configuration", "allowlist", "policies", "models"],
     }
+
+
+def _seed_collector_offsets_at_end(config: Any) -> list[dict[str, Any]]:
+    offset_dir = config.data_dir / "collector_offsets"
+    seeded = []
+    sources = [
+        ("suricata_eve", Path(config.suricata_eve_path), offset_dir / "suricata_eve.json"),
+        ("opnsense_filterlog", Path("/var/log/filter/filter.log"), offset_dir / "opnsense_filterlog.json"),
+    ]
+    offset_dir.mkdir(parents=True, exist_ok=True)
+    for provider, source_path, offset_path in sources:
+        try:
+            stat = source_path.stat()
+        except OSError as exc:
+            seeded.append({"provider": provider, "status": "skipped", "path": str(source_path), "reason": str(exc)})
+            continue
+        payload = {"inode": int(stat.st_ino), "offset": int(stat.st_size)}
+        try:
+            offset_path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+        except OSError as exc:
+            seeded.append({"provider": provider, "status": "failed", "path": str(offset_path), "reason": str(exc)})
+            continue
+        seeded.append({"provider": provider, "status": "ok", "path": str(offset_path), "offset": payload["offset"]})
+    return seeded
 
 
 def _run_service_action(action: str) -> dict[str, Any]:

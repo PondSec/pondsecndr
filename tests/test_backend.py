@@ -1338,7 +1338,9 @@ class BackendTests(unittest.TestCase):
                 "risk_factors": [],
             }])
             store.add_allowlist_entry("192.168.10.0/24", "trusted network", actor="test")
-            config = PondSecConfig(data_dir=root)
+            eve = root / "eve.json"
+            eve.write_text('{"event_type":"flow"}\n', encoding="utf-8")
+            config = PondSecConfig(data_dir=root, suricata_eve_path=str(eve))
             (root / "learning_started_at").write_text("2026-07-05T10:00:00+00:00\n", encoding="utf-8")
             offset_dir = root / "collector_offsets"
             offset_dir.mkdir()
@@ -1353,7 +1355,8 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(store.list_rows("block_entries"), [])
             self.assertEqual(store.list_rows("allowlist_entries")[0]["value"], "192.168.10.0/24")
             self.assertFalse((root / "learning_started_at").exists())
-            self.assertFalse(offset_dir.exists())
+            offset = json.loads((offset_dir / "suricata_eve.json").read_text(encoding="utf-8"))
+            self.assertEqual(offset["offset"], eve.stat().st_size)
 
     def test_service_auto_response_skips_baseline_only_anomaly(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
