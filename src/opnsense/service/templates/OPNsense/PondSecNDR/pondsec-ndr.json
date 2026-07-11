@@ -133,6 +133,7 @@
   },
   "response": {
     "mode": "{{ OPNsense.pondsecndr.response.mode|default("observe") }}",
+    "auto_arm_after_learning": "{{ OPNsense.pondsecndr.response.auto_arm_after_learning|default("1") }}",
     "ai_full_decision_mode": "{{ OPNsense.pondsecndr.response.ai_full_decision_mode|default("0") }}",
     "kill_switch": "{{ OPNsense.pondsecndr.response.kill_switch|default("0") }}",
     "maintenance_mode": "{{ OPNsense.pondsecndr.response.maintenance_mode|default("0") }}",

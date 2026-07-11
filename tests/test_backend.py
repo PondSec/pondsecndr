@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 import pwd
 import sqlite3
@@ -9,6 +10,7 @@ import struct
 import socket
 import subprocess
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -650,9 +652,16 @@ class BackendTests(unittest.TestCase):
             ).encode()
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sender:
                 sender.sendto(payload, ("127.0.0.1", port))
-            events, stats = collector.read_once(max_datagrams=10)
+            events = []
+            stats = None
+            for _ in range(20):
+                events, stats = collector.read_once(max_datagrams=10)
+                if stats.read_datagrams:
+                    break
+                time.sleep(0.01)
         finally:
             collector.close()
+        assert stats is not None
         self.assertEqual(stats.read_datagrams, 1)
         self.assertEqual(stats.accepted_events, 1)
         self.assertEqual(len(events), 1)
@@ -1032,6 +1041,9 @@ class BackendTests(unittest.TestCase):
                     "import_policy_actions": "1",
                     "import_device_context": "0",
                     "import_security_events": "1",
+                },
+                "response": {
+                    "auto_arm_after_learning": "0"
                 }
             }), encoding="utf-8")
             config = load_config(path)
@@ -1047,6 +1059,7 @@ class BackendTests(unittest.TestCase):
             self.assertFalse(config.zenarmor.import_applications)
             self.assertFalse(config.zenarmor.import_session_context)
             self.assertFalse(config.zenarmor.import_device_context)
+            self.assertFalse(config.response.auto_arm_after_learning)
             self.assertEqual(config.validate(), [])
 
     def test_diagnostics_exposes_response_readiness(self) -> None:
@@ -1095,6 +1108,46 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(response_check["status"], "warning")
             self.assertIn("learning phase is not complete", response_check["detail"])
             self.assertEqual(response_check["internal_isolation_cooldown_seconds"], 900)
+
+    def test_diagnostics_exposes_effective_auto_arm_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = EventStore(root / "pondsec-ndr.db")
+            store.migrate()
+            store.set_health("healthy", 123, {
+                "response_auto_armed": True,
+                "effective_mode": "prevent",
+                "effective_response_mode": "enforce",
+                "effective_response": {
+                    "automatic_blocking": True,
+                    "ai_full_decision_mode": True,
+                    "isolate_internal": True,
+                    "block_external": True,
+                    "manual_confirmation": False,
+                },
+            })
+            payload = diagnostics_payload(
+                PondSecConfig(
+                    enabled=True,
+                    data_dir=root,
+                    response=ResponseConfig(mode="observe", automatic_blocking=False),
+                    detection=DetectionConfig(
+                        machine_learning=True,
+                        learning_mode=True,
+                        learning_started_at="2026-06-01T00:00:00+00:00",
+                        learning_days=14,
+                    ),
+                ),
+                store,
+            )
+            self.assertEqual(payload["mode"], "prevent")
+            self.assertEqual(payload["configured_mode"], "monitor")
+            self.assertEqual(payload["response_mode"], "enforce")
+            self.assertTrue(payload["response_auto_armed"])
+            self.assertTrue(payload["readiness"]["automatic_blocking"])
+            response_check = next(item for item in payload["readiness"]["checks"] if item["id"] == "response_policy")
+            self.assertEqual(response_check["status"], "ok")
+            self.assertTrue(response_check["response_auto_armed"])
 
     def test_correlation_creates_explainable_incident(self) -> None:
         events = [
@@ -1587,6 +1640,78 @@ class BackendTests(unittest.TestCase):
             service = PondSecService(config)
             self.assertTrue(service.config.detection.learning_started_at.startswith("2026-07-01T09:00:00"))
             self.assertTrue((data_dir / "learning_started_at").exists())
+
+    def test_learning_status_counts_down_and_arms_after_required_days(self) -> None:
+        config = DetectionConfig(
+            machine_learning=True,
+            learning_mode=True,
+            learning_started_at="2026-07-01T00:00:00+00:00",
+            learning_days=14,
+        )
+        day_0 = config.learning_status(datetime(2026, 7, 1, tzinfo=timezone.utc))
+        day_13 = config.learning_status(datetime(2026, 7, 14, tzinfo=timezone.utc))
+        day_14 = config.learning_status(datetime(2026, 7, 15, tzinfo=timezone.utc))
+        self.assertEqual(day_0["remaining_days"], 14)
+        self.assertEqual(day_13["remaining_days"], 1)
+        self.assertTrue(day_13["active"])
+        self.assertEqual(day_14["remaining_days"], 0)
+        self.assertEqual(day_14["status"], "armed")
+        self.assertFalse(day_14["active"])
+
+    def test_service_auto_arms_runtime_response_after_learning(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = PondSecConfig(
+                mode="monitor",
+                data_dir=root / "db",
+                log_dir=root / "log",
+                run_dir=root / "run",
+                detection=DetectionConfig(
+                    machine_learning=True,
+                    learning_mode=True,
+                    learning_started_at="2026-06-01T00:00:00+00:00",
+                    learning_days=14,
+                ),
+                response=ResponseConfig(
+                    mode="observe",
+                    auto_arm_after_learning=True,
+                    automatic_blocking=False,
+                    ai_full_decision_mode=False,
+                    isolate_internal=False,
+                    block_external=False,
+                    manual_confirmation=True,
+                ),
+            )
+            service = PondSecService(config)
+            effective = service._effective_runtime_config(config.detection.learning_status(datetime(2026, 7, 1, tzinfo=timezone.utc)))
+            self.assertEqual(effective.mode, "prevent")
+            self.assertEqual(effective.response.mode, "enforce")
+            self.assertTrue(effective.response.automatic_blocking)
+            self.assertTrue(effective.response.ai_full_decision_mode)
+            self.assertTrue(effective.response.isolate_internal)
+            self.assertTrue(effective.response.block_external)
+            self.assertFalse(effective.response.manual_confirmation)
+            self.assertEqual(config.mode, "monitor")
+            self.assertEqual(config.response.mode, "observe")
+
+    def test_service_does_not_auto_arm_before_learning_completes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = PondSecConfig(
+                data_dir=root / "db",
+                log_dir=root / "log",
+                run_dir=root / "run",
+                detection=DetectionConfig(
+                    machine_learning=True,
+                    learning_mode=True,
+                    learning_started_at="2026-07-01T00:00:00+00:00",
+                    learning_days=14,
+                ),
+                response=ResponseConfig(auto_arm_after_learning=True),
+            )
+            service = PondSecService(config)
+            effective = service._effective_runtime_config(config.detection.learning_status(datetime(2026, 7, 7, tzinfo=timezone.utc)))
+            self.assertIs(effective, config)
 
     def test_short_cpu_burst_does_not_raise_resource_warning(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -278,6 +278,7 @@ class DnsmasqConfig:
 @dataclass(slots=True)
 class ResponseConfig:
     mode: str = "observe"
+    auto_arm_after_learning: bool = True
     ai_full_decision_mode: bool = False
     kill_switch: bool = False
     maintenance_mode: bool = False
@@ -584,6 +585,7 @@ def load_config(path: Path | None = None) -> PondSecConfig:
         ),
         response=ResponseConfig(
             mode=str(response.get("mode") or "observe").strip().lower() if str(response.get("mode") or "observe").strip().lower() in RESPONSE_MODES else "observe",
+            auto_arm_after_learning=_bool(response.get("auto_arm_after_learning"), True),
             ai_full_decision_mode=_bool(response.get("ai_full_decision_mode"), False),
             kill_switch=_bool(response.get("kill_switch"), False),
             maintenance_mode=_bool(response.get("maintenance_mode"), False),

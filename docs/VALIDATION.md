@@ -37,6 +37,27 @@ Implementation validation:
   Zenarmor metadata is inserted into the same event path as file exports.
 - Full local regression suite: `90` tests passed.
 
+## 2026-07-11: Learning Auto-Arm Runtime Posture
+
+Implementation validation:
+
+- Added a response option that automatically arms the effective runtime posture
+  after the configured learning days count down to zero.
+- The stored operator configuration remains unchanged; service health,
+  diagnostics, readiness, and dashboard metrics expose configured and effective
+  modes separately.
+- Effective auto-arm enables `prevent` / `enforce`, automatic blocking, AI full
+  decision mode, internal isolation, external blocking, and disables manual
+  confirmation delay.
+- Kill switch and maintenance mode prevent auto-arm.
+- Existing response safety gates remain in force.
+
+Local validation:
+
+- Targeted unit tests covered learning countdown, effective runtime posture,
+  pre-learning suppression, diagnostics readiness output, and JSON config
+  loading.
+
 ## 2026-07-05: OPNsense Firewall Development Install
 
 Target:

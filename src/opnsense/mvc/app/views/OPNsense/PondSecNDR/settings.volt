@@ -244,6 +244,7 @@ $(function() {
             'Observe': 'Observe',
             'Recommend': 'Recommend',
             'Enforce': 'Enforce',
+            'Auto-arm after learning': 'Nach Lernphase automatisch scharfstellen',
             'AI full decision mode': 'Vollstaendige KI-Entscheidung',
             'Response kill switch': 'Response-Kill-Switch',
             'Maintenance mode': 'Wartungsmodus',
@@ -301,6 +302,7 @@ $(function() {
             'Reads dnsmasq DNS, DHCP and lease files only. PondSec does not change resolver or DHCP settings.': 'Liest nur dnsmasq-DNS-, DHCP- und Lease-Dateien. PondSec aendert keine Resolver- oder DHCP-Einstellungen.',
             'Recommended for production so existing DNS and DHCP history is not ingested unexpectedly.': 'Fuer Produktion empfohlen, damit vorhandene DNS- und DHCP-Historie nicht unerwartet importiert wird.',
             'Observe never changes PF, Recommend creates proposals, Enforce can execute only eligible policies after learning, baseline stability, and safety checks.': 'Observe aendert PF nie. Recommend erstellt Vorschlaege. Enforce fuehrt nur geeignete Policies nach Lernphase, Baseline-Stabilitaet und Sicherheitschecks aus.',
+            'After the configured learning days reach zero, PondSec uses Prevent, Enforce, AI full decision, internal isolation and external blocking automatically while keeping all safety gates.': 'Wenn die konfigurierten Lerntage null erreichen, nutzt PondSec automatisch Prevent, Enforce, vollstaendige KI-Entscheidung, interne Isolation und externes Blocking, behaelt aber alle Sicherheitspruefungen bei.',
             'Required for internal auto-isolation in Enforce mode after the 14-day learning phase. AI evidence never bypasses multi-source safety checks.': 'Erforderlich fuer interne Auto-Isolation im Enforce-Modus nach 14 Tagen Lernphase. KI-Evidence umgeht nie Multi-Source-Sicherheitschecks.',
             'Keep disabled during learning. Automatic PF changes require Enforce mode and all response-policy conditions to pass.': 'Waehrend der Lernphase deaktiviert lassen. Automatische PF-Aenderungen brauchen Enforce und alle bestandenen Response-Policy-Bedingungen.',
             'Minimum time between executed internal auto-isolations. Recommendations do not consume this cooldown.': 'Mindestzeit zwischen ausgefuehrten internen Auto-Isolationen. Empfehlungen verbrauchen diesen Cooldown nicht.'

@@ -598,6 +598,12 @@
         <help>Observe never changes PF, Recommend creates proposals, Enforce can execute only eligible policies after learning, baseline stability, and safety checks.</help>
     </field>
     <field>
+        <id>pondsecndr.response.auto_arm_after_learning</id>
+        <label>Auto-arm after learning</label>
+        <type>checkbox</type>
+        <help>After the configured learning days reach zero, PondSec uses Prevent, Enforce, AI full decision, internal isolation and external blocking automatically while keeping all safety gates.</help>
+    </field>
+    <field>
         <id>pondsecndr.response.ai_full_decision_mode</id>
         <label>AI full decision mode</label>
         <type>checkbox</type>

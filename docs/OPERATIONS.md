@@ -17,6 +17,21 @@ Response mode:
 - `recommend`: PondSec can create response proposals without activating PF enforcement.
 - `enforce`: PondSec can activate eligible response actions only after every safety precondition passes.
 
+When `auto_arm_after_learning` is enabled, the stored configuration may remain
+in `monitor` / `observe` during the initial learning phase. After the recorded
+learning start is at least the configured number of days old and remaining days
+reach zero, the service uses an effective runtime posture of `prevent` /
+`enforce` with automatic blocking, AI full decision mode, internal isolation,
+external blocking, and no manual confirmation delay. The stored configuration
+is not rewritten; diagnostics and dashboard metrics show both configured and
+effective modes.
+
+Auto-arm still respects the response kill switch, maintenance mode, protected
+assets, allowlists, confidence/risk thresholds, multi-source evidence gates,
+cooldowns, rate limits, and mass-isolation safety fallback. Baselines continue
+to update after the initial learning phase, but anomalous sources are skipped
+from baseline updates for that run.
+
 Internal auto-isolation requires all of the following:
 
 - the 14-day learning phase is complete and recorded,

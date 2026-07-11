@@ -258,16 +258,21 @@ def dispatch(args: argparse.Namespace, config: Any, store: EventStore) -> tuple[
             return payload, 0
     if command == "dashboard":
         payload = store.dashboard_summary() if args.dashboard_command == "summary" else store.dashboard_timeline()
+        health = store.get_health()
+        health_detail = health.get("detail", {}) if isinstance(health.get("detail"), dict) else {}
         payload["metrics"] = payload.get("metrics", {})
         payload["metrics"].update({
-            "service_status": store.get_health()["status"],
-            "operating_mode": config.mode,
-            "response_mode": config.response.mode,
+            "service_status": health["status"],
+            "operating_mode": health_detail.get("effective_mode", config.mode),
+            "configured_operating_mode": config.mode,
+            "response_mode": health_detail.get("effective_response_mode", config.response.mode),
+            "configured_response_mode": config.response.mode,
+            "response_auto_armed": bool(health_detail.get("response_auto_armed")),
             "interfaces": config.interfaces.monitored,
             "active_model_version": _active_model(config),
             "queue_utilization": 0,
-            "last_collector_errors": store.get_health().get("detail", {}).get("last_collector_errors", []),
-            "last_response_errors": store.get_health().get("detail", {}).get("last_response_errors", []),
+            "last_collector_errors": health_detail.get("last_collector_errors", []),
+            "last_response_errors": health_detail.get("last_response_errors", []),
         })
         return payload, 0
     if command == "detections":

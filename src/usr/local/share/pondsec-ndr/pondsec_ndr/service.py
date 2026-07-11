@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import grp
 import os
 from pathlib import Path
@@ -299,6 +299,8 @@ class PondSecService:
         self.store.insert_features(features)
 
         learning_status = self.config.detection.learning_status()
+        effective_config = self._effective_runtime_config(learning_status)
+        response_auto_armed = effective_config is not self.config
         detections: list[dict[str, Any]] = []
         enabled_detectors, learning_suppressed_detectors = self._enabled_detectors(learning_status)
         for detector in enabled_detectors:
@@ -314,7 +316,7 @@ class PondSecService:
         inserted_incidents = self.store.insert_incidents(incidents)
         anomalous_sources = self._baseline_skip_sources(detections)
         baseline_updates = self.store.update_host_baselines(features, skip_sources=anomalous_sources)
-        response_actions = self._auto_response(incidents)
+        response_actions = self._auto_response(incidents, effective_config)
         cleaned = self.store.cleanup(self.config.retention_days)
         resource_usage = self._resource_usage(started_wall, started_cpu)
         resource_warnings = self._resource_warnings(resource_usage)
@@ -358,6 +360,16 @@ class PondSecService:
             "resource_usage": resource_usage,
             "resource_warnings": resource_warnings,
             "learning_status": learning_status,
+            "response_auto_armed": response_auto_armed,
+            "effective_mode": effective_config.mode,
+            "effective_response_mode": effective_config.response.mode,
+            "effective_response": {
+                "automatic_blocking": effective_config.response.automatic_blocking,
+                "ai_full_decision_mode": effective_config.response.ai_full_decision_mode,
+                "block_external": effective_config.response.block_external,
+                "isolate_internal": effective_config.response.isolate_internal,
+                "manual_confirmation": effective_config.response.manual_confirmation,
+            },
             "learning_collection_only": False,
             "learning_ai_suppressed": bool(learning_status.get("active")),
             "learning_suppressed_detectors": learning_suppressed_detectors,
@@ -403,11 +415,32 @@ class PondSecService:
             "baseline_updates": baseline_updates,
             "resource_warnings": resource_warnings,
             "learning_status": learning_status,
+            "response_auto_armed": response_auto_armed,
+            "effective_mode": effective_config.mode,
+            "effective_response_mode": effective_config.response.mode,
             "learning_collection_only": False,
             "learning_ai_suppressed": bool(learning_status.get("active")),
             "learning_suppressed_detectors": learning_suppressed_detectors,
             "optional_collector_warnings": self.counters["last_optional_collector_errors"],
         }
+
+    def _effective_runtime_config(self, learning_status: dict[str, Any]) -> PondSecConfig:
+        if not self.config.response.auto_arm_after_learning:
+            return self.config
+        if self.config.response.kill_switch or self.config.response.maintenance_mode:
+            return self.config
+        if learning_status.get("status") != "armed" or int(learning_status.get("remaining_days") or 0) != 0:
+            return self.config
+        response = replace(
+            self.config.response,
+            mode="enforce",
+            ai_full_decision_mode=True,
+            automatic_blocking=True,
+            block_external=True,
+            isolate_internal=True,
+            manual_confirmation=False,
+        )
+        return replace(self.config, mode="prevent", response=response)
 
     def _enabled_detectors(self, learning_status: dict[str, Any]) -> tuple[list[Any], list[str]]:
         ai_detector_ids = {"pondsec.host_baseline_anomaly", "pondsec.pretrained_ids_model"}
@@ -488,16 +521,17 @@ class PondSecService:
             filtered.append(event)
         return filtered
 
-    def _auto_response(self, incidents: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        if not incidents or not self.config.response.automatic_blocking:
+    def _auto_response(self, incidents: list[dict[str, Any]], config: PondSecConfig | None = None) -> list[dict[str, Any]]:
+        config = config or self.config
+        if not incidents or not config.response.automatic_blocking:
             return []
-        if self.config.response.mode == "observe":
+        if config.response.mode == "observe":
             actions = []
             for incident in incidents:
                 decision = {
                     "status": "observe",
                     "reason": "response policy is in observe mode",
-                    "response_mode": self.config.response.mode,
+                    "response_mode": config.response.mode,
                     "automatic": True,
                 }
                 self.store.audit_response_decision(incident.get("incident_id"), "observe", decision, actor="auto-response")
@@ -506,22 +540,22 @@ class PondSecService:
                     "source_ip": incident.get("source_ip"),
                     "status": "observed",
                     "reason": decision["reason"],
-                    "mode": self.config.response.mode,
+                    "mode": config.response.mode,
                 })
             return actions
         actions: list[dict[str, Any]] = []
-        mass_isolation_safety = len(incidents) > self.config.response.max_auto_isolation_candidates_per_run
+        mass_isolation_safety = len(incidents) > config.response.max_auto_isolation_candidates_per_run
         for incident in incidents:
             incident_id = incident.get("incident_id")
             if not incident_id:
                 continue
-            if not self._consume_rate("pf_action_rate_timestamps", self.config.pf_action_rate_limit_per_minute):
+            if not self._consume_rate("pf_action_rate_timestamps", config.pf_action_rate_limit_per_minute):
                 actions.append({
                     "incident_id": incident_id,
                     "source_ip": incident.get("source_ip"),
                     "status": "skipped",
                     "reason": "pf_action_rate_limit_exceeded",
-                    "mode": self.config.response.mode,
+                    "mode": config.response.mode,
                 })
                 continue
             if self._requires_manual_response(incident):
@@ -530,13 +564,13 @@ class PondSecService:
                     "source_ip": incident.get("source_ip"),
                     "status": "skipped",
                     "reason": "baseline-only anomaly requires manual confirmation",
-                    "mode": self.config.response.mode,
+                    "mode": config.response.mode,
                 })
                 continue
             try:
                 proposal = propose_block_for_incident(
                     self.store,
-                    self.config,
+                    config,
                     incident_id,
                     actor="auto-prevent",
                     automatic=True,
@@ -545,29 +579,29 @@ class PondSecService:
                     "incident_id": incident_id,
                     "source_ip": proposal.get("source_ip"),
                     "block_id": proposal.get("block_id"),
-                    "mode": self.config.response.mode,
+                    "mode": config.response.mode,
                     "status": proposal.get("status"),
                     "automatic": True,
                 }
                 policy_decision = proposal.get("policy_decision") if isinstance(proposal.get("policy_decision"), dict) else {}
-                activation_allowed = bool(policy_decision.get("activation_allowed", self.config.response.mode == "enforce"))
+                activation_allowed = bool(policy_decision.get("activation_allowed", config.response.mode == "enforce"))
                 if mass_isolation_safety:
                     action["status"] = "recommended"
                     action["reason"] = "too many automatic response candidates; falling back to recommend"
                     self.store.audit_response_decision(incident_id, "mass_isolation_safety", action, actor="auto-response")
-                elif self.config.response.mode == "enforce" and not activation_allowed:
+                elif config.response.mode == "enforce" and not activation_allowed:
                     action["status"] = "recommended"
                     action["reason"] = "; ".join(policy_decision.get("activation_reasons") or policy_decision.get("reasons") or ["response policy requires recommendation before activation"])
                     self.store.audit_response_decision(incident_id, "activation_fallback", action, actor="auto-response")
-                elif self.config.response.mode == "enforce" and proposal.get("status") != "active":
-                    activation = activate_block(self.store, self.config, proposal["block_id"], actor="auto-prevent")
+                elif config.response.mode == "enforce" and proposal.get("status") != "active":
+                    activation = activate_block(self.store, config, proposal["block_id"], actor="auto-prevent")
                     action["status"] = activation["status"]
                     action["activation"] = {
                         "pf_table": activation.get("pf_table"),
                         "pf_rule_present": activation.get("pf_rule_present"),
                         "pf_verify": activation.get("pf_verify"),
                     }
-                elif self.config.response.mode == "recommend":
+                elif config.response.mode == "recommend":
                     action["status"] = "recommended"
                     action["reason"] = "response policy is in recommend mode"
                 actions.append(action)

@@ -28,14 +28,19 @@ DEFAULT_SERVICE_USER = os.environ.get("PONDSEC_NDR_SERVICE_USER", "pondsecndr")
 
 def service_status(config: PondSecConfig, store: EventStore) -> dict[str, Any]:
     health = store.get_health()
+    detail = health.get("detail", {}) if isinstance(health.get("detail"), dict) else {}
     db = store.check()
     eve_access = eve_access_status(config)
     return {
         "status": health["status"],
         "pid": health["pid"],
         "updated_at": health["updated_at"],
-        "mode": config.mode,
-        "response_mode": config.response.mode,
+        "mode": detail.get("effective_mode", config.mode),
+        "configured_mode": config.mode,
+        "response_mode": detail.get("effective_response_mode", config.response.mode),
+        "configured_response_mode": config.response.mode,
+        "response_auto_armed": bool(detail.get("response_auto_armed")),
+        "effective_response": detail.get("effective_response", {}),
         "enabled": config.enabled,
         "fail_open": config.fail_open,
         "database": db,
@@ -60,8 +65,12 @@ def diagnostics(config: PondSecConfig, store: EventStore) -> dict[str, Any]:
     return {
         "status": health["status"],
         "pid": health["pid"],
-        "mode": config.mode,
-        "response_mode": config.response.mode,
+        "mode": detail.get("effective_mode", config.mode),
+        "configured_mode": config.mode,
+        "response_mode": detail.get("effective_response_mode", config.response.mode),
+        "configured_response_mode": config.response.mode,
+        "response_auto_armed": bool(detail.get("response_auto_armed")),
+        "effective_response": detail.get("effective_response", {}),
         "uptime_seconds": detail.get("uptime_seconds"),
         "cpu_percent": resource_usage.get("cpu_percent"),
         "ram_mb": resource_usage.get("rss_mb"),
@@ -415,6 +424,7 @@ def _readiness_status(
     tls_inspection: dict[str, Any],
     learning_status: dict[str, Any],
 ) -> dict[str, Any]:
+    detail = health.get("detail", {}) if isinstance(health.get("detail"), dict) else {}
     checks = [
         {
             "id": "service_enabled",
@@ -467,7 +477,7 @@ def _readiness_status(
             ),
             "recommendation": learning_status.get("warning") or "AI alarms are armed for production use.",
         },
-        _response_policy_readiness(config, learning_status),
+        _response_policy_readiness(config, learning_status, detail),
         {
             "id": "pf_response",
             "label": "PF response rule",
@@ -504,9 +514,12 @@ def _readiness_status(
         status = "ready"
     return {
         "status": status,
-        "mode": config.mode,
-        "response_mode": config.response.mode,
-        "automatic_blocking": config.response.automatic_blocking,
+        "mode": detail.get("effective_mode", config.mode),
+        "configured_mode": config.mode,
+        "response_mode": detail.get("effective_response_mode", config.response.mode),
+        "configured_response_mode": config.response.mode,
+        "response_auto_armed": bool(detail.get("response_auto_armed")),
+        "automatic_blocking": bool((detail.get("effective_response") or {}).get("automatic_blocking", config.response.automatic_blocking)),
         "service_status": health.get("status"),
         "required_ok": len(required) - len(failed) - len(warnings),
         "required_total": len(required),
@@ -514,8 +527,34 @@ def _readiness_status(
     }
 
 
-def _response_policy_readiness(config: PondSecConfig, learning_status: dict[str, Any]) -> dict[str, Any]:
+def _response_policy_readiness(config: PondSecConfig, learning_status: dict[str, Any], health_detail: dict[str, Any] | None = None) -> dict[str, Any]:
     response = config.response
+    health_detail = health_detail or {}
+    effective_response = health_detail.get("effective_response") if isinstance(health_detail.get("effective_response"), dict) else {}
+    effective_mode = str(health_detail.get("effective_response_mode") or response.mode)
+    auto_armed = bool(health_detail.get("response_auto_armed"))
+    if auto_armed:
+        status = "ok"
+        detail = "Auto-arm is active after learning; effective Enforce response is armed with safety gates."
+        recommendation = ""
+        return {
+            "id": "response_policy",
+            "label": "Automatic response posture",
+            "requirement": "required for safe enforcement",
+            "status": status,
+            "detail": detail,
+            "recommendation": recommendation,
+            "mode": effective_mode,
+            "configured_mode": response.mode,
+            "response_auto_armed": True,
+            "automatic_blocking": bool(effective_response.get("automatic_blocking")),
+            "ai_full_decision_mode": bool(effective_response.get("ai_full_decision_mode")),
+            "isolate_internal": bool(effective_response.get("isolate_internal")),
+            "internal_isolation_cooldown_seconds": response.internal_isolation_cooldown_seconds,
+            "max_internal_isolations_per_hour": response.max_internal_isolations_per_hour,
+            "kill_switch": response.kill_switch,
+            "maintenance_mode": response.maintenance_mode,
+        }
     if response.mode == "observe":
         status = "ok"
         detail = "Observe mode is active; PondSec will not change PF tables automatically."
