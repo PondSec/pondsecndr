@@ -60,6 +60,8 @@ def diagnostics(config: PondSecConfig, store: EventStore) -> dict[str, Any]:
     return {
         "status": health["status"],
         "pid": health["pid"],
+        "mode": config.mode,
+        "response_mode": config.response.mode,
         "uptime_seconds": detail.get("uptime_seconds"),
         "cpu_percent": resource_usage.get("cpu_percent"),
         "ram_mb": resource_usage.get("rss_mb"),
