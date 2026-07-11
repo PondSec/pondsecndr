@@ -134,7 +134,24 @@ def _first_metadata(metadata: dict[str, Any], *keys: str) -> Any:
 
 
 def _text_contains_any(text: str, terms: tuple[str, ...] | set[str]) -> bool:
-    return any(term in text for term in terms)
+    normalized = _normalised_indicator_text(text)
+    tokens = set(normalized.split())
+    padded = f" {normalized} "
+    for term in terms:
+        normalized_term = _normalised_indicator_text(term).strip()
+        if not normalized_term:
+            continue
+        if " " in normalized_term:
+            if f" {normalized_term} " in padded:
+                return True
+            continue
+        if normalized_term.isalnum():
+            if normalized_term in tokens:
+                return True
+            continue
+        if normalized_term in normalized:
+            return True
+    return False
 
 
 def _threat_category_from_text(text: str) -> tuple[str, str]:

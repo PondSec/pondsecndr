@@ -1379,6 +1379,49 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(ZenarmorSecurityEventDetector().detect([event], []), [])
         self.assertEqual(UrlThreatDetector().detect([event], []), [])
 
+    def test_zenarmor_ec2_cdn_hostname_does_not_match_c2_substring(self) -> None:
+        event = normalize_zenarmor_event({
+            "timestamp": "2026-07-05T12:31:05+00:00",
+            "src_ip": "192.168.10.146",
+            "src_port": 52005,
+            "dst_ip": "43.208.100.34",
+            "dst_port": 443,
+            "protocol": "tcp",
+            "application": "Web Browsing",
+            "web_category": "Content Delivery Networks",
+            "decision": "allowed",
+            "url": "https://ec2.web.ap-southeast-7.prod.diagnostic.networking.aws.dev/health",
+            "tls_sni": "ec2.web.ap-southeast-7.prod.diagnostic.networking.aws.dev",
+            "tls_inspected": "true",
+        }, sensor_name="zenarmor-local")
+        self.assertIsNotNone(event)
+        assert event is not None
+        self.assertEqual(ZenarmorSecurityEventDetector().detect([event], []), [])
+        self.assertEqual(UrlThreatDetector().detect([event], []), [])
+
+    def test_zenarmor_c2_token_still_creates_security_detection(self) -> None:
+        event = normalize_zenarmor_event({
+            "timestamp": "2026-07-05T12:31:10+00:00",
+            "src_ip": "192.168.10.27",
+            "src_port": 52010,
+            "dst_ip": "203.0.113.27",
+            "dst_port": 443,
+            "protocol": "tcp",
+            "application": "Web Browsing",
+            "web_category": "Security Risk",
+            "decision": "allowed",
+            "url": "https://c2.validation.pondsec.test/callback",
+            "tls_sni": "c2.validation.pondsec.test",
+        }, sensor_name="zenarmor-local")
+        self.assertIsNotNone(event)
+        assert event is not None
+        detections = (
+            ZenarmorSecurityEventDetector().detect([event], [])
+            + UrlThreatDetector().detect([event], [])
+        )
+        self.assertEqual({item["detector_id"] for item in detections}, {"pondsec.zenarmor_security_event", "pondsec.url_threat"})
+        self.assertTrue(all(item["category"] == "command_and_control" for item in detections))
+
     def test_email_threat_detector_labels_blocked_phishing_attachment(self) -> None:
         event = normalize_zenarmor_event({
             "timestamp": "2026-07-05T12:31:30+00:00",
