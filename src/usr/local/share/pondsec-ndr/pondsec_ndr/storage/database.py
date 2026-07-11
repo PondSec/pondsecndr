@@ -2060,10 +2060,13 @@ class EventStore:
         if incoming.get("attack_stage") and incoming.get("attack_stage") != existing["attack_stage"]:
             merged_attack_stage = "multi_stage"
         merged_title = existing["title"]
-        if merged_category == "multi_stage" and not str(existing["title"]).startswith("Multi-stage"):
+        if merged_category == "multi_stage":
             source = existing["source_ip"] or incoming.get("source_ip") or "unknown source"
-            target = targets[0] if targets else incoming.get("destination_ip") or "unknown target"
-            merged_title = f"Multi-stage activity from {source} to {target}"
+            target = existing["destination_ip"] or incoming.get("destination_ip") or (targets[0] if targets else "unknown target")
+            if target == source and targets:
+                target = next((item for item in targets if item != source), target)
+            suffix = "detection" if merged_detection_count == 1 else "detections"
+            merged_title = f"Multi-stage activity from {source} to {target} ({merged_detection_count} {suffix})"
         conn.execute(
             """
             UPDATE incidents

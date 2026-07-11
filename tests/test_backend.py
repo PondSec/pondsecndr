@@ -2346,6 +2346,8 @@ class BackendTests(unittest.TestCase):
             assert merged is not None
             self.assertEqual(merged["category"], "multi_stage")
             self.assertEqual(merged["attack_stage"], "multi_stage")
+            self.assertEqual(merged["detection_count"], 2)
+            self.assertEqual(merged["title"], "Multi-stage activity from 199.45.155.75 to 192.168.30.3 (2 detections)")
             self.assertTrue(merged["evidence"]["correlation"]["deduplicated"])
 
     def test_incident_dedup_does_not_count_duplicate_detections_again(self) -> None:
