@@ -22,6 +22,11 @@ def parse_timestamp(value: Any) -> str | None:
     text = str(value).strip()
     if not text:
         return None
+    try:
+        if text.replace(".", "", 1).isdigit():
+            return datetime.fromtimestamp(float(text), tz=timezone.utc).isoformat()
+    except (OverflowError, ValueError):
+        return None
     normalized = text.replace("Z", "+00:00")
     try:
         parsed = datetime.fromisoformat(normalized)

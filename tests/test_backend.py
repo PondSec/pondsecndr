@@ -474,6 +474,19 @@ class BackendTests(unittest.TestCase):
         })
         self.assertEqual(dns["event_type"], "dns")
         self.assertEqual(dns["metadata"]["answers"], ["198.51.100.10", "198.51.100.11"])
+        dns_epoch = normalize_zeek_row("dns", {
+            "ts": "1783793206.588216",
+            "uid": "D2",
+            "id.orig_h": "192.168.10.20",
+            "id.orig_p": "53001",
+            "id.resp_h": "9.9.9.9",
+            "id.resp_p": "53",
+            "proto": "udp",
+            "query": "epoch.example.test",
+            "qtype_name": "TXT",
+        })
+        self.assertEqual(dns_epoch["event_type"], "dns")
+        self.assertTrue(dns_epoch["timestamp"].startswith("2026-07-11T18:06:46"))
 
         ssl = normalize_zeek_row("ssl", {
             "ts": "2026-07-05T10:00:02+00:00",

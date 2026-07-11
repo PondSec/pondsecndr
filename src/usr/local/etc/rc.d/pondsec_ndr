@@ -47,8 +47,18 @@ pondsec_ndr_prestart()
         fi
     fi
     if [ -d /var/log/dnsmasq ]; then
+        setfacl -m u:${pondsec_ndr_user}:rxaRcs::allow /var/log/dnsmasq 2>/dev/null || true
         setfacl -m u:${pondsec_ndr_user}:rxaRcs:fd:allow /var/log/dnsmasq 2>/dev/null || true
-        find /var/log/dnsmasq -maxdepth 1 -type f -name "*.log" -exec setfacl -m u:${pondsec_ndr_user}:raRcs::allow {} + 2>/dev/null || true
+        find /var/log/dnsmasq -maxdepth 1 -type f -name "*.log" -exec setfacl -m u:${pondsec_ndr_user}:raRcs::allow {} \; 2>/dev/null || true
+        if [ -e /var/log/dnsmasq/latest.log ]; then
+            dnsmasq_target="$(readlink /var/log/dnsmasq/latest.log 2>/dev/null || true)"
+            if [ -n "${dnsmasq_target}" ] && [ "${dnsmasq_target#/}" = "${dnsmasq_target}" ]; then
+                dnsmasq_target="/var/log/dnsmasq/${dnsmasq_target}"
+            fi
+            if [ -n "${dnsmasq_target}" ]; then
+                setfacl -m u:${pondsec_ndr_user}:raRcs::allow "${dnsmasq_target}" 2>/dev/null || true
+            fi
+        fi
     fi
 }
 
