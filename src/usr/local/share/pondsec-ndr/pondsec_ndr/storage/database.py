@@ -15,7 +15,7 @@ from typing import Any, Iterator
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 INCIDENT_DEDUPE_WINDOW_SECONDS = 1800
 OPEN_INCIDENT_STATUSES = ("open",)
 ARCHIVED_INCIDENT_STATUSES = ("closed", "false_positive", "archived")
@@ -599,6 +599,10 @@ class EventStore:
                 if current_version > 0 or self._schema_needs_v5(conn):
                     self._backup_database(conn, max(current_version, 4), 5)
                 self._migrate_to_v5(conn)
+            if current_version < 6:
+                if current_version > 0 or self._schema_needs_v6(conn):
+                    self._backup_database(conn, max(current_version, 5), 6)
+                self._migrate_to_v6(conn)
             for statement in deferred_indexes:
                 conn.execute(statement)
             conn.execute(
@@ -628,6 +632,13 @@ class EventStore:
     def _schema_needs_v5(self, conn: sqlite3.Connection) -> bool:
         entity_columns = {row["name"] for row in conn.execute("PRAGMA table_info(entities)").fetchall()}
         return bool(entity_columns) and not ENTITY_V5_COLUMNS.issubset(entity_columns)
+
+    def _schema_needs_v6(self, conn: sqlite3.Connection) -> bool:
+        entity_columns = {row["name"] for row in conn.execute("PRAGMA table_info(entities)").fetchall()}
+        if not ENTITY_V5_COLUMNS.issubset(entity_columns):
+            return False
+        count = conn.execute("SELECT count(*) FROM entities WHERE peer_group_source = 'auto'").fetchone()[0]
+        return int(count or 0) > 0
 
     def _backup_database(self, conn: sqlite3.Connection, from_version: int, to_version: int) -> Path:
         backup_dir = self.db_path.parent / "backups"
@@ -874,6 +885,41 @@ class EventStore:
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
             (5, now_iso()),
+        )
+
+    def _migrate_to_v6(self, conn: sqlite3.Connection) -> None:
+        rows = conn.execute(
+            """
+            SELECT entity_id, hostname, interface, vlan, zone, os_name,
+                   roles_json, known_services_json, peer_group_source
+            FROM entities
+            WHERE peer_group_source != 'manual'
+            """
+        ).fetchall()
+        for row in rows:
+            roles = set(self._safe_json_list(row["roles_json"]))
+            services = [str(item) for item in self._safe_json_list(row["known_services_json"])]
+            peer_group, source, confidence = self._infer_peer_group(
+                roles=roles,
+                os_name=row["os_name"],
+                hostname=row["hostname"],
+                services=services,
+                vlan=row["vlan"],
+                zone=row["zone"],
+                interface=row["interface"],
+                evidence={},
+            )
+            conn.execute(
+                """
+                UPDATE entities
+                SET peer_group = ?, peer_group_source = ?, peer_group_confidence = ?
+                WHERE entity_id = ?
+                """,
+                (peer_group, source, confidence, row["entity_id"]),
+            )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+            (6, now_iso()),
         )
 
     def check(self) -> dict[str, Any]:
@@ -1264,7 +1310,6 @@ class EventStore:
         zone_text = str(zone or "").lower()
         interface_text = str(interface or "").lower()
         vlan_text = str(vlan or "").lower()
-        service_set = {str(item).lower() for item in services}
         joined = " ".join([os_text, host_text, zone_text, interface_text, vlan_text])
 
         if "management" in joined or "mgmt" in joined:
@@ -1283,10 +1328,10 @@ class EventStore:
             return "iot", "auto", 0.78
         if "windows" in os_text and "server" not in os_text:
             return "windows_clients", "auto", 0.8
-        server_ports = {"22", "25", "53", "80", "443", "445", "3306", "5432", "6379", "8080", "8443", "9200", "9300"}
-        if ("linux" in os_text and service_set & server_ports) or any(token in host_text for token in ("server", "srv", "nas")):
+        server_name = any(token in host_text for token in ("server", "srv", "nas"))
+        if ("linux" in os_text and server_name) or "linux server" in os_text:
             return "linux_servers", "auto", 0.76
-        if service_set & server_ports:
+        if server_name or "server" in os_text:
             return "servers", "auto", 0.62
         if roles & {"client", "network_client", "dhcp_client", "windows_client"}:
             return "clients", "auto", 0.62

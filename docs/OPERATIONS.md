@@ -160,6 +160,9 @@ classification source and confidence. The automatic classifier uses existing
 role, OS, hostname, service, VLAN, interface and zone evidence to group devices
 as Windows clients, Linux servers, IoT, printers, firewalls, network devices,
 hypervisors, DMZ, management, generic servers, generic clients or unknown.
+Schema version `6` reclassifies automatic peer groups with stricter server
+evidence, because observed destination ports are not enough to prove that an
+entity offers a local service.
 
 ## Backup
 

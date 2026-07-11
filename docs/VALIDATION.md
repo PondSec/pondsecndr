@@ -115,13 +115,16 @@ Implementation validation:
 
 - Added schema version `5` with `entities.peer_group`,
   `peer_group_source`, and `peer_group_confidence`.
+- Added schema version `6` to reclassify automatic peer groups after tightening
+  server evidence. Observed destination ports alone no longer mark an entity as
+  a server.
 - Automatic grouping uses existing entity evidence from DHCP/dnsmasq,
   Zenarmor, Suricata and other normalized sources.
 - Inventory responses include per-entity peer group fields and a peer group
   distribution summary.
 - Targeted local unit tests covered dnsmasq client grouping, DHCP IP-change
-  preservation, Zenarmor IoT grouping, Linux server grouping, and legacy
-  migration to schema `5`.
+  preservation, Zenarmor IoT grouping, Linux server grouping, client web
+  traffic, and legacy migration to schema `6`.
 
 ## 2026-07-05: OPNsense Firewall Development Install
 

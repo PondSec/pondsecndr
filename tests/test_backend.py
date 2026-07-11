@@ -928,7 +928,7 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(row[5], "reconnaissance")
             self.assertEqual(row[6], "legacy-upgrade")
             self.assertEqual(row[7], 0)
-            self.assertEqual(version, 5)
+            self.assertEqual(version, 6)
             self.assertTrue(any((db_path.parent / "backups").glob("pondsec-ndr.db.schema0-to-2.*.bak")))
 
     def test_host_baseline_versions_status_and_drift(self) -> None:
@@ -1130,6 +1130,20 @@ class BackendTests(unittest.TestCase):
             inventory = store.host_inventory()
             self.assertEqual(inventory["items"][0]["peer_group"], "linux_servers")
             self.assertGreaterEqual(inventory["items"][0]["peer_group_confidence"], 0.7)
+
+    def test_entity_resolution_does_not_treat_client_destination_ports_as_server_role(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            event = normalize_eve(flow_event("2026-07-05T10:00:00+00:00", "192.168.10.96", "198.51.100.96", 443))
+            event["raw_source"] = "zenarmor"
+            event["metadata"]["hostname"] = "MacBook Air"
+            event["metadata"]["mac"] = "de:ad:be:ef:00:96"
+            event["metadata"]["os_name"] = "Apple macOS"
+            self.assertEqual(store.insert_events([event]), 1)
+            inventory = store.host_inventory()
+            self.assertEqual(inventory["items"][0]["peer_group"], "clients")
+            self.assertNotEqual(inventory["items"][0]["peer_group"], "servers")
 
     def test_privacy_export_anonymizes_addresses(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
