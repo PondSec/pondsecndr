@@ -17,7 +17,7 @@ LOG_DIR = Path(os.environ.get("PONDSEC_NDR_LOG_DIR", "/var/log/pondsec-ndr"))
 RUN_DIR = Path(os.environ.get("PONDSEC_NDR_RUN_DIR", "/var/run/pondsec-ndr"))
 
 MODES = {"monitor", "alert", "interactive", "prevent"}
-RESPONSE_MODES = {"observe", "recommend", "enforce"}
+RESPONSE_MODES = {"observe", "recommend", "enforce", "shadow_enforce"}
 DIRECTIONS = {"ingress", "egress", "both"}
 ZEEK_MODES = {"external", "local"}
 ZEEK_PARSERS = {"tsv"}
@@ -356,8 +356,8 @@ class PondSecConfig:
             errors.append("fail_open must remain enabled in the foundation release")
         if self.mode == "prevent" and not self.response.manual_confirmation and self.response.minimum_confidence < 75:
             errors.append("prevent mode without manual confirmation requires at least 75 percent confidence")
-        if self.response.mode == "enforce" and not self.response.automatic_blocking:
-            errors.append("response enforce mode requires automatic blocking to be enabled")
+        if self.response.mode in {"enforce", "shadow_enforce"} and not self.response.automatic_blocking:
+            errors.append(f"response {self.response.mode} mode requires automatic blocking to be enabled")
         if self.retention_days < 1:
             errors.append("retention_days must be positive")
         if self.max_database_mb < 64:

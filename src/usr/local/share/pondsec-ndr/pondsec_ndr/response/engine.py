@@ -80,6 +80,7 @@ def propose_block_for_incident(
     actor: str = "system",
     duration_seconds: int | None = None,
     automatic: bool = False,
+    dry_run: bool = False,
 ) -> dict[str, Any]:
     incident = store.get_incident(incident_id)
     if incident is None:
@@ -123,6 +124,24 @@ def propose_block_for_incident(
     duration = duration_seconds or (config.response.auto_isolation_seconds if automatic else config.response.default_block_seconds)
     duration = min(duration, config.response.max_block_seconds)
     expires_at = (datetime.now(timezone.utc) + timedelta(seconds=duration)).isoformat()
+    if dry_run:
+        result = {
+            "block_id": None,
+            "incident_id": incident_id,
+            "source_ip": source_ip,
+            "destination": incident.get("destination_ip"),
+            "reason": _response_reason(incident, source_ip),
+            "risk_score": incident["risk_score"],
+            "confidence": incident["confidence"],
+            "expires_at": expires_at,
+            "created_by": actor,
+            "automatic": automatic,
+            "status": "would_execute",
+            "dry_run": True,
+        }
+        if decision is not None:
+            result["policy_decision"] = decision
+        return result
     result = store.add_block_entry({
         "incident_id": incident_id,
         "source_ip": source_ip,

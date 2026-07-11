@@ -104,7 +104,10 @@ Diagnostics read service health, queue counters, collector offsets, database sta
 
 ### Replay and Benchmark Tool
 
-`pondsec-ndrctl replay` reads EVE files using the same normalizer and detectors. Replay is simulation-only and must not modify PF.
+`pondsec-ndrctl replay` reads EVE files using the same normalizer, baseline
+enrichment, peer-group enrichment and detectors. Replay is simulation-only and
+must not create block entries or modify PF, firewall, DNS, CrowdSec or alias
+state.
 
 ## Data Flow
 

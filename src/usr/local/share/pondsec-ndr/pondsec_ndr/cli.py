@@ -498,7 +498,13 @@ def replay_file(eve_file: Path, max_lines: int, config: Any) -> dict[str, Any]:
     offset.unlink(missing_ok=True)
     collector = EveCollector(eve_file, offset, queue_limit=max_lines)
     events, stats = collector.read_once(max_lines=max_lines)
-    features = aggregate_features(events)
+    store = EventStore(config.data_dir / "pondsec-ndr.db")
+    store.migrate()
+    features = store.score_features_against_baselines(
+        aggregate_features(events),
+        minimum_observations=config.detection.minimum_observations,
+        minimum_peer_members=config.detection.peer_group_minimum_members,
+    )
     detections = []
     for detector in default_detectors():
         detections.extend(detector.detect(events, features))
@@ -511,6 +517,11 @@ def replay_file(eve_file: Path, max_lines: int, config: Any) -> dict[str, Any]:
         "detections": detections,
         "incidents": incidents,
         "response_mode": "simulation_only",
+        "shadow_response": {
+            "enabled": False,
+            "would_execute": False,
+            "reason": "replay never triggers PF, firewall, DNS, CrowdSec, alias, or blocklist changes",
+        },
     }
 
 

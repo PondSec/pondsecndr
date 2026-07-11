@@ -563,6 +563,10 @@ def _response_policy_readiness(config: PondSecConfig, learning_status: dict[str,
         status = "ok"
         detail = "Recommend mode is active; PondSec can create response proposals without changing PF tables."
         recommendation = "Review proposals and protected assets before enabling Enforce."
+    elif response.mode == "shadow_enforce":
+        status = "warning"
+        detail = "Shadow Enforce is active; PondSec evaluates would-execute response decisions without changing PF tables."
+        recommendation = "Use Shadow Enforce only for validation. After learning completes, Auto-arm should move effective response to Enforce for real prevention."
     elif response.mode == "enforce":
         blockers = []
         if not response.automatic_blocking:
@@ -583,7 +587,7 @@ def _response_policy_readiness(config: PondSecConfig, learning_status: dict[str,
     else:
         status = "failed"
         detail = f"Unknown response mode: {response.mode}."
-        recommendation = "Select Observe, Recommend, or Enforce."
+        recommendation = "Select Observe, Recommend, Shadow Enforce, or Enforce."
     return {
         "id": "response_policy",
         "label": "Automatic response posture",

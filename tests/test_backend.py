@@ -15,7 +15,7 @@ import unittest
 from unittest.mock import patch
 
 import pondsec_ndr.diagnostics as diagnostics_mod
-from pondsec_ndr.cli import _incident_analysis, main as cli_main, reset_runtime_state
+from pondsec_ndr.cli import _incident_analysis, main as cli_main, replay_file, reset_runtime_state
 from pondsec_ndr.collectors.dnsmasq import DnsmasqCollector, normalize_dnsmasq_lease, normalize_dnsmasq_line
 from pondsec_ndr.collectors.eve import EveCollector
 from pondsec_ndr.collectors.filterlog import FilterLogCollector, FilterLogStats, normalize_filterlog_line
@@ -1965,6 +1965,35 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(config.mode, "monitor")
             self.assertEqual(config.response.mode, "observe")
 
+    def test_auto_arm_overrides_shadow_enforce_after_learning(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = PondSecConfig(
+                mode="monitor",
+                data_dir=root / "db",
+                log_dir=root / "log",
+                run_dir=root / "run",
+                detection=DetectionConfig(
+                    machine_learning=True,
+                    learning_mode=True,
+                    learning_started_at="2026-06-01T00:00:00+00:00",
+                    learning_days=14,
+                ),
+                response=ResponseConfig(
+                    mode="shadow_enforce",
+                    auto_arm_after_learning=True,
+                    automatic_blocking=True,
+                    ai_full_decision_mode=False,
+                    isolate_internal=False,
+                    block_external=False,
+                ),
+            )
+            service = PondSecService(config)
+            effective = service._effective_runtime_config(config.detection.learning_status(datetime(2026, 7, 1, tzinfo=timezone.utc)))
+            self.assertEqual(effective.mode, "prevent")
+            self.assertEqual(effective.response.mode, "enforce")
+            self.assertTrue(effective.response.ai_full_decision_mode)
+
     def test_service_does_not_auto_arm_before_learning_completes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -2575,7 +2604,7 @@ class BackendTests(unittest.TestCase):
             with self.assertRaisesRegex(ResponseDenied, "cooldown"):
                 propose_block_for_incident(store, config, "incident-cooldown-limited", actor="test", automatic=True)
 
-    def test_response_modes_observe_recommend_and_enforce_are_separate(self) -> None:
+    def test_response_modes_observe_recommend_shadow_and_enforce_are_separate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             config = PondSecConfig(
@@ -2610,12 +2639,31 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(recommended[0]["status"], "recommended")
             self.assertEqual(service.store.list_rows("block_entries")[0]["status"], "proposed")
 
+            service.config.response.mode = "shadow_enforce"
+            service.config.response.ai_full_decision_mode = True
+            shadow_case = robust_internal_incident("incident-shadow", "192.168.30.6")
+            shadow_case["source_ip"] = "8.8.4.6"
+            shadow_case["created_at"] = "2026-07-05T13:30:00+00:00"
+            shadow_case["updated_at"] = "2026-07-05T13:50:00+00:00"
+            shadow_case["evidence"]["entity_roles"]["external_actor"] = "8.8.4.6"
+            shadow_case["evidence"]["entity_roles"]["response_target"] = "8.8.4.6"
+            service.store.insert_incidents([shadow_case])
+            seed_host_baseline(service.store, "192.168.30.6")
+            before_blocks = len(service.store.list_rows("block_entries"))
+            with patch("pondsec_ndr.service.activate_block") as activate_mock:
+                shadowed = service._auto_response([service.store.get_incident("incident-shadow")])
+            self.assertEqual(shadowed[0]["status"], "would_execute")
+            self.assertTrue(shadowed[0]["dry_run"])
+            self.assertTrue(shadowed[0]["would_execute"])
+            self.assertEqual(len(service.store.list_rows("block_entries")), before_blocks)
+            activate_mock.assert_not_called()
+
             service.config.response.mode = "enforce"
             service.config.response.ai_full_decision_mode = True
             enforce_case = robust_internal_incident("incident-enforce", "192.168.30.5")
             enforce_case["source_ip"] = "8.8.4.5"
-            enforce_case["created_at"] = "2026-07-05T12:00:00+00:00"
-            enforce_case["updated_at"] = "2026-07-05T12:20:00+00:00"
+            enforce_case["created_at"] = "2026-07-05T14:30:00+00:00"
+            enforce_case["updated_at"] = "2026-07-05T14:50:00+00:00"
             enforce_case["evidence"]["entity_roles"]["external_actor"] = "8.8.4.5"
             enforce_case["evidence"]["entity_roles"]["response_target"] = "8.8.4.5"
             service.store.insert_incidents([enforce_case])
@@ -2858,6 +2906,36 @@ class BackendTests(unittest.TestCase):
             self.assertGreater(len(service.store.list_rows("detections")), 0)
             self.assertGreater(len(service.store.list_rows("incidents")), 0)
             self.assertEqual(service.store.list_rows("block_entries"), [])
+
+    def test_replay_never_executes_response_actions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            eve = root / "replay-eve.json"
+            eve.write_text(
+                "\n".join(
+                    json.dumps(flow_event(f"2026-07-05T10:00:{index:02d}+00:00", "192.168.10.220", "192.168.20.10", 20 + index))
+                    for index in range(18)
+                ) + "\n",
+                encoding="utf-8",
+            )
+            config = PondSecConfig(
+                enabled=True,
+                mode="prevent",
+                suricata_eve_path=str(eve),
+                data_dir=root / "db",
+                log_dir=root / "log",
+                run_dir=root / "run",
+                detection=armed_detection_config(),
+                response=ResponseConfig(mode="enforce", automatic_blocking=True, manual_confirmation=False, block_external=True, isolate_internal=True),
+            )
+            result = replay_file(eve, 100, config)
+            store = EventStore(config.data_dir / "pondsec-ndr.db")
+            store.migrate()
+
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(result["response_mode"], "simulation_only")
+            self.assertFalse(result["shadow_response"]["would_execute"])
+            self.assertEqual(store.list_rows("block_entries"), [])
 
     def test_service_expected_response_denials_do_not_pollute_error_state(self) -> None:
         self.assertTrue(PondSecService._is_expected_response_denial("source IP is protected"))

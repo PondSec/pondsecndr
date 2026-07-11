@@ -15,6 +15,8 @@ Response mode:
 
 - `observe`: default after install and update. PondSec records decisions but never changes PF tables.
 - `recommend`: PondSec can create response proposals without activating PF enforcement.
+- `shadow_enforce`: PondSec evaluates the same automatic policy gates as Enforce
+  and records `would_execute`, but never creates block entries or changes PF.
 - `enforce`: PondSec can activate eligible response actions only after every safety precondition passes.
 
 When `auto_arm_after_learning` is enabled, the stored configuration may remain
@@ -25,6 +27,10 @@ reach zero, the service uses an effective runtime posture of `prevent` /
 external blocking, and no manual confirmation delay. The stored configuration
 is not rewritten; diagnostics and dashboard metrics show both configured and
 effective modes.
+
+Auto-arm never ends in `shadow_enforce`. Shadow Enforce is only for validation
+and tuning; after learning completes, Auto-arm moves the effective posture to
+real `prevent` / `enforce` when no safety switch blocks it.
 
 Auto-arm still respects the response kill switch, maintenance mode, protected
 assets, allowlists, confidence/risk thresholds, multi-source evidence gates,

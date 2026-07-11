@@ -140,6 +140,21 @@ Implementation validation:
 - Targeted local unit tests covered peer-group outlier scoring, detector
   evidence, and JSON config loading.
 
+## 2026-07-11: Shadow Enforce And Replay Safety
+
+Implementation validation:
+
+- Added `shadow_enforce` response mode for policy evaluation without PF or
+  blocklist side effects.
+- Shadow decisions record `would_execute`; `enforce` remains the only mode that
+  can activate PF after all safety gates pass.
+- Auto-arm after learning still moves to effective `prevent` / `enforce`, never
+  to Shadow Enforce.
+- Replay uses normal baseline and peer-group enrichment but remains
+  `simulation_only` and never creates response actions.
+- Targeted local unit tests covered Shadow Enforce dry-run behavior, Auto-arm
+  overriding Shadow after learning, and replay response safety.
+
 ## 2026-07-05: OPNsense Firewall Development Install
 
 Target:

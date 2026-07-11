@@ -78,6 +78,13 @@ def evaluate_automatic_response_policy(
             policy_status = "recommend"
         else:
             policy_status = "enforce"
+    elif mode == "shadow_enforce":
+        if reasons:
+            policy_status = "denied"
+        elif activation_reasons:
+            policy_status = "recommend"
+        else:
+            policy_status = "shadow_enforce"
     else:
         policy_status = "denied"
         reasons.append(f"invalid response policy mode: {mode}")
@@ -98,8 +105,9 @@ def evaluate_automatic_response_policy(
         "status": policy_status,
         "target_ip": target_ip,
         "target_internal": target_is_internal,
-        "proposal_allowed": policy_status in {"recommend", "enforce"},
+        "proposal_allowed": policy_status in {"recommend", "enforce", "shadow_enforce"},
         "activation_allowed": policy_status == "enforce",
+        "would_execute": policy_status == "shadow_enforce",
         "reasons": all_reasons,
         "blocking_reasons": reasons,
         "activation_reasons": activation_reasons,
@@ -163,8 +171,9 @@ def _decision_layers(
         "not_prevented_only": not summary["all_prevented_or_blocked"],
     }
     compromise_ready = target_is_internal and all(threshold_passes.values()) and all(evidence_passes.values())
-    containment_allowed = policy_status in {"recommend", "enforce"}
+    containment_allowed = policy_status in {"recommend", "enforce", "shadow_enforce"}
     execution_allowed = policy_status == "enforce"
+    shadow_execution = policy_status == "shadow_enforce"
     return {
         "detection": {
             "status": "observed" if detection_count > 0 else "insufficient_evidence",
@@ -194,7 +203,7 @@ def _decision_layers(
             "blocking_reasons": blocking_reasons,
         },
         "execution": {
-            "status": "allowed" if execution_allowed else "not_allowed",
+            "status": "allowed" if execution_allowed else ("would_execute" if shadow_execution else "not_allowed"),
             "activation_reasons": activation_reasons,
             "automatic_blocking": config.response.automatic_blocking,
             "ai_full_decision_mode": config.response.ai_full_decision_mode,

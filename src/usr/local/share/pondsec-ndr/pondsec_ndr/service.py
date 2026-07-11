@@ -579,6 +579,7 @@ class PondSecService:
                     incident_id,
                     actor="auto-prevent",
                     automatic=True,
+                    dry_run=config.response.mode == "shadow_enforce",
                 )
                 action: dict[str, Any] = {
                     "incident_id": incident_id,
@@ -594,6 +595,13 @@ class PondSecService:
                     action["status"] = "recommended"
                     action["reason"] = "too many automatic response candidates; falling back to recommend"
                     self.store.audit_response_decision(incident_id, "mass_isolation_safety", action, actor="auto-response")
+                elif config.response.mode == "shadow_enforce":
+                    action["status"] = "would_execute" if policy_decision.get("would_execute") else "recommended"
+                    action["reason"] = "shadow_enforce evaluated policy without changing PF or block entries"
+                    action["would_execute"] = bool(policy_decision.get("would_execute"))
+                    action["dry_run"] = True
+                    action["policy_decision"] = policy_decision
+                    self.store.audit_response_decision(incident_id, "shadow_enforce", action, actor="auto-response")
                 elif config.response.mode == "enforce" and not activation_allowed:
                     action["status"] = "recommended"
                     action["reason"] = "; ".join(policy_decision.get("activation_reasons") or policy_decision.get("reasons") or ["response policy requires recommendation before activation"])
