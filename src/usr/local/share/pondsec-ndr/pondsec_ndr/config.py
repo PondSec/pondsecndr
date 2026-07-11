@@ -20,6 +20,7 @@ RESPONSE_MODES = {"observe", "recommend", "enforce"}
 DIRECTIONS = {"ingress", "egress", "both"}
 ZEEK_MODES = {"external", "local"}
 ZEEK_PARSERS = {"tsv"}
+ZENARMOR_SOURCES = {"syslog_export"}
 
 
 def _bool(value: Any, default: bool = False) -> bool:
@@ -210,6 +211,19 @@ class ZeekConfig:
 
 
 @dataclass(slots=True)
+class ZenarmorConfig:
+    enabled: bool = False
+    source: str = "syslog_export"
+    sensor_name: str = ""
+    remote_target: str = ""
+    syslog_path: str = "/var/log/zenarmor/streaming.log"
+    start_at_end: bool = True
+    api_enabled: bool = False
+    api_base_url: str = ""
+    api_key_ref: str = ""
+
+
+@dataclass(slots=True)
 class ResponseConfig:
     mode: str = "observe"
     ai_full_decision_mode: bool = False
@@ -267,6 +281,7 @@ class PondSecConfig:
     detection: DetectionConfig = field(default_factory=DetectionConfig)
     threat_intel: ThreatIntelConfig = field(default_factory=ThreatIntelConfig)
     zeek: ZeekConfig = field(default_factory=ZeekConfig)
+    zenarmor: ZenarmorConfig = field(default_factory=ZenarmorConfig)
     response: ResponseConfig = field(default_factory=ResponseConfig)
     data_dir: Path = DATA_DIR
     log_dir: Path = LOG_DIR
@@ -310,6 +325,12 @@ class PondSecConfig:
             errors.append(f"invalid Zeek parser: {self.zeek.parser}")
         if self.zeek.enabled and not self.zeek.log_paths():
             errors.append("Zeek provider requires at least one configured log path")
+        if self.zenarmor.source not in ZENARMOR_SOURCES:
+            errors.append(f"invalid Zenarmor source: {self.zenarmor.source}")
+        if self.zenarmor.enabled and not self.zenarmor.syslog_path:
+            errors.append("Zenarmor provider requires a syslog/export path")
+        if self.zenarmor.api_enabled and not self.zenarmor.api_base_url:
+            errors.append("Zenarmor API integration requires an API base URL")
         if self.response.max_internal_isolations_per_hour < 0:
             errors.append("max_internal_isolations_per_hour must not be negative")
         if self.response.internal_isolation_cooldown_seconds < 0:
@@ -334,6 +355,7 @@ def load_config(path: Path | None = None) -> PondSecConfig:
     threat_intel = raw.get("threat_intel") or {}
     zeek = raw.get("zeek") or {}
     zeek_logs = zeek.get("logs") or {}
+    zenarmor = raw.get("zenarmor") or {}
     response = raw.get("response") or {}
     mode = str(raw.get("mode", "monitor")).strip().lower()
     if mode not in MODES:
@@ -344,6 +366,9 @@ def load_config(path: Path | None = None) -> PondSecConfig:
     zeek_parser = str(zeek.get("parser") or "tsv").strip().lower()
     if zeek_parser not in ZEEK_PARSERS:
         zeek_parser = "tsv"
+    zenarmor_source = str(zenarmor.get("source") or "syslog_export").strip().lower()
+    if zenarmor_source not in ZENARMOR_SOURCES:
+        zenarmor_source = "syslog_export"
 
     return PondSecConfig(
         enabled=_bool(raw.get("enabled"), False),
@@ -426,6 +451,17 @@ def load_config(path: Path | None = None) -> PondSecConfig:
             files_log=str(zeek_logs.get("files") or zeek.get("files_log") or "files.log"),
             notice_log=str(zeek_logs.get("notice") or zeek.get("notice_log") or "notice.log"),
             weird_log=str(zeek_logs.get("weird") or zeek.get("weird_log") or "weird.log"),
+        ),
+        zenarmor=ZenarmorConfig(
+            enabled=_bool(zenarmor.get("enabled"), False),
+            source=zenarmor_source,
+            sensor_name=str(zenarmor.get("sensor_name") or ""),
+            remote_target=str(zenarmor.get("remote_target") or ""),
+            syslog_path=str(zenarmor.get("syslog_path") or "/var/log/zenarmor/streaming.log"),
+            start_at_end=_bool(zenarmor.get("start_at_end"), True),
+            api_enabled=_bool(zenarmor.get("api_enabled"), False),
+            api_base_url=str(zenarmor.get("api_base_url") or ""),
+            api_key_ref=str(zenarmor.get("api_key_ref") or ""),
         ),
         response=ResponseConfig(
             mode=str(response.get("mode") or "observe").strip().lower() if str(response.get("mode") or "observe").strip().lower() in RESPONSE_MODES else "observe",

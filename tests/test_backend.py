@@ -15,6 +15,7 @@ from pondsec_ndr.cli import _incident_analysis, main as cli_main, reset_runtime_
 from pondsec_ndr.collectors.eve import EveCollector
 from pondsec_ndr.collectors.filterlog import FilterLogCollector, FilterLogStats, normalize_filterlog_line
 from pondsec_ndr.collectors.zeek import ZeekLogCollector, normalize_zeek_row
+from pondsec_ndr.collectors.zenarmor import ZenarmorCollector, normalize_zenarmor_event, parse_zenarmor_line
 from pondsec_ndr.config import DetectionConfig, InterfaceConfig, PondSecConfig, ResponseConfig
 from pondsec_ndr.correlation import correlate_detections
 from pondsec_ndr.detection.detectors import BeaconingDetector, DNSTunnelingDetector, PortScanDetector, SuricataAlertAdapter
@@ -417,6 +418,72 @@ class BackendTests(unittest.TestCase):
             events2, stats2 = collector.read_once(max_lines=10)
             self.assertEqual(len(events2), 1)
             self.assertEqual(stats2.accepted_events, 1)
+
+    def test_zenarmor_normalizer_keeps_policy_tls_and_app_context(self) -> None:
+        event = normalize_zenarmor_event({
+            "timestamp": "2026-07-05T10:00:00+00:00",
+            "src_ip": "192.168.10.20",
+            "src_port": 51515,
+            "dst_ip": "198.51.100.30",
+            "dst_port": 443,
+            "protocol": "tcp",
+            "application": "YouTube",
+            "application_category": "Streaming Media",
+            "web_category": "Entertainment",
+            "security_category": "Cloud Application",
+            "decision": "blocked",
+            "policy_name": "Workstations",
+            "url": "https://video.example.test/watch?token=secret",
+            "tls_sni": "video.example.test",
+            "tls_version": "TLSv1.3",
+            "device_name": "laptop-20",
+            "session_id": "sess-1",
+            "user": "alice",
+            "bytes_out": 1500,
+            "bytes_in": 4500,
+            "indexes": ["Connections", "Web", "TLS"],
+        }, sensor_name="zenarmor-edge")
+        self.assertIsNotNone(event)
+        assert event is not None
+        self.assertEqual(event["raw_source"], "zenarmor")
+        self.assertEqual(event["event_type"], "drop")
+        self.assertEqual(event["metadata"]["application"], "YouTube")
+        self.assertEqual(event["metadata"]["policy_name"], "Workstations")
+        self.assertEqual(event["metadata"]["tls_sni"], "video.example.test")
+        self.assertEqual(event["metadata"]["url_path"], "/watch")
+        self.assertEqual(event["metadata"]["byte_count"], 6000)
+        self.assertNotIn("token=secret", json.dumps(event["metadata"]))
+
+    def test_zenarmor_collector_reads_json_and_key_value_exports(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            log = root / "zenarmor.log"
+            json_line = json.dumps({
+                "timestamp": "2026-07-05T10:00:00+00:00",
+                "src_ip": "192.168.10.20",
+                "dst_ip": "198.51.100.30",
+                "dst_port": 443,
+                "application": "Slack",
+                "decision": "allowed",
+            })
+            kv_line = (
+                "ts=2026-07-05T10:00:01+00:00 src_ip=192.168.10.21 dst_ip=198.51.100.31 "
+                "dst_port=443 protocol=tcp app=GitHub action=blocked sni=github.example.test"
+            )
+            log.write_text(json_line + "\n" + kv_line + "\n", encoding="utf-8")
+            collector = ZenarmorCollector(log, root / "offsets" / "zenarmor.json", start_at_end=False)
+            events, stats = collector.read_once(max_lines=10)
+            self.assertEqual(len(events), 2)
+            self.assertEqual(stats.accepted_events, 2)
+            self.assertEqual(events[0]["metadata"]["application"], "Slack")
+            self.assertEqual(events[1]["event_type"], "drop")
+            self.assertEqual(events[1]["metadata"]["application"], "GitHub")
+
+            parsed = parse_zenarmor_line(kv_line)
+            self.assertEqual(parsed["src_ip"], "192.168.10.21")
+            events2, stats2 = collector.read_once(max_lines=10)
+            self.assertEqual(events2, [])
+            self.assertEqual(stats2.read_lines, 0)
 
     def test_service_run_once_tolerates_unreadable_filterlog(self) -> None:
         class DeniedFilterLogCollector:

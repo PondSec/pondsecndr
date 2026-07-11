@@ -82,6 +82,17 @@
       "weird": "{{ OPNsense.pondsecndr.zeek.weird_log|default("weird.log") }}"
     }
   },
+  "zenarmor": {
+    "enabled": "{{ OPNsense.pondsecndr.zenarmor.enabled|default("0") }}",
+    "source": "{{ OPNsense.pondsecndr.zenarmor.source|default("syslog_export") }}",
+    "sensor_name": "{{ OPNsense.pondsecndr.zenarmor.sensor_name|default("") }}",
+    "remote_target": "{{ OPNsense.pondsecndr.zenarmor.remote_target|default("") }}",
+    "syslog_path": "{{ OPNsense.pondsecndr.zenarmor.syslog_path|default("/var/log/zenarmor/streaming.log") }}",
+    "start_at_end": "{{ OPNsense.pondsecndr.zenarmor.start_at_end|default("1") }}",
+    "api_enabled": "{{ OPNsense.pondsecndr.zenarmor.api_enabled|default("0") }}",
+    "api_base_url": "{{ OPNsense.pondsecndr.zenarmor.api_base_url|default("") }}",
+    "api_key_ref": "{{ OPNsense.pondsecndr.zenarmor.api_key_ref|default("") }}"
+  },
   "response": {
     "mode": "{{ OPNsense.pondsecndr.response.mode|default("observe") }}",
     "ai_full_decision_mode": "{{ OPNsense.pondsecndr.response.ai_full_decision_mode|default("0") }}",

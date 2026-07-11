@@ -16,6 +16,7 @@ from typing import Any
 from pondsec_ndr.collectors.eve import EveCollector
 from pondsec_ndr.collectors.filterlog import FilterLogCollector
 from pondsec_ndr.collectors.zeek import ZeekLogCollector
+from pondsec_ndr.collectors.zenarmor import ZenarmorCollector
 from pondsec_ndr.config import PondSecConfig, ensure_directories, load_config
 from pondsec_ndr.correlation import correlate_detections
 from pondsec_ndr.detection.detectors import default_detectors
@@ -140,22 +141,37 @@ class PondSecService:
             )
             zeek_events, zeek_stats = zeek_collector.read_once(max_lines=max_lines)
             events.extend(zeek_events)
+        zenarmor_stats = None
+        if self.config.zenarmor.enabled:
+            zenarmor_collector = ZenarmorCollector(
+                Path(self.config.zenarmor.syslog_path),
+                self.config.data_dir / "collector_offsets" / "zenarmor.json",
+                sensor_name=self.config.zenarmor.sensor_name,
+                remote_target=self.config.zenarmor.remote_target,
+                queue_limit=collector_queue_limit,
+                start_at_end=self.config.zenarmor.start_at_end,
+            )
+            zenarmor_events, zenarmor_stats = zenarmor_collector.read_once(max_lines=max_lines)
+            events.extend(zenarmor_events)
         events = self._filter_events(events)
         events, backpressure_drops = self._apply_queue_backpressure(events)
         parser_errors = (
             stats.parser_errors
             + (filter_stats.parser_errors if filter_stats else 0)
             + (zeek_stats.parser_errors if zeek_stats else 0)
+            + (zenarmor_stats.parser_errors if zenarmor_stats else 0)
         )
         normalization_errors = (
             stats.normalization_errors
             + (filter_stats.normalization_errors if filter_stats else 0)
             + (zeek_stats.normalization_errors if zeek_stats else 0)
+            + (zenarmor_stats.normalization_errors if zenarmor_stats else 0)
         )
         queue_drops = (
             stats.queue_drops
             + (filter_stats.queue_drops if filter_stats else 0)
             + (zeek_stats.queue_drops if zeek_stats else 0)
+            + (zenarmor_stats.queue_drops if zenarmor_stats else 0)
             + backpressure_drops
         )
         self.counters["parser_errors"] += parser_errors
@@ -169,6 +185,10 @@ class PondSecService:
         if zeek_stats and zeek_stats.last_error:
             self.counters["last_optional_collector_errors"] = (
                 [zeek_stats.last_error] + self.counters["last_optional_collector_errors"]
+            )[:5]
+        if zenarmor_stats and zenarmor_stats.last_error:
+            self.counters["last_optional_collector_errors"] = (
+                [zenarmor_stats.last_error] + self.counters["last_optional_collector_errors"]
             )[:5]
 
         if self._database_over_limit():
@@ -236,11 +256,13 @@ class PondSecService:
                 stats.read_lines
                 + (filter_stats.read_lines if filter_stats else 0)
                 + (zeek_stats.read_lines if zeek_stats else 0)
+                + (zenarmor_stats.read_lines if zenarmor_stats else 0)
             ),
             "accepted_events": (
                 stats.accepted_events
                 + (filter_stats.accepted_events if filter_stats else 0)
                 + (zeek_stats.accepted_events if zeek_stats else 0)
+                + (zenarmor_stats.accepted_events if zenarmor_stats else 0)
             ),
             "inserted_events": inserted_events,
             "inserted_detections": inserted_detections,
@@ -271,11 +293,13 @@ class PondSecService:
                 stats.rotation_detected
                 or (filter_stats.rotation_detected if filter_stats else False)
                 or (zeek_stats.rotation_detected if zeek_stats else False)
+                or (zenarmor_stats.rotation_detected if zenarmor_stats else False)
             ),
             "collector_sources": {
                 "suricata_eve": asdict(stats),
                 "opnsense_filterlog": asdict(filter_stats) if filter_stats else None,
                 "zeek": asdict(zeek_stats) if zeek_stats else None,
+                "zenarmor": asdict(zenarmor_stats) if zenarmor_stats else None,
             },
         })
         return {
@@ -284,6 +308,7 @@ class PondSecService:
                 "suricata_eve": asdict(stats),
                 "opnsense_filterlog": asdict(filter_stats) if filter_stats else None,
                 "zeek": asdict(zeek_stats) if zeek_stats else None,
+                "zenarmor": asdict(zenarmor_stats) if zenarmor_stats else None,
             },
             "inserted_events": inserted_events,
             "detections": inserted_detections,

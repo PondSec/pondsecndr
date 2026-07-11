@@ -373,6 +373,61 @@
     </field>
     <field>
         <type>header</type>
+        <label>Zenarmor telemetry</label>
+    </field>
+    <field>
+        <id>pondsecndr.zenarmor.enabled</id>
+        <label>Enable Zenarmor provider</label>
+        <type>checkbox</type>
+        <help>Reads documented Zenarmor reporting exports such as Syslog data. PondSec does not change Zenarmor policies, TLS inspection, licensing, or engine files.</help>
+    </field>
+    <field>
+        <id>pondsecndr.zenarmor.source</id>
+        <label>Zenarmor source</label>
+        <type>dropdown</type>
+    </field>
+    <field>
+        <id>pondsecndr.zenarmor.sensor_name</id>
+        <label>Zenarmor sensor name</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.zenarmor.remote_target</id>
+        <label>Zenarmor remote target</label>
+        <type>text</type>
+        <help>Optional external Syslog sender, export target, or instance label for correlation.</help>
+    </field>
+    <field>
+        <id>pondsecndr.zenarmor.syslog_path</id>
+        <label>Zenarmor Syslog export path</label>
+        <type>text</type>
+        <help>Path to a local file written by the configured Syslog/reporting export receiver.</help>
+    </field>
+    <field>
+        <id>pondsecndr.zenarmor.start_at_end</id>
+        <label>Start at end</label>
+        <type>checkbox</type>
+        <help>Recommended for production so old exported records are not ingested unexpectedly.</help>
+    </field>
+    <field>
+        <id>pondsecndr.zenarmor.api_enabled</id>
+        <label>Enable Zenarmor API metadata</label>
+        <type>checkbox</type>
+        <help>Reserved for documented API reads only. It does not store API secrets in this form.</help>
+    </field>
+    <field>
+        <id>pondsecndr.zenarmor.api_base_url</id>
+        <label>Zenarmor API base URL</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.zenarmor.api_key_ref</id>
+        <label>Zenarmor API key reference</label>
+        <type>text</type>
+        <help>Name of an external credential reference. Do not paste API keys, SASE keys, certificates, or passwords here.</help>
+    </field>
+    <field>
+        <type>header</type>
         <label>Response</label>
     </field>
     <field>
