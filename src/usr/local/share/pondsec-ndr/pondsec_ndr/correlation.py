@@ -194,7 +194,11 @@ def _promotion_score(
     score += _add_factor(positive, "attack_stage_coverage", min(16, len(stages) * 8), {"stages": sorted(stages)})
     score += _add_factor(positive, "risk_score_context", min(10, max(0, risk_score // 10)), {"risk_score": risk_score})
 
-    strong_detectors = sorted(detector_ids & STRONG_INCIDENT_DETECTORS)
+    metadata_limited_dns = _is_metadata_limited_dns_only(detections)
+    strong_detectors = sorted(
+        detector_id for detector_id in (detector_ids & STRONG_INCIDENT_DETECTORS)
+        if not (detector_id == "pondsec.dns_tunneling" and metadata_limited_dns)
+    )
     marker_supply_chain = _has_marker_supply_chain(detections)
     high_confidence_signature = _has_high_confidence_signature(detections)
     high_confidence_ml = _has_high_confidence_ml(detections)
@@ -231,6 +235,8 @@ def _promotion_score(
         score -= _add_factor(negative, "supply_chain_without_marker", 35, {})
     if _is_beacon_only(detections):
         score -= _add_factor(negative, "periodicity_without_corroboration", 30, {})
+    if metadata_limited_dns:
+        score -= _add_factor(negative, "dns_query_names_missing", 35, {})
     if _has_immature_baseline(detections):
         score -= _add_factor(negative, "immature_baseline", 25, {})
     if _has_many_external_destinations_without_failures(detections):
@@ -369,6 +375,15 @@ def _is_heuristic_supply_chain_only(detections: list[dict[str, Any]]) -> bool:
 
 def _is_beacon_only(detections: list[dict[str, Any]]) -> bool:
     return bool(detections) and all(detection.get("detector_id") == "pondsec.beaconing" for detection in detections)
+
+
+def _is_metadata_limited_dns_only(detections: list[dict[str, Any]]) -> bool:
+    return bool(detections) and all(
+        detection.get("detector_id") == "pondsec.dns_tunneling"
+        and isinstance(detection.get("evidence"), dict)
+        and detection["evidence"].get("metadata_limited") is True
+        for detection in detections
+    )
 
 
 def _has_immature_baseline(detections: list[dict[str, Any]]) -> bool:

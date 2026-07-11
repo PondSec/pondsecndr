@@ -52,6 +52,7 @@ def _base_feature(source_ip: str) -> dict[str, Any]:
         "new_destination_score": 0.0,
         "new_service_score": 0.0,
         "dns_query_rate": 0.0,
+        "dns_event_count": 0,
         "dns_nxdomain_rate": 0.0,
         "dns_name_length": 0,
         "dns_entropy": 0.0,
@@ -118,6 +119,7 @@ def aggregate_features(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
             elif dst:
                 item["external_connections"] += 1
             if event.get("event_type") == "dns":
+                item["dns_event_count"] += 1
                 name = metadata.get("rrname")
                 if name:
                     dns_names.append(str(name))
@@ -144,8 +146,8 @@ def aggregate_features(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if port_counter:
             item["dominant_destination_port"] = port_counter.most_common(1)[0][0]
         item["upload_download_ratio"] = round(item["bytes_out"] / max(item["bytes_in"], 1), 4)
-        item["dns_query_rate"] = round(len(dns_names) / duration, 4)
-        item["dns_nxdomain_rate"] = round(nxdomain / max(len(dns_names), 1), 4)
+        item["dns_query_rate"] = round(item["dns_event_count"] / duration, 4)
+        item["dns_nxdomain_rate"] = round(nxdomain / max(item["dns_event_count"], 1), 4)
         if dns_names:
             item["dns_name_length"] = int(mean(len(name) for name in dns_names))
             item["dns_entropy"] = round(mean(shannon_entropy(name.split(".")[0]) for name in dns_names), 4)

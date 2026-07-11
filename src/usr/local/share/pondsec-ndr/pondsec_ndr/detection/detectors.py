@@ -310,6 +310,7 @@ class DNSTunnelingDetector(Detector):
             query_rate = float(item.get("dns_query_rate") or 0)
             nxdomain = float(item.get("dns_nxdomain_rate") or 0)
             event_count = int(item.get("connections_5m") or 0)
+            dns_event_count = int(item.get("dns_event_count") or 0)
             enough_volume = event_count >= 8 or (event_count >= 4 and nxdomain >= 0.3)
             if entropy >= 3.8 and name_length >= 45 and enough_volume and (query_rate >= 0.2 or nxdomain >= 0.3):
                 detections.append(make_detection(
@@ -335,6 +336,38 @@ class DNSTunnelingDetector(Detector):
                             {"feature": "dns_query_rate_or_nxdomain_rate", "operator": "query_rate>=0.2 OR nxdomain_rate>=0.3", "threshold": "0.2/0.3", "observed": {"dns_query_rate": query_rate, "dns_nxdomain_rate": nxdomain}},
                         ],
                     },
+                ))
+            elif (
+                dns_event_count >= 12
+                and query_rate >= 4.0
+                and int(item.get("dominant_destination_port") or 0) == 53
+                and int(item.get("destination_count") or 0) <= 2
+            ):
+                detections.append(make_detection(
+                    self.detector_id,
+                    "command_and_control",
+                    "Possible DNS tunneling with limited metadata",
+                    "DNS telemetry shows a burst of resolver queries, but the provider did not export query names.",
+                    item["source_ip"],
+                    "dns_resolver",
+                    6,
+                    min(0.82, 0.54 + min(query_rate, 20) / 100 + dns_event_count / 200),
+                    min(0.75, dns_event_count / 40),
+                    {
+                        "dns_event_count": dns_event_count,
+                        "dns_query_rate": query_rate,
+                        "dns_name_length": name_length,
+                        "dns_entropy": entropy,
+                        "metadata_limited": True,
+                        "provider_query_names_missing": True,
+                        "signature_required": False,
+                        "thresholds": [
+                            {"feature": "dns_event_count", "operator": ">=", "threshold": 12, "observed": dns_event_count},
+                            {"feature": "dns_query_rate", "operator": ">=", "threshold": 4.0, "observed": query_rate},
+                            {"feature": "dominant_destination_port", "operator": "=", "threshold": 53, "observed": item.get("dominant_destination_port")},
+                        ],
+                    },
+                    recommended_action="investigate",
                 ))
         return detections
 

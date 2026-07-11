@@ -1099,6 +1099,52 @@ class BackendTests(unittest.TestCase):
         ]
         self.assertEqual(DNSTunnelingDetector().detect(events, aggregate_features(events)), [])
 
+    def test_dns_tunneling_detector_handles_metadata_limited_dns_burst(self) -> None:
+        events = [
+            {
+                "schema_version": "1",
+                "event_id": f"dns-limited-{index}",
+                "event_type": "dns",
+                "timestamp": f"2026-07-05T10:00:00.{index:02d}+00:00",
+                "source": {"ip": "192.168.10.70", "port": 53000 + index, "interface": None},
+                "destination": {"ip": "192.168.10.1", "port": 53},
+                "protocol": "UDP",
+                "direction": "internal",
+                "metadata": {"event_source": "zenarmor"},
+                "raw_source": "zenarmor",
+            }
+            for index in range(18)
+        ]
+        features = aggregate_features(events)
+        self.assertEqual(features[0]["dns_event_count"], 18)
+        self.assertGreaterEqual(features[0]["dns_query_rate"], 4.0)
+        detections = DNSTunnelingDetector().detect(events, features)
+        self.assertEqual(len(detections), 1)
+        self.assertEqual(detections[0]["detector_id"], "pondsec.dns_tunneling")
+        self.assertTrue(detections[0]["evidence"]["metadata_limited"])
+
+    def test_metadata_limited_dns_burst_does_not_promote_alone(self) -> None:
+        detection = {
+            "detection_id": "d-dns-limited",
+            "detector_id": "pondsec.dns_tunneling",
+            "detector_version": "1",
+            "category": "command_and_control",
+            "title": "Possible DNS tunneling with limited metadata",
+            "description": "DNS telemetry shows a burst without query names.",
+            "timestamp": "2026-07-05T10:00:00+00:00",
+            "source_ip": "192.168.10.70",
+            "destination_ip": "dns_resolver",
+            "severity": 6,
+            "confidence": 0.75,
+            "anomaly_score": 0.45,
+            "evidence": {"metadata_limited": True, "dns_event_count": 18, "dns_query_rate": 18.0},
+            "recommended_action": "investigate",
+        }
+        self.assertEqual(correlate_detections([detection]), [])
+        promotion = detection["evidence"]["promotion"]
+        self.assertEqual(promotion["decision"], "suppressed")
+        self.assertEqual(promotion["reason"], "dns_query_names_missing")
+
     def test_auth_service_pressure_detector_does_not_label_tcp_resets_as_bruteforce(self) -> None:
         events = [
             normalize_eve(flow_event(f"2026-07-05T10:00:{i:02d}+00:00", "192.168.20.55", "192.168.30.21", 22, "reset"))
