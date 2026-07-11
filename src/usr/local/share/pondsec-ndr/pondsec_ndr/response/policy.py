@@ -50,6 +50,8 @@ def evaluate_automatic_response_policy(
         reasons.append("target is allowlisted or break-glass protected")
     if learning_status.get("active"):
         reasons.append("learning phase is active")
+    elif target_is_internal and not _learning_complete_for_response(learning_status):
+        reasons.append("learning phase is not complete for internal auto-isolation")
     if int(incident.get("risk_score") or 0) < config.response.minimum_risk_score:
         reasons.append("incident risk score is below response threshold")
     if int(incident.get("severity") or 0) < config.response.minimum_severity:
@@ -118,6 +120,14 @@ def evaluate_automatic_response_policy(
             "max_internal_isolations_per_hour": config.response.max_internal_isolations_per_hour,
         },
     }
+
+
+def _learning_complete_for_response(learning_status: dict[str, Any]) -> bool:
+    return (
+        learning_status.get("status") == "armed"
+        and bool(learning_status.get("started_at"))
+        and int(learning_status.get("remaining_days") or 0) == 0
+    )
 
 
 def _decision_layers(

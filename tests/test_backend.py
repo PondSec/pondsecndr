@@ -141,6 +141,15 @@ def robust_internal_incident(incident_id: str = "incident-robust-internal", sour
     }
 
 
+def armed_detection_config() -> DetectionConfig:
+    return DetectionConfig(
+        machine_learning=True,
+        learning_mode=True,
+        learning_started_at="2026-06-01T00:00:00+00:00",
+        learning_days=1,
+    )
+
+
 class BackendTests(unittest.TestCase):
     def test_suricata_normalizer_redacts_http_query_and_validates_ports(self) -> None:
         event = normalize_eve({
@@ -928,7 +937,7 @@ class BackendTests(unittest.TestCase):
                 data_dir=root / "db",
                 log_dir=root / "log",
                 run_dir=root / "run",
-                detection=DetectionConfig(machine_learning=True, learning_mode=False),
+                detection=armed_detection_config(),
             )
             service = PondSecService(config)
             result = service.run_once(max_lines=100)
@@ -1249,7 +1258,7 @@ class BackendTests(unittest.TestCase):
             seed_host_baseline(store, "192.168.30.3")
             config = PondSecConfig(
                 response=ResponseConfig(mode="enforce", automatic_blocking=True, isolate_internal=True, ai_full_decision_mode=True),
-                detection=DetectionConfig(machine_learning=True, learning_mode=False),
+                detection=armed_detection_config(),
             )
             proposal = propose_block_for_incident(store, config, "incident-internal-isolation-target", actor="test", automatic=True)
             self.assertEqual(proposal["source_ip"], "192.168.30.3")
@@ -1292,7 +1301,7 @@ class BackendTests(unittest.TestCase):
             }])
             config = PondSecConfig(
                 response=ResponseConfig(mode="enforce", automatic_blocking=True, minimum_risk_score=50, minimum_confidence=50, isolate_internal=True, block_external=True),
-                detection=DetectionConfig(machine_learning=True, learning_mode=False),
+                detection=armed_detection_config(),
             )
             with self.assertRaisesRegex(ResponseDenied, "policy denied"):
                 propose_block_for_incident(store, config, "incident-weak-internal-isolation", actor="test", automatic=True)
@@ -1322,6 +1331,19 @@ class BackendTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(ResponseDenied, "learning phase"):
                 propose_block_for_incident(store, config, "incident-learning-internal-isolation", actor="test", automatic=True)
+
+    def test_response_policy_requires_completed_learning_marker_for_internal_isolation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            store.insert_incidents([robust_internal_incident("incident-learning-not-complete")])
+            seed_host_baseline(store, "192.168.30.3")
+            config = PondSecConfig(
+                response=ResponseConfig(mode="enforce", automatic_blocking=True, isolate_internal=True, ai_full_decision_mode=True),
+                detection=DetectionConfig(machine_learning=True, learning_mode=False),
+            )
+            with self.assertRaisesRegex(ResponseDenied, "learning phase is not complete"):
+                propose_block_for_incident(store, config, "incident-learning-not-complete", actor="test", automatic=True)
 
     def test_response_policy_denies_single_suricata_alert_for_internal_isolation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1355,7 +1377,7 @@ class BackendTests(unittest.TestCase):
             }])
             config = PondSecConfig(
                 response=ResponseConfig(mode="enforce", automatic_blocking=True, isolate_internal=True),
-                detection=DetectionConfig(machine_learning=True, learning_mode=False),
+                detection=armed_detection_config(),
             )
             with self.assertRaisesRegex(ResponseDenied, "single-signal|not enough"):
                 propose_block_for_incident(store, config, "incident-single-suricata-alert", actor="test", automatic=True)
@@ -1404,7 +1426,7 @@ class BackendTests(unittest.TestCase):
             store.insert_incidents([base, intel])
             config = PondSecConfig(
                 response=ResponseConfig(mode="enforce", automatic_blocking=True, isolate_internal=True),
-                detection=DetectionConfig(machine_learning=True, learning_mode=False),
+                detection=armed_detection_config(),
             )
             with self.assertRaisesRegex(ResponseDenied, "single-signal|strong internal"):
                 propose_block_for_incident(store, config, "incident-portscan-alone", actor="test", automatic=True)
@@ -1423,7 +1445,7 @@ class BackendTests(unittest.TestCase):
             seed_host_baseline(store, "192.168.30.3")
             config = PondSecConfig(
                 response=ResponseConfig(mode="enforce", automatic_blocking=True, isolate_internal=True),
-                detection=DetectionConfig(machine_learning=True, learning_mode=False),
+                detection=armed_detection_config(),
             )
             with self.assertRaisesRegex(ResponseDenied, "independent engines"):
                 propose_block_for_incident(store, config, "incident-one-engine", actor="test", automatic=True)
@@ -1440,7 +1462,7 @@ class BackendTests(unittest.TestCase):
             config = PondSecConfig(
                 interfaces=InterfaceConfig(management=["192.168.99.0/24"]),
                 response=ResponseConfig(mode="enforce", automatic_blocking=True, isolate_internal=True, protected_hosts=["192.168.30.3"]),
-                detection=DetectionConfig(machine_learning=True, learning_mode=False),
+                detection=armed_detection_config(),
             )
             with self.assertRaisesRegex(ResponseDenied, "protected"):
                 propose_block_for_incident(store, config, "incident-protected-host", actor="test", automatic=True)
@@ -1466,7 +1488,7 @@ class BackendTests(unittest.TestCase):
             }, actor="test")
             config = PondSecConfig(
                 response=ResponseConfig(mode="enforce", automatic_blocking=True, isolate_internal=True, max_internal_isolations_per_hour=1),
-                detection=DetectionConfig(machine_learning=True, learning_mode=False),
+                detection=armed_detection_config(),
             )
             with self.assertRaisesRegex(ResponseDenied, "hourly rate limit"):
                 propose_block_for_incident(store, config, "incident-rate-limited", actor="test", automatic=True)
@@ -1496,7 +1518,7 @@ class BackendTests(unittest.TestCase):
                     max_internal_isolations_per_hour=10,
                     internal_isolation_cooldown_seconds=900,
                 ),
-                detection=DetectionConfig(machine_learning=True, learning_mode=False),
+                detection=armed_detection_config(),
             )
             with self.assertRaisesRegex(ResponseDenied, "cooldown"):
                 propose_block_for_incident(store, config, "incident-cooldown-limited", actor="test", automatic=True)
@@ -1509,7 +1531,7 @@ class BackendTests(unittest.TestCase):
                 data_dir=root / "db",
                 log_dir=root / "log",
                 run_dir=root / "run",
-                detection=DetectionConfig(machine_learning=True, learning_mode=False),
+                detection=armed_detection_config(),
                 response=ResponseConfig(mode="observe", automatic_blocking=True, isolate_internal=True, max_internal_isolations_per_hour=10),
             )
             service = PondSecService(config)
@@ -1560,7 +1582,7 @@ class BackendTests(unittest.TestCase):
                 data_dir=root / "db",
                 log_dir=root / "log",
                 run_dir=root / "run",
-                detection=DetectionConfig(machine_learning=True, learning_mode=False),
+                detection=armed_detection_config(),
                 response=ResponseConfig(
                     mode="enforce",
                     ai_full_decision_mode=False,
