@@ -503,11 +503,11 @@
                 <Required>N</Required>
             </sensor_name>
             <dns_log_path type="TextField">
-                <default>/var/log/resolver/latest.log</default>
+                <default>/var/log/dnsmasq</default>
                 <Required>N</Required>
             </dns_log_path>
             <dhcp_log_path type="TextField">
-                <default>/var/log/dhcpd/latest.log</default>
+                <default></default>
                 <Required>N</Required>
             </dhcp_log_path>
             <lease_path type="TextField">

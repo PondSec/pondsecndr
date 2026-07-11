@@ -112,7 +112,10 @@ class DnsmasqCollector:
         try:
             with path.open("r", encoding="utf-8", errors="replace") as handle:
                 handle.seek(offset)
-                for line in handle:
+                while stats.read_lines < max_lines:
+                    line = handle.readline()
+                    if not line:
+                        break
                     if stats.read_lines >= max_lines:
                         break
                     stripped = line.strip()

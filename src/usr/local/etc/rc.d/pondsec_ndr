@@ -46,6 +46,10 @@ pondsec_ndr_prestart()
             setfacl -m u:${pondsec_ndr_user}:raRcs::allow "${filter_target}" 2>/dev/null || true
         fi
     fi
+    if [ -d /var/log/dnsmasq ]; then
+        setfacl -m u:${pondsec_ndr_user}:rxaRcs:fd:allow /var/log/dnsmasq 2>/dev/null || true
+        find /var/log/dnsmasq -maxdepth 1 -type f -name "*.log" -exec setfacl -m u:${pondsec_ndr_user}:raRcs::allow {} + 2>/dev/null || true
+    fi
 }
 
 run_rc_command "$1"

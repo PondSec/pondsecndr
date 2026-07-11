@@ -126,8 +126,8 @@
   "dnsmasq": {
     "enabled": "{{ dnsmasq.enabled|default("0") }}",
     "sensor_name": "{{ dnsmasq.sensor_name|default("") }}",
-    "dns_log_path": "{{ dnsmasq.dns_log_path|default("/var/log/resolver/latest.log") }}",
-    "dhcp_log_path": "{{ dnsmasq.dhcp_log_path|default("/var/log/dhcpd/latest.log") }}",
+    "dns_log_path": "{{ dnsmasq.dns_log_path|default("/var/log/dnsmasq") }}",
+    "dhcp_log_path": "{{ dnsmasq.dhcp_log_path|default("") }}",
     "lease_path": "{{ dnsmasq.lease_path|default("/var/db/dnsmasq.leases") }}",
     "start_at_end": "{{ dnsmasq.start_at_end|default("1") }}"
   },
