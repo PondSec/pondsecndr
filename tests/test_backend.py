@@ -1466,6 +1466,36 @@ class BackendTests(unittest.TestCase):
             with self.assertRaisesRegex(ResponseDenied, "hourly rate limit"):
                 propose_block_for_incident(store, config, "incident-rate-limited", actor="test", automatic=True)
 
+    def test_response_policy_cooldown_prevents_rapid_internal_isolation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            store.insert_incidents([robust_internal_incident("incident-cooldown-limited")])
+            seed_host_baseline(store, "192.168.30.3")
+            store.add_block_entry({
+                "incident_id": "recent-incident",
+                "source_ip": "192.168.30.44",
+                "destination": None,
+                "reason": "recent auto isolation",
+                "risk_score": 99,
+                "confidence": 0.99,
+                "expires_at": "2099-01-01T00:00:00+00:00",
+                "automatic": True,
+                "status": "removed",
+            }, actor="test")
+            config = PondSecConfig(
+                response=ResponseConfig(
+                    mode="enforce",
+                    automatic_blocking=True,
+                    isolate_internal=True,
+                    max_internal_isolations_per_hour=10,
+                    internal_isolation_cooldown_seconds=900,
+                ),
+                detection=DetectionConfig(machine_learning=True, learning_mode=False),
+            )
+            with self.assertRaisesRegex(ResponseDenied, "cooldown"):
+                propose_block_for_incident(store, config, "incident-cooldown-limited", actor="test", automatic=True)
+
     def test_response_modes_observe_recommend_and_enforce_are_separate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

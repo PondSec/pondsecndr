@@ -363,6 +363,12 @@
                 <MaximumValue>100000</MaximumValue>
                 <Required>Y</Required>
             </max_concurrent_blocks>
+            <internal_isolation_cooldown_seconds type="IntegerField">
+                <default>900</default>
+                <MinimumValue>0</MinimumValue>
+                <MaximumValue>86400</MaximumValue>
+                <Required>Y</Required>
+            </internal_isolation_cooldown_seconds>
             <max_internal_isolations_per_hour type="IntegerField">
                 <default>1</default>
                 <MinimumValue>0</MinimumValue>

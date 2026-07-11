@@ -73,6 +73,7 @@
     "auto_isolation_seconds": "{{ OPNsense.pondsecndr.response.auto_isolation_seconds|default("900") }}",
     "max_block_seconds": "{{ OPNsense.pondsecndr.response.max_block_seconds|default("86400") }}",
     "max_concurrent_blocks": "{{ OPNsense.pondsecndr.response.max_concurrent_blocks|default("100") }}",
+    "internal_isolation_cooldown_seconds": "{{ OPNsense.pondsecndr.response.internal_isolation_cooldown_seconds|default("900") }}",
     "max_internal_isolations_per_hour": "{{ OPNsense.pondsecndr.response.max_internal_isolations_per_hour|default("1") }}",
     "max_auto_isolation_candidates_per_run": "{{ OPNsense.pondsecndr.response.max_auto_isolation_candidates_per_run|default("3") }}",
     "block_external": "{{ OPNsense.pondsecndr.response.block_external|default("0") }}",

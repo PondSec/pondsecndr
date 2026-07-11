@@ -1263,7 +1263,7 @@ class EventStore:
                 FROM block_entries
                 WHERE automatic = 1
                   AND created_at >= ?
-                  AND status IN ('proposed', 'active', 'removed', 'expired')
+                  AND status IN ('active', 'removed', 'expired')
                 """,
                 (cutoff,),
             ).fetchall()

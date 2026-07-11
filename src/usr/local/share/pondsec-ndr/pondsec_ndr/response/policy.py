@@ -102,6 +102,8 @@ def evaluate_automatic_response_policy(
             "min_supporting_indicators": config.response.min_supporting_indicators,
             "min_independent_engines": config.response.min_independent_engines,
             "baseline_stable_observations": config.response.baseline_stable_observations,
+            "internal_isolation_cooldown_seconds": config.response.internal_isolation_cooldown_seconds,
+            "max_internal_isolations_per_hour": config.response.max_internal_isolations_per_hour,
         },
     }
 
@@ -137,6 +139,11 @@ def _internal_isolation_reasons(
     baseline_observations = store.host_baseline_observations(target_ip)
     if baseline_observations < config.response.baseline_stable_observations:
         reasons.append("host baseline is not stable enough for automatic isolation")
+    if (
+        config.response.internal_isolation_cooldown_seconds > 0
+        and store.recent_automatic_internal_block_count(config.response.internal_isolation_cooldown_seconds) >= 1
+    ):
+        reasons.append("internal auto-isolation cooldown is active")
     if store.recent_automatic_internal_block_count(3600) >= config.response.max_internal_isolations_per_hour:
         reasons.append("internal auto-isolation hourly rate limit reached")
     return reasons

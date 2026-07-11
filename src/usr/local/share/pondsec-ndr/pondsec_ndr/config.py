@@ -186,6 +186,7 @@ class ResponseConfig:
     auto_isolation_seconds: int = 900
     max_block_seconds: int = 86400
     max_concurrent_blocks: int = 100
+    internal_isolation_cooldown_seconds: int = 900
     max_internal_isolations_per_hour: int = 1
     max_auto_isolation_candidates_per_run: int = 3
     block_external: bool = False
@@ -257,6 +258,8 @@ class PondSecConfig:
             errors.append("threat_intel cache_ttl_hours must be positive")
         if self.response.max_internal_isolations_per_hour < 0:
             errors.append("max_internal_isolations_per_hour must not be negative")
+        if self.response.internal_isolation_cooldown_seconds < 0:
+            errors.append("internal_isolation_cooldown_seconds must not be negative")
         return errors
 
 
@@ -362,6 +365,7 @@ def load_config(path: Path | None = None) -> PondSecConfig:
             auto_isolation_seconds=_int(response.get("auto_isolation_seconds"), 900, 60, 604800),
             max_block_seconds=_int(response.get("max_block_seconds"), 86400, 60, 2592000),
             max_concurrent_blocks=_int(response.get("max_concurrent_blocks"), 100, 0, 100000),
+            internal_isolation_cooldown_seconds=_int(response.get("internal_isolation_cooldown_seconds"), 900, 0, 86400),
             max_internal_isolations_per_hour=_int(response.get("max_internal_isolations_per_hour"), 1, 0, 100000),
             max_auto_isolation_candidates_per_run=_int(response.get("max_auto_isolation_candidates_per_run"), 3, 1, 100000),
             block_external=_bool(response.get("block_external"), False),
