@@ -204,6 +204,33 @@ $(function() {
         $('#incident_entry_reason').text(entry.reason || '');
     }
 
+    function renderResponseDecisions(decisions) {
+        decisions = decisions || [];
+        if (!decisions.length) {
+            return '<div class="pondsec-empty">No response policy decision recorded for this case.</div>';
+        }
+        return decisions.map(function(item) {
+            var detail = item.detail || {};
+            var reasons = detail.reasons || detail.blocking_reasons || detail.activation_reasons || [];
+            var layers = detail.decision_layers || {};
+            return '<div class="pondsec-decision">' +
+                '<div class="pondsec-decision-head">' +
+                    badge(detail.status || item.action || 'recorded') +
+                    '<strong>' + escapeHtml(item.action || 'response decision') + '</strong>' +
+                    '<span>' + escapeHtml(formatDate(item.timestamp)) + '</span>' +
+                    '<span>' + escapeHtml(item.actor || '-') + '</span>' +
+                '</div>' +
+                '<div class="pondsec-decision-grid">' +
+                    '<div><span>Target</span><strong>' + mono(detail.target_ip || '-') + '</strong></div>' +
+                    '<div><span>Proposal</span><strong>' + escapeHtml(detail.proposal_allowed ? 'allowed' : 'denied') + '</strong></div>' +
+                    '<div><span>Activation</span><strong>' + escapeHtml(detail.activation_allowed ? 'allowed' : 'not allowed') + '</strong></div>' +
+                    '<div><span>Compromise</span><strong>' + escapeHtml(((layers.compromise_assessment || {}).status) || 'unrecorded') + '</strong></div>' +
+                '</div>' +
+                (reasons.length ? '<ul>' + reasons.slice(0, 6).map(function(reason) { return '<li>' + escapeHtml(reason) + '</li>'; }).join('') + '</ul>' : '') +
+            '</div>';
+        }).join('');
+    }
+
     function renderCaseActions(incident, caseSummary) {
         var id = encodeURIComponent(incident.incident_id || '');
         var response = (caseSummary || {}).response || {};
@@ -721,6 +748,7 @@ $(function() {
         var narrative = analysis.case_narrative || {};
         var relatedCases = analysis.related_cases || [];
         var threatIntel = analysis.threat_intelligence || {};
+        var responseDecisions = analysis.response_decisions || [];
         resetCaseDetails();
         currentIncidentId = incident.incident_id || null;
         $('#incident_detail_title').text(incident.title || incident.incident_id || 'Incident');
@@ -762,6 +790,7 @@ $(function() {
         $('#incident_risk_factors').html(riskFactors.length ? riskFactors.map(function(item) {
             return '<div class="pondsec-feature"><span>' + escapeHtml(item.name || item.factor || 'risk') + '</span><strong>' + compactValue(item.value || item.score || item.weight || item) + '</strong></div>';
         }).join('') : '<div class="pondsec-empty">No risk factors recorded.</div>');
+        $('#incident_response_decisions').html(renderResponseDecisions(responseDecisions));
         renderCaseDetail({type: 'Case summary', title: 'Case overview', item: caseSummary});
         $('#incident_detail_panel').addClass('open');
         activateCaseTab('overview');
@@ -1163,6 +1192,56 @@ $(function() {
     margin-top: 6px;
     overflow-wrap: anywhere;
 }
+.pondsec-decision-list {
+    display: grid;
+    gap: 10px;
+}
+.pondsec-decision {
+    background: #1b2430;
+    border: 1px solid #2a3544;
+    border-radius: 6px;
+    padding: 12px;
+}
+.pondsec-decision-head {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 10px;
+}
+.pondsec-decision-head strong {
+    color: #edf3f8;
+}
+.pondsec-decision-head span {
+    color: #8f9dac;
+    font-size: 12px;
+}
+.pondsec-decision-grid {
+    display: grid;
+    gap: 8px;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+.pondsec-decision-grid div {
+    border-top: 1px solid #2a3544;
+    padding-top: 8px;
+}
+.pondsec-decision-grid span {
+    color: #8f9dac;
+    display: block;
+    font-size: 11px;
+    text-transform: uppercase;
+}
+.pondsec-decision-grid strong {
+    color: #edf3f8;
+    display: block;
+    margin-top: 4px;
+    overflow-wrap: anywhere;
+}
+.pondsec-decision ul {
+    color: #c8d2dc;
+    margin: 10px 0 0 18px;
+    padding: 0;
+}
 .pondsec-case-kv em,
 .pondsec-certainty {
     border-radius: 999px;
@@ -1519,7 +1598,8 @@ $(function() {
     .pondsec-analysis-grid,
     .pondsec-case-grid.wide,
     .pondsec-stage-lane,
-    .pondsec-certainty-grid {
+    .pondsec-certainty-grid,
+    .pondsec-decision-grid {
         grid-template-columns: 1fr;
     }
 }
@@ -1635,6 +1715,10 @@ $(function() {
         <section class="pondsec-case-section">
             <h4>Risk factors</h4>
             <div id="incident_risk_factors" class="pondsec-feature-grid"></div>
+        </section>
+        <section class="pondsec-case-section">
+            <h4>Response policy decisions</h4>
+            <div id="incident_response_decisions" class="pondsec-decision-list"></div>
         </section>
     </div>
     <div data-case-tab-panel="intel" style="display:none">

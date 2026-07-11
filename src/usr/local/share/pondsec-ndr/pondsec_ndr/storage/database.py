@@ -1395,6 +1395,35 @@ class EventStore:
         with self.connect() as conn:
             self._audit(conn, actor, f"response.{action}", incident_id, detail)
 
+    def response_decisions_for_incident(self, incident_id: str | None, limit: int = 10) -> list[dict[str, Any]]:
+        if not incident_id:
+            return []
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT timestamp, actor, action, detail_json
+                FROM audit_log
+                WHERE target = ?
+                  AND action LIKE 'response.%'
+                ORDER BY timestamp DESC
+                LIMIT ?
+                """,
+                (incident_id, max(1, int(limit))),
+            ).fetchall()
+        decisions = []
+        for row in rows:
+            try:
+                detail = json.loads(row["detail_json"] or "{}")
+            except json.JSONDecodeError:
+                detail = {}
+            decisions.append({
+                "timestamp": row["timestamp"],
+                "actor": row["actor"],
+                "action": row["action"],
+                "detail": detail,
+            })
+        return decisions
+
     def false_positive_feedback_sources(self, since_days: int = 14) -> set[str]:
         cutoff = (datetime.now(timezone.utc) - timedelta(days=max(1, int(since_days)))).isoformat()
         with self.connect() as conn:

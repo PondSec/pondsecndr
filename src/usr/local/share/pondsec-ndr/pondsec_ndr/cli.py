@@ -1148,11 +1148,13 @@ def _incident_analysis(
     visual_timeline = _group_timeline(timeline)
     summary = _case_summary(incident, targets, admin_guidance, response_block, entity_roles, response_blocks, threat_intel)
     related_cases = _related_cases(store, incident, entity_roles) if store else []
+    response_decisions = store.response_decisions_for_incident(incident.get("incident_id")) if store else []
     return {
         "case_summary": summary,
         "case_narrative": summary.get("narrative", {}),
         "entity_roles": entity_roles,
         "related_cases": related_cases,
+        "response_decisions": response_decisions,
         "threat_intelligence": threat_intel,
         "host_story": {
             "source_ip": incident.get("source_ip"),

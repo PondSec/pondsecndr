@@ -637,6 +637,30 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(analysis["visual_timeline"][0]["count"], 1)
         self.assertEqual(analysis["case_summary"]["response"]["status"], "active")
 
+    def test_incident_analysis_includes_response_policy_decisions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            incident = robust_internal_incident("incident-response-decision-analysis")
+            store.insert_incidents([incident])
+            store.audit_response_decision(
+                incident["incident_id"],
+                "policy_decision",
+                {
+                    "status": "denied",
+                    "target_ip": "192.168.30.3",
+                    "proposal_allowed": False,
+                    "activation_allowed": False,
+                    "reasons": ["learning phase is active"],
+                    "decision_layers": {"compromise_assessment": {"status": "unconfirmed"}},
+                },
+                actor="test",
+            )
+            analysis = _incident_analysis(store.get_incident(incident["incident_id"]), store=store)
+            self.assertEqual(len(analysis["response_decisions"]), 1)
+            self.assertEqual(analysis["response_decisions"][0]["detail"]["status"], "denied")
+            self.assertIn("learning phase is active", analysis["response_decisions"][0]["detail"]["reasons"])
+
     def test_cross_category_correlation_builds_one_multistage_case_with_roles_and_cve_context(self) -> None:
         detections = [
             {
