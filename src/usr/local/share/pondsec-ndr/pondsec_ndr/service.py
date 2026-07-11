@@ -166,6 +166,15 @@ class PondSecService:
                 remote_target=self.config.zenarmor.remote_target,
                 queue_limit=collector_queue_limit,
                 start_at_end=self.config.zenarmor.start_at_end,
+                import_options={
+                    "import_applications": self.config.zenarmor.import_applications,
+                    "import_categories": self.config.zenarmor.import_categories,
+                    "import_tls_metadata": self.config.zenarmor.import_tls_metadata,
+                    "import_session_context": self.config.zenarmor.import_session_context,
+                    "import_policy_actions": self.config.zenarmor.import_policy_actions,
+                    "import_device_context": self.config.zenarmor.import_device_context,
+                    "import_security_events": self.config.zenarmor.import_security_events,
+                },
             )
             zenarmor_events, zenarmor_stats = zenarmor_collector.read_once(max_lines=max_lines)
             events.extend(zenarmor_events)

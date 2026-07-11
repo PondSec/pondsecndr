@@ -91,13 +91,23 @@
   "zenarmor": {
     "enabled": "{{ zenarmor.enabled|default("0") }}",
     "source": "{{ zenarmor.source|default("syslog_export") }}",
+    "format": "{{ zenarmor.format|default("auto") }}",
     "sensor_name": "{{ zenarmor.sensor_name|default("") }}",
     "remote_target": "{{ zenarmor.remote_target|default("") }}",
     "syslog_path": "{{ zenarmor.syslog_path|default("/var/log/zenarmor/streaming.log") }}",
     "start_at_end": "{{ zenarmor.start_at_end|default("1") }}",
     "api_enabled": "{{ zenarmor.api_enabled|default("0") }}",
     "api_base_url": "{{ zenarmor.api_base_url|default("") }}",
-    "api_key_ref": "{{ zenarmor.api_key_ref|default("") }}"
+    "api_key_ref": "{{ zenarmor.api_key_ref|default("") }}",
+    "api_timeout_seconds": "{{ zenarmor.api_timeout_seconds|default("5") }}",
+    "api_verify_tls": "{{ zenarmor.api_verify_tls|default("1") }}",
+    "import_applications": "{{ zenarmor.import_applications|default("1") }}",
+    "import_categories": "{{ zenarmor.import_categories|default("1") }}",
+    "import_tls_metadata": "{{ zenarmor.import_tls_metadata|default("1") }}",
+    "import_session_context": "{{ zenarmor.import_session_context|default("1") }}",
+    "import_policy_actions": "{{ zenarmor.import_policy_actions|default("1") }}",
+    "import_device_context": "{{ zenarmor.import_device_context|default("1") }}",
+    "import_security_events": "{{ zenarmor.import_security_events|default("1") }}"
   },
   "netflow": {
     "enabled": "{{ netflow.enabled|default("0") }}",

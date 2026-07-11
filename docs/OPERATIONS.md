@@ -94,6 +94,25 @@ For log rotation, keep the EVE newsyslog entry at `root:pondsecndr` with mode
 `640`. The development deploy helper applies this when `/var/log/suricata`
 exists.
 
+## Zeek And Zenarmor Connectors
+
+Zeek can be used as a local log reader only when the active OPNsense package
+repositories provide a stable Zeek package. Do not add unrelated FreeBSD
+repositories to a firewall just to satisfy this dependency. If no package is
+available, run Zeek on an external sensor and point PondSec to the exported
+`conn.log`, `dns.log`, `ssl.log`, `x509.log`, `http.log`, `files.log`,
+`notice.log`, and `weird.log` files. The collector tracks offsets per log,
+detects rotation by inode and size, and reports per-log health in provider
+inventory.
+
+Zenarmor integration reads administrator-configured documented exports and
+metadata. Supported PondSec settings cover Syslog/reporting exports, official
+log files, documented API metadata references, JSON or key-value formats, and
+separate import switches for applications, categories, TLS metadata, session
+context, policy actions, device context, and security events. Do not paste API
+keys, certificates, SASE secrets, or passwords into the PondSec form; use an
+external credential reference.
+
 ## Logs
 
 Logs are structured JSON under `/var/log/pondsec-ndr/`. Log entries include timestamp, level, component, event, message, run id, and optional incident, detection, host, and error fields.

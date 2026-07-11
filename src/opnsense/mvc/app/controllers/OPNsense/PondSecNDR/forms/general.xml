@@ -387,6 +387,11 @@
         <type>dropdown</type>
     </field>
     <field>
+        <id>pondsecndr.zenarmor.format</id>
+        <label>Zenarmor export format</label>
+        <type>dropdown</type>
+    </field>
+    <field>
         <id>pondsecndr.zenarmor.sensor_name</id>
         <label>Zenarmor sensor name</label>
         <type>text</type>
@@ -425,6 +430,58 @@
         <label>Zenarmor API key reference</label>
         <type>text</type>
         <help>Name of an external credential reference. Do not paste API keys, SASE keys, certificates, or passwords here.</help>
+    </field>
+    <field>
+        <id>pondsecndr.zenarmor.api_timeout_seconds</id>
+        <label>Zenarmor API timeout seconds</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.zenarmor.api_verify_tls</id>
+        <label>Verify Zenarmor API TLS</label>
+        <type>checkbox</type>
+    </field>
+    <field>
+        <id>pondsecndr.zenarmor.import_applications</id>
+        <label>Import Zenarmor applications</label>
+        <type>checkbox</type>
+        <help>Application and application-category context from reporting exports.</help>
+    </field>
+    <field>
+        <id>pondsecndr.zenarmor.import_categories</id>
+        <label>Import Zenarmor categories</label>
+        <type>checkbox</type>
+        <help>Web, application and security categories for hunting, correlation and explainability.</help>
+    </field>
+    <field>
+        <id>pondsecndr.zenarmor.import_tls_metadata</id>
+        <label>Import Zenarmor TLS metadata</label>
+        <type>checkbox</type>
+        <help>SNI, TLS version and JA3/JA4 values when present in exported reporting data.</help>
+    </field>
+    <field>
+        <id>pondsecndr.zenarmor.import_session_context</id>
+        <label>Import Zenarmor session context</label>
+        <type>checkbox</type>
+        <help>Session IDs, byte counters, ASN and country values when available.</help>
+    </field>
+    <field>
+        <id>pondsecndr.zenarmor.import_policy_actions</id>
+        <label>Import Zenarmor policy actions</label>
+        <type>checkbox</type>
+        <help>Block, allow, policy and rule names from documented exports.</help>
+    </field>
+    <field>
+        <id>pondsecndr.zenarmor.import_device_context</id>
+        <label>Import Zenarmor device context</label>
+        <type>checkbox</type>
+        <help>Device ID, device name and user labels when present.</help>
+    </field>
+    <field>
+        <id>pondsecndr.zenarmor.import_security_events</id>
+        <label>Import Zenarmor security events</label>
+        <type>checkbox</type>
+        <help>Threat names, security categories and SASE/secure-access event labels when present.</help>
     </field>
     <field>
         <type>header</type>

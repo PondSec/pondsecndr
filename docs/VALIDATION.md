@@ -1,5 +1,31 @@
 # Validation Log
 
+## 2026-07-11: Zeek Package Check And Connector Expansion
+
+Target firewall:
+
+- Address: `192.168.99.2`
+- OPNsense: `26.1.11_6`
+- FreeBSD: `14.3-RELEASE-p16`
+- Active repositories checked: OPNsense, SunnyValley
+
+Validation results:
+
+- `pkg search -x "^(zeek|bro)$|^zeek-|^bro-"`: no matching package in active repositories.
+- `pkg install -y zeek`: failed cleanly with no package available.
+- `pkg info -x "^(zeek|bro)$|^os-sensei"`: Zenarmor packages present, no Zeek/Bro package installed.
+
+Decision:
+
+- Do not add unrelated FreeBSD package repositories to the firewall.
+- Keep the Zeek connector as a complete external-sensor integration for
+  `conn.log`, `dns.log`, `ssl.log`, `x509.log`, `http.log`, `files.log`,
+  `notice.log`, and `weird.log`.
+- Expose Zeek rotation, offset recovery, and provider monitoring through
+  diagnostics/provider inventory.
+- Expand Zenarmor settings for documented Syslog/reporting export, official log
+  and API metadata references without storing secrets in the PondSec form.
+
 ## 2026-07-05: OPNsense Firewall Development Install
 
 Target:

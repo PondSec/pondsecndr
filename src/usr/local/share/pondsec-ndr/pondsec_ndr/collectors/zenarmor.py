@@ -39,6 +39,7 @@ class ZenarmorCollector:
         remote_target: str = "",
         queue_limit: int = 10000,
         start_at_end: bool = True,
+        import_options: Mapping[str, bool] | None = None,
     ) -> None:
         self.log_path = log_path
         self.offset_path = offset_path
@@ -46,6 +47,7 @@ class ZenarmorCollector:
         self.remote_target = remote_target
         self.queue_limit = queue_limit
         self.start_at_end = start_at_end
+        self.import_options = dict(import_options or {})
         self.offset_path.parent.mkdir(parents=True, exist_ok=True)
 
     def read_once(self, max_lines: int = 1000) -> tuple[list[dict[str, Any]], ZenarmorStats]:
@@ -90,7 +92,7 @@ class ZenarmorCollector:
                         stats.last_error = str(exc)
                         continue
                     try:
-                        event = normalize_zenarmor_event(raw, self.sensor_name, self.remote_target)
+                        event = normalize_zenarmor_event(raw, self.sensor_name, self.remote_target, self.import_options)
                     except ValueError as exc:
                         stats.normalization_errors += 1
                         stats.last_error = str(exc)
@@ -154,7 +156,12 @@ def parse_zenarmor_line(line: str) -> dict[str, Any]:
     raise ValueError("Zenarmor line is neither JSON nor key-value syslog")
 
 
-def normalize_zenarmor_event(raw: Mapping[str, Any], sensor_name: str = "", remote_target: str = "") -> dict[str, Any] | None:
+def normalize_zenarmor_event(
+    raw: Mapping[str, Any],
+    sensor_name: str = "",
+    remote_target: str = "",
+    import_options: Mapping[str, bool] | None = None,
+) -> dict[str, Any] | None:
     timestamp = parse_timestamp(_first(raw, "timestamp", "@timestamp", "time", "ts", "event_time", "start_time"))
     if not timestamp:
         raise ValueError("Zenarmor event has invalid timestamp")
@@ -202,6 +209,7 @@ def normalize_zenarmor_event(raw: Mapping[str, Any], sensor_name: str = "", remo
         "integration_notes": "exported_reporting_data_only",
     }
     metadata["byte_count"] = int(metadata["bytes_out"] or 0) + int(metadata["bytes_in"] or 0)
+    metadata = _filter_metadata(metadata, import_options or {})
     metadata = {key: value for key, value in metadata.items() if value not in (None, "", [], {})}
 
     event = {
@@ -230,6 +238,31 @@ def _event_type(raw: Mapping[str, Any], decision: str) -> str:
     if _first(raw, "url", "uri", "host", "hostname", "web_category"):
         return "http"
     return "flow"
+
+
+def _enabled(import_options: Mapping[str, bool], key: str) -> bool:
+    return bool(import_options.get(key, True))
+
+
+def _filter_metadata(metadata: dict[str, Any], import_options: Mapping[str, bool]) -> dict[str, Any]:
+    if not import_options:
+        return metadata
+    filtered = dict(metadata)
+    groups = {
+        "import_applications": {"application", "application_category"},
+        "import_categories": {"application_category", "web_category", "security_category"},
+        "import_tls_metadata": {"tls_sni", "tls_version", "ja3", "ja4"},
+        "import_session_context": {"session_id", "bytes_out", "bytes_in", "byte_count", "packet_count", "asn", "country"},
+        "import_policy_actions": {"decision", "policy_name", "rule_name"},
+        "import_device_context": {"device_id", "device_name", "user"},
+        "import_security_events": {"security_category", "threat_name", "sase_event"},
+    }
+    for option, keys in groups.items():
+        if _enabled(import_options, option):
+            continue
+        for key in keys:
+            filtered.pop(key, None)
+    return filtered
 
 
 def _first(raw: Mapping[str, Any], *keys: str) -> Any:

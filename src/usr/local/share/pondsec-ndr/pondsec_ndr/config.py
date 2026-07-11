@@ -21,7 +21,8 @@ RESPONSE_MODES = {"observe", "recommend", "enforce"}
 DIRECTIONS = {"ingress", "egress", "both"}
 ZEEK_MODES = {"external", "local"}
 ZEEK_PARSERS = {"tsv"}
-ZENARMOR_SOURCES = {"syslog_export"}
+ZENARMOR_SOURCES = {"syslog_export", "official_log", "api"}
+ZENARMOR_FORMATS = {"auto", "json", "key_value"}
 
 
 def _bool(value: Any, default: bool = False) -> bool:
@@ -229,6 +230,7 @@ class ZeekConfig:
 class ZenarmorConfig:
     enabled: bool = False
     source: str = "syslog_export"
+    format: str = "auto"
     sensor_name: str = ""
     remote_target: str = ""
     syslog_path: str = "/var/log/zenarmor/streaming.log"
@@ -236,6 +238,15 @@ class ZenarmorConfig:
     api_enabled: bool = False
     api_base_url: str = ""
     api_key_ref: str = ""
+    api_timeout_seconds: int = 5
+    api_verify_tls: bool = True
+    import_applications: bool = True
+    import_categories: bool = True
+    import_tls_metadata: bool = True
+    import_session_context: bool = True
+    import_policy_actions: bool = True
+    import_device_context: bool = True
+    import_security_events: bool = True
 
 
 @dataclass(slots=True)
@@ -366,10 +377,14 @@ class PondSecConfig:
             errors.append("Zeek provider requires at least one configured log path")
         if self.zenarmor.source not in ZENARMOR_SOURCES:
             errors.append(f"invalid Zenarmor source: {self.zenarmor.source}")
-        if self.zenarmor.enabled and not self.zenarmor.syslog_path:
+        if self.zenarmor.format not in ZENARMOR_FORMATS:
+            errors.append(f"invalid Zenarmor export format: {self.zenarmor.format}")
+        if self.zenarmor.enabled and self.zenarmor.source in {"syslog_export", "official_log"} and not self.zenarmor.syslog_path:
             errors.append("Zenarmor provider requires a syslog/export path")
         if self.zenarmor.api_enabled and not self.zenarmor.api_base_url:
             errors.append("Zenarmor API integration requires an API base URL")
+        if self.zenarmor.api_timeout_seconds < 1:
+            errors.append("Zenarmor API timeout must be positive")
         if not _valid_listen_address(self.netflow.listen_address):
             errors.append(f"invalid NetFlow listen address: {self.netflow.listen_address}")
         if not 1 <= self.netflow.port <= 65535:
@@ -428,6 +443,9 @@ def load_config(path: Path | None = None) -> PondSecConfig:
     zenarmor_source = str(zenarmor.get("source") or "syslog_export").strip().lower()
     if zenarmor_source not in ZENARMOR_SOURCES:
         zenarmor_source = "syslog_export"
+    zenarmor_format = str(zenarmor.get("format") or "auto").strip().lower()
+    if zenarmor_format not in ZENARMOR_FORMATS:
+        zenarmor_format = "auto"
 
     return PondSecConfig(
         enabled=_bool(raw.get("enabled"), False),
@@ -514,6 +532,7 @@ def load_config(path: Path | None = None) -> PondSecConfig:
         zenarmor=ZenarmorConfig(
             enabled=_bool(zenarmor.get("enabled"), False),
             source=zenarmor_source,
+            format=zenarmor_format,
             sensor_name=str(zenarmor.get("sensor_name") or ""),
             remote_target=str(zenarmor.get("remote_target") or ""),
             syslog_path=str(zenarmor.get("syslog_path") or "/var/log/zenarmor/streaming.log"),
@@ -521,6 +540,15 @@ def load_config(path: Path | None = None) -> PondSecConfig:
             api_enabled=_bool(zenarmor.get("api_enabled"), False),
             api_base_url=str(zenarmor.get("api_base_url") or ""),
             api_key_ref=str(zenarmor.get("api_key_ref") or ""),
+            api_timeout_seconds=_int(zenarmor.get("api_timeout_seconds"), 5, 1, 60),
+            api_verify_tls=_bool(zenarmor.get("api_verify_tls"), True),
+            import_applications=_bool(zenarmor.get("import_applications"), True),
+            import_categories=_bool(zenarmor.get("import_categories"), True),
+            import_tls_metadata=_bool(zenarmor.get("import_tls_metadata"), True),
+            import_session_context=_bool(zenarmor.get("import_session_context"), True),
+            import_policy_actions=_bool(zenarmor.get("import_policy_actions"), True),
+            import_device_context=_bool(zenarmor.get("import_device_context"), True),
+            import_security_events=_bool(zenarmor.get("import_security_events"), True),
         ),
         netflow=NetFlowConfig(
             enabled=_bool(netflow.get("enabled"), False),

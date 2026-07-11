@@ -348,8 +348,19 @@
                 <Required>Y</Required>
                 <OptionValues>
                     <syslog_export>Syslog / reporting export</syslog_export>
+                    <official_log>Official log file</official_log>
+                    <api>Documented API metadata</api>
                 </OptionValues>
             </source>
+            <format type="OptionField">
+                <default>auto</default>
+                <Required>Y</Required>
+                <OptionValues>
+                    <auto>Auto detect</auto>
+                    <json>JSON lines</json>
+                    <key_value>Key-value syslog</key_value>
+                </OptionValues>
+            </format>
             <sensor_name type="TextField">
                 <default></default>
                 <Required>N</Required>
@@ -378,6 +389,44 @@
                 <default></default>
                 <Required>N</Required>
             </api_key_ref>
+            <api_timeout_seconds type="IntegerField">
+                <default>5</default>
+                <MinimumValue>1</MinimumValue>
+                <MaximumValue>60</MaximumValue>
+                <Required>Y</Required>
+            </api_timeout_seconds>
+            <api_verify_tls type="BooleanField">
+                <default>1</default>
+                <Required>Y</Required>
+            </api_verify_tls>
+            <import_applications type="BooleanField">
+                <default>1</default>
+                <Required>Y</Required>
+            </import_applications>
+            <import_categories type="BooleanField">
+                <default>1</default>
+                <Required>Y</Required>
+            </import_categories>
+            <import_tls_metadata type="BooleanField">
+                <default>1</default>
+                <Required>Y</Required>
+            </import_tls_metadata>
+            <import_session_context type="BooleanField">
+                <default>1</default>
+                <Required>Y</Required>
+            </import_session_context>
+            <import_policy_actions type="BooleanField">
+                <default>1</default>
+                <Required>Y</Required>
+            </import_policy_actions>
+            <import_device_context type="BooleanField">
+                <default>1</default>
+                <Required>Y</Required>
+            </import_device_context>
+            <import_security_events type="BooleanField">
+                <default>1</default>
+                <Required>Y</Required>
+            </import_security_events>
         </zenarmor>
         <netflow>
             <enabled type="BooleanField">

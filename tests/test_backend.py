@@ -19,7 +19,7 @@ from pondsec_ndr.collectors.filterlog import FilterLogCollector, FilterLogStats,
 from pondsec_ndr.collectors.netflow import NETFLOW_V5_HEADER, NETFLOW_V5_RECORD, NetFlowCollector
 from pondsec_ndr.collectors.zeek import ZeekLogCollector, normalize_zeek_row
 from pondsec_ndr.collectors.zenarmor import ZenarmorCollector, normalize_zenarmor_event, parse_zenarmor_line
-from pondsec_ndr.config import DetectionConfig, DnsmasqConfig, InterfaceConfig, PondSecConfig, ResponseConfig
+from pondsec_ndr.config import DetectionConfig, DnsmasqConfig, InterfaceConfig, PondSecConfig, ResponseConfig, ZeekConfig, ZenarmorConfig, load_config
 from pondsec_ndr.correlation import correlate_detections
 from pondsec_ndr.detection.detectors import BeaconingDetector, DNSTunnelingDetector, PortScanDetector, SuricataAlertAdapter
 from pondsec_ndr.diagnostics import diagnostic_archive, diagnostics as diagnostics_payload, eve_access_status
@@ -588,6 +588,50 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(events2, [])
             self.assertEqual(stats2.read_lines, 0)
 
+    def test_zenarmor_import_options_filter_optional_context(self) -> None:
+        event = normalize_zenarmor_event({
+            "timestamp": "2026-07-05T10:00:00+00:00",
+            "src_ip": "192.168.10.20",
+            "dst_ip": "198.51.100.30",
+            "dst_port": 443,
+            "application": "YouTube",
+            "application_category": "Streaming Media",
+            "web_category": "Entertainment",
+            "decision": "blocked",
+            "policy_name": "Workstations",
+            "tls_sni": "video.example.test",
+            "tls_version": "TLSv1.3",
+            "ja3": "abc",
+            "ja4": "def",
+            "device_name": "laptop-20",
+            "session_id": "sess-1",
+            "user": "alice",
+            "bytes_out": 1500,
+            "bytes_in": 4500,
+            "threat_name": "Blocked app",
+        }, import_options={
+            "import_applications": False,
+            "import_categories": False,
+            "import_tls_metadata": False,
+            "import_session_context": False,
+            "import_policy_actions": False,
+            "import_device_context": False,
+            "import_security_events": False,
+        })
+        self.assertIsNotNone(event)
+        assert event is not None
+        metadata = event["metadata"]
+        self.assertNotIn("application", metadata)
+        self.assertNotIn("application_category", metadata)
+        self.assertNotIn("web_category", metadata)
+        self.assertNotIn("tls_sni", metadata)
+        self.assertNotIn("ja3", metadata)
+        self.assertNotIn("session_id", metadata)
+        self.assertNotIn("policy_name", metadata)
+        self.assertNotIn("device_name", metadata)
+        self.assertNotIn("threat_name", metadata)
+        self.assertEqual(metadata["event_source"], "zenarmor")
+
     def test_netflow_v5_datagram_normalizes_to_flow_event(self) -> None:
         collector = NetFlowCollector("127.0.0.1", 2055, allowed_exporters=["192.0.2.10"])
         events, stats = collector.parse_datagram(netflow_v5_datagram(), "192.0.2.10")
@@ -911,12 +955,63 @@ class BackendTests(unittest.TestCase):
                     },
                 }
             })
-            payload = diagnostics_payload(PondSecConfig(data_dir=root), store)
+            payload = diagnostics_payload(
+                PondSecConfig(
+                    data_dir=root,
+                    zeek=ZeekConfig(enabled=True, sensor_name="zeek-edge", log_dir="/var/log/zeek/current"),
+                    zenarmor=ZenarmorConfig(
+                        enabled=True,
+                        source="official_log",
+                        format="json",
+                        sensor_name="zenarmor-edge",
+                        api_enabled=True,
+                        api_base_url="https://127.0.0.1:8090",
+                        import_tls_metadata=True,
+                    ),
+                ),
+                store,
+            )
             providers = {item["provider_id"]: item for item in payload["providers"]}
             self.assertEqual(providers["suricata_eve"]["health_status"], "healthy")
             self.assertEqual(providers["opnsense_filterlog"]["health_status"], "warning")
-            self.assertEqual(providers["zeek_logs"]["health_status"], "not_configured")
+            self.assertEqual(providers["zeek_logs"]["health_status"], "waiting")
+            self.assertIn("logs", providers["zeek_logs"]["configuration"])
+            self.assertEqual(providers["zenarmor"]["configuration"]["source"], "official_log")
+            self.assertEqual(providers["zenarmor"]["configuration"]["format"], "json")
+            self.assertTrue(providers["zenarmor"]["configuration"]["imports"]["tls_metadata"])
             self.assertIn("flow", providers["netflow"]["event_types"])
+
+    def test_config_loads_extended_zenarmor_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "pondsec.json"
+            path.write_text(json.dumps({
+                "zenarmor": {
+                    "enabled": "1",
+                    "source": "api",
+                    "format": "json",
+                    "api_enabled": "1",
+                    "api_base_url": "https://127.0.0.1:8090",
+                    "api_timeout_seconds": "9",
+                    "api_verify_tls": "0",
+                    "import_applications": "0",
+                    "import_categories": "1",
+                    "import_tls_metadata": "1",
+                    "import_session_context": "0",
+                    "import_policy_actions": "1",
+                    "import_device_context": "0",
+                    "import_security_events": "1",
+                }
+            }), encoding="utf-8")
+            config = load_config(path)
+            self.assertTrue(config.zenarmor.enabled)
+            self.assertEqual(config.zenarmor.source, "api")
+            self.assertEqual(config.zenarmor.format, "json")
+            self.assertEqual(config.zenarmor.api_timeout_seconds, 9)
+            self.assertFalse(config.zenarmor.api_verify_tls)
+            self.assertFalse(config.zenarmor.import_applications)
+            self.assertFalse(config.zenarmor.import_session_context)
+            self.assertFalse(config.zenarmor.import_device_context)
+            self.assertEqual(config.validate(), [])
 
     def test_diagnostics_exposes_response_readiness(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
