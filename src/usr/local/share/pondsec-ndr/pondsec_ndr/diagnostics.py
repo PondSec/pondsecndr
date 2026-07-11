@@ -35,6 +35,7 @@ def service_status(config: PondSecConfig, store: EventStore) -> dict[str, Any]:
         "pid": health["pid"],
         "updated_at": health["updated_at"],
         "mode": config.mode,
+        "response_mode": config.response.mode,
         "enabled": config.enabled,
         "fail_open": config.fail_open,
         "database": db,

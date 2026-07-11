@@ -262,6 +262,7 @@ def dispatch(args: argparse.Namespace, config: Any, store: EventStore) -> tuple[
         payload["metrics"].update({
             "service_status": store.get_health()["status"],
             "operating_mode": config.mode,
+            "response_mode": config.response.mode,
             "interfaces": config.interfaces.monitored,
             "active_model_version": _active_model(config),
             "queue_utilization": 0,

@@ -103,6 +103,7 @@ $(function() {
         );
         $('#service_status_badge').html(badge(metrics.service_status || 'unknown'));
         $('#mode_badge').html(badge(metrics.operating_mode || 'monitor'));
+        $('#response_mode_badge').html(badge(metrics.response_mode || 'observe'));
         $('#model_value').text(display(metrics.active_model_version, 'No active model'));
         $('#interfaces_value').text((metrics.interfaces || []).length ? metrics.interfaces.join(', ') : 'Not selected');
 
@@ -595,6 +596,7 @@ $(function() {
             <div class="pondsec-status-list">
                 <div class="pondsec-status-row"><span>Engine</span><span id="service_status_badge"></span></div>
                 <div class="pondsec-status-row"><span>Mode</span><span id="mode_badge"></span></div>
+                <div class="pondsec-status-row"><span>Response mode</span><span id="response_mode_badge"></span></div>
                 <div class="pondsec-status-row"><span>PF blocking</span><span id="pf_status_badge"></span></div>
                 <div class="pondsec-status-row"><span>EVE telemetry</span><span id="eve_status_badge"></span></div>
                 <div class="pondsec-status-row"><span>Database</span><span id="db_status_badge"></span></div>
