@@ -271,8 +271,8 @@ class NetFlowConfig:
 class DnsmasqConfig:
     enabled: bool = False
     sensor_name: str = ""
-    dns_log_path: str = "/var/log/resolver/latest.log"
-    dhcp_log_path: str = "/var/log/dhcpd/latest.log"
+    dns_log_path: str = "/var/log/dnsmasq"
+    dhcp_log_path: str = ""
     lease_path: str = "/var/db/dnsmasq.leases"
     start_at_end: bool = True
 
@@ -584,8 +584,8 @@ def load_config(path: Path | None = None) -> PondSecConfig:
         dnsmasq=DnsmasqConfig(
             enabled=_bool(dnsmasq.get("enabled"), False),
             sensor_name=str(dnsmasq.get("sensor_name") or ""),
-            dns_log_path=_text(dnsmasq.get("dns_log_path", "/var/log/resolver/latest.log")),
-            dhcp_log_path=_text(dnsmasq.get("dhcp_log_path", "/var/log/dhcpd/latest.log")),
+            dns_log_path=_text(dnsmasq.get("dns_log_path", "/var/log/dnsmasq")),
+            dhcp_log_path=_text(dnsmasq.get("dhcp_log_path", "")),
             lease_path=_text(dnsmasq.get("lease_path", "/var/db/dnsmasq.leases")),
             start_at_end=_bool(dnsmasq.get("start_at_end"), True),
         ),

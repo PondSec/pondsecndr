@@ -25,6 +25,7 @@ class DnsmasqStats:
     queue_drops: int = 0
     rotation_detected: bool = False
     last_error: str | None = None
+    active_path: str | None = None
     sources: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
@@ -80,6 +81,9 @@ class DnsmasqCollector:
 
     def _read_log_source(self, name: str, path: Path, max_lines: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         stats = DnsmasqStats()
+        path = self._active_log_path(path, stats)
+        if path is None:
+            return [], _stats_dict(stats)
         try:
             file_stat = path.stat()
         except FileNotFoundError:
@@ -91,6 +95,7 @@ class DnsmasqCollector:
         except OSError as exc:
             stats.last_error = f"dnsmasq log cannot be inspected: {exc}"
             return [], _stats_dict(stats)
+        stats.active_path = str(path)
 
         offset_path = self.offset_dir / f"dnsmasq_{name}.json"
         state = _load_json(offset_path)
@@ -134,6 +139,29 @@ class DnsmasqCollector:
         except OSError as exc:
             stats.last_error = f"dnsmasq collector offset cannot be saved: {exc}"
         return events, _stats_dict(stats)
+
+    def _active_log_path(self, path: Path, stats: DnsmasqStats) -> Path | None:
+        try:
+            if not path.is_dir():
+                return path
+        except PermissionError:
+            stats.last_error = f"dnsmasq log directory is not readable by pondsec-ndr: {path}"
+            return None
+        except OSError as exc:
+            stats.last_error = f"dnsmasq log directory cannot be inspected: {exc}"
+            return None
+        try:
+            candidates = [item for item in path.iterdir() if item.is_file() and item.suffix == ".log"]
+        except PermissionError:
+            stats.last_error = f"dnsmasq log directory is not readable by pondsec-ndr: {path}"
+            return None
+        except OSError as exc:
+            stats.last_error = f"dnsmasq log directory cannot be inspected: {exc}"
+            return None
+        if not candidates:
+            stats.last_error = f"dnsmasq log directory contains no .log files: {path}"
+            return None
+        return max(candidates, key=lambda item: item.stat().st_mtime)
 
     def _read_lease_source(self, max_lines: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         stats = DnsmasqStats()
@@ -451,4 +479,5 @@ def _stats_dict(stats: DnsmasqStats) -> dict[str, Any]:
         "queue_drops": stats.queue_drops,
         "rotation_detected": stats.rotation_detected,
         "last_error": stats.last_error,
+        "active_path": stats.active_path,
     }

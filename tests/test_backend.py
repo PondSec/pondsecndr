@@ -412,6 +412,32 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(events2, [])
             self.assertGreaterEqual(stats2.duplicates, 1)
 
+    def test_dnsmasq_collector_uses_newest_log_in_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            logs = root / "dnsmasq"
+            logs.mkdir()
+            old_log = logs / "dnsmasq_20260710.log"
+            new_log = logs / "dnsmasq_20260711.log"
+            old_log.write_text(
+                "Jul 10 12:00:00 firewall dnsmasq[1234]: query[A] old.example.test from 192.168.10.20\n",
+                encoding="utf-8",
+            )
+            new_log.write_text(
+                "Jul 11 12:00:00 firewall dnsmasq[1234]: query[A] new.example.test from 192.168.10.20\n",
+                encoding="utf-8",
+            )
+            old_time = 1783261000
+            new_time = old_time + 86400
+            os.utime(old_log, (old_time, old_time))
+            os.utime(new_log, (new_time, new_time))
+
+            collector = DnsmasqCollector(logs, None, None, root / "offsets", start_at_end=False)
+            events, stats = collector.read_once(max_lines=10)
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0]["metadata"]["rrname"], "new.example.test")
+            self.assertEqual(stats.sources["dns_log"]["active_path"], str(new_log))
+
     def test_zeek_normalizer_supports_required_log_types(self) -> None:
         conn = normalize_zeek_row("conn", {
             "ts": "2026-07-05T10:00:00+00:00",
@@ -869,6 +895,49 @@ class BackendTests(unittest.TestCase):
         self.assertGreater(shannon_entropy(names[0].split(".")[0]), 3.0)
         detections = DNSTunnelingDetector().detect(events, features)
         self.assertEqual(len(detections), 1)
+
+    def test_dns_tunneling_detector_handles_mixed_dns_event_names(self) -> None:
+        normal_names = [
+            "updates.example.test",
+            "www.example.test",
+            "api.example.test",
+            "cdn.example.test",
+        ] * 8
+        tunnel_names = [
+            f"q9w8e7r6t5y4u3i2o1p0asdfghjklzxcvbnm{i:02d}.validation.pondsec.test"
+            for i in range(10)
+        ]
+        events = [
+            normalize_eve({
+                "timestamp": f"2026-07-05T10:00:{index:02d}+00:00",
+                "event_type": "dns",
+                "src_ip": "192.168.10.70",
+                "src_port": 53000 + index,
+                "dest_ip": "192.168.10.1",
+                "dest_port": 53,
+                "proto": "UDP",
+                "dns": {"rrname": name, "rrtype": "A", "rcode": "NOERROR"},
+            })
+            for index, name in enumerate(normal_names + tunnel_names)
+        ]
+        detections = DNSTunnelingDetector().detect(events, aggregate_features(events))
+        self.assertEqual(len(detections), 1)
+        self.assertGreaterEqual(detections[0]["evidence"]["suspicious_dns_events"], 10)
+
+    def test_dns_tunneling_detector_ignores_single_long_dns_name(self) -> None:
+        events = [
+            normalize_eve({
+                "timestamp": "2026-07-05T10:00:00+00:00",
+                "event_type": "dns",
+                "src_ip": "192.168.10.70",
+                "src_port": 53000,
+                "dest_ip": "192.168.10.1",
+                "dest_port": 53,
+                "proto": "UDP",
+                "dns": {"rrname": "a9b8c7d6e5f4g3h2i1j0k9l8m7n6o5p4.assets.example.test", "rrtype": "A"},
+            })
+        ]
+        self.assertEqual(DNSTunnelingDetector().detect(events, aggregate_features(events)), [])
 
     def test_auth_service_pressure_detector_does_not_label_tcp_resets_as_bruteforce(self) -> None:
         events = [
@@ -1757,6 +1826,46 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(promotion["reason"], "strong_detector")
         self.assertGreaterEqual(promotion["promotion_score"], promotion["promotion_threshold"])
         self.assertTrue(all(item["evidence"]["detection_state"] == "promoted" for item in detections))
+
+    def test_correlation_title_prefers_internal_target_over_source(self) -> None:
+        detections = [
+            {
+                "detection_id": "d-exploit-marker",
+                "detector_id": "pondsec.exploit_attempt",
+                "detector_version": "1",
+                "category": "exploit_attempt",
+                "title": "Possible exploit attempt",
+                "description": "Marker-backed exploit-like HTTP request.",
+                "timestamp": "2026-07-05T10:00:00+00:00",
+                "source_ip": "192.168.10.20",
+                "destination_ip": "192.168.10.5",
+                "severity": 8,
+                "confidence": 0.82,
+                "anomaly_score": 0.8,
+                "evidence": {"validation_marker": True},
+                "recommended_action": "block",
+            },
+            {
+                "detection_id": "d-beacon-marker",
+                "detector_id": "pondsec.beaconing",
+                "detector_version": "1",
+                "category": "command_and_control",
+                "title": "Possible command-and-control beaconing",
+                "description": "Connections recur at regular intervals.",
+                "timestamp": "2026-07-05T10:02:00+00:00",
+                "source_ip": "192.168.10.20",
+                "destination_ip": "1.1.1.1",
+                "severity": 8,
+                "confidence": 0.93,
+                "anomaly_score": 1.0,
+                "evidence": {"connections": 5, "average_interval_seconds": 15, "port": 443},
+                "recommended_action": "investigate",
+            },
+        ]
+        incidents = correlate_detections(detections)
+        self.assertEqual(len(incidents), 1)
+        self.assertEqual(incidents[0]["destination_ip"], "192.168.10.5")
+        self.assertIn("to 192.168.10.5", incidents[0]["title"])
 
     def test_correlation_suppresses_heuristic_supply_chain_fanout(self) -> None:
         detections = [{

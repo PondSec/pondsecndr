@@ -529,6 +529,11 @@ def _entity_roles(detections: list[dict[str, Any]]) -> dict[str, Any]:
     ordered = sorted(detections, key=_detection_sort_key)
     sources = [_text_or_none(item.get("source_ip")) for item in ordered]
     destinations = [_text_or_none(item.get("destination_ip")) for item in ordered]
+    source_set = {src for src in sources if src}
+    internal_destinations = [
+        dst for dst in destinations
+        if dst and not dst.startswith("port:") and _is_internal_address(dst)
+    ]
     inbound = [
         item for item in ordered
         if _text_or_none(item.get("source_ip"))
@@ -537,7 +542,7 @@ def _entity_roles(detections: list[dict[str, Any]]) -> dict[str, Any]:
         and _is_internal_address(str(item.get("destination_ip")))
     ]
     external_actor = _text_or_none(inbound[0].get("source_ip")) if inbound else next((src for src in sources if src and not _is_internal_address(src)), None)
-    victim = _text_or_none(inbound[0].get("destination_ip")) if inbound else next((dst for dst in destinations if dst and _is_internal_address(dst)), None)
+    victim = _text_or_none(inbound[0].get("destination_ip")) if inbound else next((dst for dst in internal_destinations if dst not in source_set), None)
     affected_host = victim or next((src for src in sources if src and _is_internal_address(src)), None) or sources[0]
 
     pivot_host = None
@@ -597,7 +602,7 @@ def _affected_targets(detections: list[dict[str, Any]], roles: dict[str, Any]) -
 def _title(category: str, source_ip: str | None, roles: dict[str, Any], count: int, categories: list[str]) -> str:
     if category == "multi_stage":
         source = roles.get("external_actor") or source_ip or "unknown source"
-        target = roles.get("victim") or roles.get("affected_host") or roles.get("destination") or "unknown target"
+        target = roles.get("victim") or roles.get("destination") or roles.get("affected_host") or "unknown target"
         return f"Multi-stage activity from {source} to {target} ({count} detections)"
     label = category.replace("_", " ").title()
     if source_ip:

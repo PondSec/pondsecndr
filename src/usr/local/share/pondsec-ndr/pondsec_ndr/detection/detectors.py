@@ -145,13 +145,18 @@ class DNSTunnelingDetector(Detector):
     detector_id = "pondsec.dns_tunneling"
 
     def detect(self, events: list[dict[str, Any]], features: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        detections = []
+        detections = self._detect_from_query_events(events)
+        event_sources = {str(item.get("source_ip")) for item in detections if item.get("source_ip")}
         for item in features:
+            if str(item.get("source_ip")) in event_sources:
+                continue
             entropy = float(item.get("dns_entropy") or 0)
             name_length = int(item.get("dns_name_length") or 0)
             query_rate = float(item.get("dns_query_rate") or 0)
             nxdomain = float(item.get("dns_nxdomain_rate") or 0)
-            if entropy >= 3.8 and name_length >= 45 and (query_rate >= 0.2 or nxdomain >= 0.3):
+            event_count = int(item.get("connections_5m") or 0)
+            enough_volume = event_count >= 8 or (event_count >= 4 and nxdomain >= 0.3)
+            if entropy >= 3.8 and name_length >= 45 and enough_volume and (query_rate >= 0.2 or nxdomain >= 0.3):
                 detections.append(make_detection(
                     self.detector_id,
                     "command_and_control",
@@ -167,14 +172,92 @@ class DNSTunnelingDetector(Detector):
                         "dns_name_length": name_length,
                         "dns_query_rate": query_rate,
                         "dns_nxdomain_rate": nxdomain,
+                        "event_count": event_count,
                         "thresholds": [
                             {"feature": "dns_entropy", "operator": ">=", "threshold": 3.8, "observed": entropy},
                             {"feature": "dns_name_length", "operator": ">=", "threshold": 45, "observed": name_length},
+                            {"feature": "dns_event_volume", "operator": "connections_5m>=8 OR connections_5m>=4 AND nxdomain_rate>=0.3", "threshold": "8/4", "observed": {"connections_5m": event_count, "dns_nxdomain_rate": nxdomain}},
                             {"feature": "dns_query_rate_or_nxdomain_rate", "operator": "query_rate>=0.2 OR nxdomain_rate>=0.3", "threshold": "0.2/0.3", "observed": {"dns_query_rate": query_rate, "dns_nxdomain_rate": nxdomain}},
                         ],
                     },
                 ))
         return detections
+
+    def _detect_from_query_events(self, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        by_source: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for event in events:
+            if event.get("event_type") != "dns":
+                continue
+            src = event.get("source", {}).get("ip")
+            name = self._rrname(event)
+            if not src or not name:
+                continue
+            first_label = name.split(".")[0]
+            entropy = shannon_entropy(first_label)
+            if len(name) >= 45 and len(first_label) >= 30 and entropy >= 3.6:
+                by_source[str(src)].append({
+                    "name": name,
+                    "first_label": first_label,
+                    "entropy": entropy,
+                    "length": len(name),
+                    "rcode": str((event.get("metadata") or {}).get("rcode") or "").upper(),
+                    "destination_ip": event.get("destination", {}).get("ip"),
+                })
+
+        detections = []
+        for src, items in by_source.items():
+            names = {str(item["name"]) for item in items}
+            if len(items) < 8 or len(names) < 6:
+                continue
+            nxdomain = sum(1 for item in items if item.get("rcode") == "NXDOMAIN")
+            nxdomain_rate = round(nxdomain / max(len(items), 1), 4)
+            max_entropy = max(float(item["entropy"]) for item in items)
+            max_length = max(int(item["length"]) for item in items)
+            destination = self._common_destination(items)
+            detections.append(make_detection(
+                self.detector_id,
+                "command_and_control",
+                "Possible DNS tunneling",
+                "Repeated DNS queries contain long high-entropy labels consistent with tunneling-like traffic.",
+                src,
+                destination,
+                8,
+                min(0.97, 0.62 + min(len(items), 30) / 100 + max_entropy / 20),
+                min(1.0, max_entropy / 5),
+                {
+                    "suspicious_dns_events": len(items),
+                    "unique_dns_names": len(names),
+                    "dns_entropy": round(max_entropy, 4),
+                    "dns_name_length": max_length,
+                    "dns_nxdomain_rate": nxdomain_rate,
+                    "sample_domains": sorted(names)[:5],
+                    "thresholds": [
+                        {"feature": "suspicious_dns_events", "operator": ">=", "threshold": 8, "observed": len(items)},
+                        {"feature": "unique_dns_names", "operator": ">=", "threshold": 6, "observed": len(names)},
+                        {"feature": "dns_entropy", "operator": ">=", "threshold": 3.6, "observed": round(max_entropy, 4)},
+                        {"feature": "dns_name_length", "operator": ">=", "threshold": 45, "observed": max_length},
+                    ],
+                },
+            ))
+        return detections
+
+    @staticmethod
+    def _rrname(event: dict[str, Any]) -> str | None:
+        metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+        name = metadata.get("rrname") or metadata.get("query") or metadata.get("dns_query")
+        if not name:
+            return None
+        value = str(name).strip().rstrip(".").lower()
+        if not value or "." not in value:
+            return None
+        return value
+
+    @staticmethod
+    def _common_destination(items: list[dict[str, Any]]) -> str | None:
+        values = {str(item.get("destination_ip")) for item in items if item.get("destination_ip")}
+        if len(values) == 1:
+            return next(iter(values))
+        return None
 
 
 class BeaconingDetector(Detector):
