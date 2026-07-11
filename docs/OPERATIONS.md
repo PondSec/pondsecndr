@@ -164,6 +164,13 @@ Schema version `6` reclassifies automatic peer groups with stricter server
 evidence, because observed destination ports are not enough to prove that an
 entity offers a local service.
 
+Feature scoring compares every host with its own baseline and, when enough
+ready peers exist, with the entity peer group. Peer-group status, size,
+confidence, deviation and reasons are stored in feature evidence so detections
+can explain whether an anomaly came from the host profile, the peer group, or
+both. The minimum peer count is controlled by
+`detection.peer_group_minimum_members`.
+
 ## Backup
 
 Back up:

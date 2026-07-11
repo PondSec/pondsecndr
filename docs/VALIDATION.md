@@ -126,6 +126,20 @@ Implementation validation:
   preservation, Zenarmor IoT grouping, Linux server grouping, client web
   traffic, and legacy migration to schema `6`.
 
+## 2026-07-11: Peer Group Baseline Comparison
+
+Implementation validation:
+
+- Feature scoring now loads each entity peer group and compares host behavior
+  with mature baselines from the same group.
+- Peer-group evidence includes status, group size, confidence, deviation and
+  metric-level reasons.
+- Host-baseline anomaly detection can alert on a mature peer-group outlier even
+  when the individual host baseline is still building.
+- `detection.peer_group_minimum_members` controls the minimum group size.
+- Targeted local unit tests covered peer-group outlier scoring, detector
+  evidence, and JSON config loading.
+
 ## 2026-07-05: OPNsense Firewall Development Install
 
 Target:

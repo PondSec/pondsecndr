@@ -1370,31 +1370,87 @@ class EventStore:
             )
         return len(rows)
 
-    def score_features_against_baselines(self, features: list[dict[str, Any]], minimum_observations: int = 50) -> list[dict[str, Any]]:
+    def score_features_against_baselines(
+        self,
+        features: list[dict[str, Any]],
+        minimum_observations: int = 50,
+        minimum_peer_members: int = 3,
+    ) -> list[dict[str, Any]]:
         if not features:
             return features
         minimum_observations = max(1, int(minimum_observations or BASELINE_MINIMUM_OBSERVATIONS))
+        minimum_peer_members = max(2, int(minimum_peer_members or 3))
+        feature_ips = [item["source_ip"] for item in features]
         with self.connect() as conn:
-            baseline_rows = {
-                row["host_ip"]: row
+            source_rows = {
+                row["ip"]: dict(row)
                 for row in conn.execute(
                     """
-                    SELECT host_ip, entity_id, observation_count, baseline_json,
-                           baseline_version, status, drift_score, updated_at
-                    FROM host_baselines
-                    WHERE host_ip IN ({})
+                    SELECT h.ip, h.entity_id, e.peer_group, e.peer_group_confidence
+                    FROM hosts h
+                    LEFT JOIN entities e ON e.entity_id = h.entity_id
+                    WHERE h.ip IN ({})
+                    """.format(",".join("?" for _ in features)),
+                    feature_ips,
+                ).fetchall()
+            } if features else {}
+            baseline_rows = {
+                row["host_ip"]: dict(row)
+                for row in conn.execute(
+                    """
+                    SELECT b.host_ip, b.entity_id, b.observation_count,
+                           b.baseline_json, b.baseline_version, b.status,
+                           b.drift_score, b.updated_at, e.peer_group,
+                           e.peer_group_confidence
+                    FROM host_baselines b
+                    LEFT JOIN hosts h ON h.ip = b.host_ip
+                    LEFT JOIN entities e ON e.entity_id = COALESCE(b.entity_id, h.entity_id)
+                    WHERE b.host_ip IN ({})
                     """.format(
                         ",".join("?" for _ in features)
                     ),
-                    [item["source_ip"] for item in features],
+                    feature_ips,
                 ).fetchall()
             } if features else {}
+            peer_group_names = sorted({
+                str((source_rows.get(ip) or {}).get("peer_group") or (baseline_rows.get(ip) or {}).get("peer_group") or "")
+                for ip in feature_ips
+            } - {"", "unknown"})
+            peer_group_rows = conn.execute(
+                """
+                SELECT e.peer_group, b.baseline_json
+                FROM host_baselines b
+                LEFT JOIN hosts h ON h.ip = b.host_ip
+                LEFT JOIN entities e ON e.entity_id = COALESCE(b.entity_id, h.entity_id)
+                WHERE e.peer_group IN ({})
+                  AND b.observation_count >= ?
+                  AND b.status IN ('complete', 'updated', 'uncertain', 'established')
+                """.format(",".join("?" for _ in peer_group_names)),
+                [*peer_group_names, minimum_observations],
+            ).fetchall() if peer_group_names else []
+        peer_baselines: dict[str, dict[str, Any]] = {}
+        grouped_peer_rows: dict[str, list[dict[str, Any]]] = {}
+        for row in peer_group_rows:
+            grouped_peer_rows.setdefault(str(row["peer_group"]), []).append(_safe_json_dict(row["baseline_json"]))
+        for peer_group, baselines in grouped_peer_rows.items():
+            if len(baselines) < minimum_peer_members:
+                continue
+            averaged: dict[str, float] = {}
+            for metric in BASELINE_METRICS:
+                values = [float(item.get(metric) or 0) for item in baselines if float(item.get(metric) or 0) > 0]
+                averaged[metric] = sum(values) / len(values) if values else 0.0
+            peer_baselines[peer_group] = {"count": len(baselines), "baseline": averaged}
         scored = []
         for item in features:
             enriched = dict(item)
             row = baseline_rows.get(item["source_ip"])
+            source_row = source_rows.get(item["source_ip"])
+            peer_group = str((source_row or {}).get("peer_group") or (row or {}).get("peer_group") or "unknown")
+            peer_confidence = float((source_row or {}).get("peer_group_confidence") or (row or {}).get("peer_group_confidence") or 0.0)
             reasons: list[dict[str, Any]] = []
             score = float(enriched.get("baseline_deviation") or 0)
+            enriched["peer_group"] = peer_group
+            enriched["peer_group_confidence"] = round(peer_confidence, 4)
             if row and int(row["observation_count"]) >= minimum_observations:
                 baseline = _safe_json_dict(row["baseline_json"])
                 for metric in BASELINE_METRICS:
@@ -1431,6 +1487,24 @@ class EventStore:
                 enriched["baseline_drift_score"] = round(float(row["drift_score"] or 0), 4) if row else 0.0
                 enriched["baseline_updated_at"] = row["updated_at"] if row else None
                 enriched["baseline_anomaly_reasons"] = []
+            peer_info = peer_baselines.get(peer_group)
+            if peer_group == "unknown":
+                enriched["peer_group_status"] = "unknown"
+                enriched["peer_group_size"] = 0
+                enriched["peer_group_deviation"] = 0.0
+                enriched["peer_group_anomaly_reasons"] = []
+            elif not peer_info:
+                observed_count = len(grouped_peer_rows.get(peer_group, []))
+                enriched["peer_group_status"] = "insufficient_peers" if observed_count < minimum_peer_members else "no_peer_baseline"
+                enriched["peer_group_size"] = observed_count
+                enriched["peer_group_deviation"] = 0.0
+                enriched["peer_group_anomaly_reasons"] = []
+            else:
+                peer_score, peer_reasons = _baseline_drift(enriched, peer_info["baseline"])
+                enriched["peer_group_status"] = "ready"
+                enriched["peer_group_size"] = int(peer_info["count"])
+                enriched["peer_group_deviation"] = round(min(1.0, peer_score), 4)
+                enriched["peer_group_anomaly_reasons"] = peer_reasons[:6]
             enriched["baseline_deviation"] = round(min(1.0, score), 4)
             scored.append(enriched)
         return scored

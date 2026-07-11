@@ -128,6 +128,7 @@ class DetectionConfig:
     early_ai_activation_override: bool = False
     learning_phase_observations: int = 1000
     minimum_observations: int = 50
+    peer_group_minimum_members: int = 3
     minimum_incident_confidence: int = 75
     correlation_window_minutes: int = 30
     false_positive_feedback_days: int = 14
@@ -173,6 +174,7 @@ class DetectionConfig:
             "elapsed_days": elapsed_days,
             "remaining_days": remaining_days,
             "minimum_observations": self.minimum_observations,
+            "peer_group_minimum_members": self.peer_group_minimum_members,
             "learning_phase_observations": self.learning_phase_observations,
             "early_ai_activation_override": self.early_ai_activation_override,
         }
@@ -512,6 +514,7 @@ def load_config(path: Path | None = None) -> PondSecConfig:
             early_ai_activation_override=_bool(detection.get("early_ai_activation_override"), False),
             learning_phase_observations=_int(detection.get("learning_phase_observations"), 1000, 10, 10000000),
             minimum_observations=_int(detection.get("minimum_observations"), 50, 1, 1000000),
+            peer_group_minimum_members=_int(detection.get("peer_group_minimum_members"), 3, 2, 1000000),
             minimum_incident_confidence=_int(detection.get("minimum_incident_confidence"), 75, 1, 100),
             correlation_window_minutes=_int(detection.get("correlation_window_minutes"), 30, 1, 1440),
             false_positive_feedback_days=_int(detection.get("false_positive_feedback_days"), 14, 1, 365),

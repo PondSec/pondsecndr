@@ -1017,6 +1017,61 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(detections[0]["evidence"]["baseline_status"], "complete")
         self.assertEqual(detections[0]["evidence"]["baseline_version"], 2)
 
+    def test_peer_group_baseline_detects_new_host_outlier(self) -> None:
+        def windows_entity_event(ip: str, mac_suffix: str, hostname: str) -> dict:
+            event = normalize_eve(flow_event("2026-07-05T10:00:00+00:00", ip, "198.51.100.10", 443))
+            event["raw_source"] = "zenarmor"
+            event["metadata"]["hostname"] = hostname
+            event["metadata"]["mac"] = f"00:4e:01:c5:66:{mac_suffix}"
+            event["metadata"]["os_name"] = "Microsoft Windows Kernel 10.0/11"
+            return event
+
+        def feature(ip: str, bytes_out: float) -> dict:
+            return {
+                "feature_version": "1",
+                "source_ip": ip,
+                "destination_count": 1.0,
+                "port_count": 1.0,
+                "bytes_out": bytes_out,
+                "upload_download_ratio": max(1.0, bytes_out / 1000.0),
+                "dns_entropy": 0.0,
+                "dns_name_length": 0.0,
+                "connections_60s": 1.0,
+                "internal_connections": 0.0,
+                "external_connections": 1.0,
+                "baseline_deviation": 0.0,
+            }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            peer_one = "192.168.20.10"
+            peer_two = "192.168.20.11"
+            candidate = "192.168.20.12"
+            store.insert_events([
+                windows_entity_event(peer_one, "10", "desktop-one"),
+                windows_entity_event(peer_two, "11", "desktop-two"),
+                windows_entity_event(candidate, "12", "desktop-three"),
+            ])
+            store.update_host_baselines([feature(peer_one, 1000.0)], minimum_observations=1)
+            store.update_host_baselines([feature(peer_two, 1200.0)], minimum_observations=1)
+
+            scored = store.score_features_against_baselines(
+                [feature(candidate, 12000.0)],
+                minimum_observations=1,
+                minimum_peer_members=2,
+            )[0]
+            self.assertEqual(scored["baseline_status"], "building")
+            self.assertEqual(scored["peer_group"], "windows_clients")
+            self.assertEqual(scored["peer_group_status"], "ready")
+            self.assertEqual(scored["peer_group_size"], 2)
+            self.assertGreaterEqual(scored["peer_group_deviation"], 0.65)
+
+            detections = HostBaselineAnomalyDetector().detect([], [scored])
+            self.assertEqual(len(detections), 1)
+            self.assertEqual(detections[0]["title"], "Peer group behavior anomaly")
+            self.assertEqual(detections[0]["evidence"]["peer_group"], "windows_clients")
+
     def test_store_canonicalizes_structured_tls_fingerprints(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = EventStore(Path(tmp) / "pondsec-ndr.db")
@@ -1234,6 +1289,9 @@ class BackendTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "pondsec.json"
             path.write_text(json.dumps({
+                "detection": {
+                    "peer_group_minimum_members": "4",
+                },
                 "zenarmor": {
                     "enabled": "1",
                     "source": "syslog_udp",
@@ -1259,6 +1317,7 @@ class BackendTests(unittest.TestCase):
                 }
             }), encoding="utf-8")
             config = load_config(path)
+            self.assertEqual(config.detection.peer_group_minimum_members, 4)
             self.assertTrue(config.zenarmor.enabled)
             self.assertEqual(config.zenarmor.source, "syslog_udp")
             self.assertEqual(config.zenarmor.format, "json")

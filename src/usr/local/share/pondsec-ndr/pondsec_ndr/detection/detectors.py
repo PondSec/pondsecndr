@@ -281,20 +281,24 @@ class HostBaselineAnomalyDetector(Detector):
         detections = []
         for item in features:
             deviation = float(item.get("baseline_deviation") or 0)
+            peer_deviation = float(item.get("peer_group_deviation") or 0)
             observations = int(item.get("baseline_observations") or 0)
             baseline_status = str(item.get("baseline_status") or "")
-            if baseline_status not in self.ready_statuses or deviation < 0.65:
+            host_ready = baseline_status in self.ready_statuses and deviation >= 0.65
+            peer_ready = item.get("peer_group_status") == "ready" and peer_deviation >= 0.65
+            if not host_ready and not peer_ready:
                 continue
+            anomaly_score = max(deviation if host_ready else 0.0, peer_deviation if peer_ready else 0.0)
             detections.append(make_detection(
                 self.detector_id,
                 "anomaly",
-                "Host baseline anomaly",
-                "Host behavior deviates from its established network baseline without requiring a signature match.",
+                "Host baseline anomaly" if host_ready else "Peer group behavior anomaly",
+                "Host behavior deviates from its own baseline or a mature peer group without requiring a signature match.",
                 item["source_ip"],
                 None,
-                8 if deviation >= 0.8 else 7,
-                min(0.97, 0.68 + deviation / 4),
-                deviation,
+                8 if anomaly_score >= 0.8 else 7,
+                min(0.97, 0.68 + anomaly_score / 4),
+                anomaly_score,
                 {
                     "baseline_deviation": deviation,
                     "baseline_observations": observations,
@@ -302,11 +306,19 @@ class HostBaselineAnomalyDetector(Detector):
                     "baseline_status_label": item.get("baseline_status_label"),
                     "baseline_version": item.get("baseline_version"),
                     "baseline_drift_score": item.get("baseline_drift_score"),
+                    "peer_group": item.get("peer_group"),
+                    "peer_group_status": item.get("peer_group_status"),
+                    "peer_group_size": item.get("peer_group_size"),
+                    "peer_group_deviation": peer_deviation,
+                    "peer_group_confidence": item.get("peer_group_confidence"),
                     "reasons": item.get("baseline_anomaly_reasons", []),
+                    "peer_group_reasons": item.get("peer_group_anomaly_reasons", []),
                     "signature_required": False,
                     "thresholds": [
                         {"feature": "baseline_status", "operator": "in", "threshold": sorted(self.ready_statuses), "observed": baseline_status},
                         {"feature": "baseline_deviation", "operator": ">=", "threshold": 0.65, "observed": deviation},
+                        {"feature": "peer_group_status", "operator": "=", "threshold": "ready", "observed": item.get("peer_group_status")},
+                        {"feature": "peer_group_deviation", "operator": ">=", "threshold": 0.65, "observed": peer_deviation},
                     ],
                 },
                 recommended_action="block",

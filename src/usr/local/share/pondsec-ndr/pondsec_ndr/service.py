@@ -295,6 +295,7 @@ class PondSecService:
         features = self.store.score_features_against_baselines(
             aggregate_features(events),
             minimum_observations=self.config.detection.minimum_observations,
+            minimum_peer_members=self.config.detection.peer_group_minimum_members,
         )
         self.store.insert_features(features)
 
