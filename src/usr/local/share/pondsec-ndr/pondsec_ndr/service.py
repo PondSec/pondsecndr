@@ -403,6 +403,7 @@ class PondSecService:
             "incident risk score is below response threshold",
             "incident confidence is below response threshold",
             "automatic internal isolation is disabled",
+            "automatic internal isolation is disabled during learning mode",
             "automatic external blocking is disabled",
         }
 

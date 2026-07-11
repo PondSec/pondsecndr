@@ -89,6 +89,8 @@ def propose_block_for_incident(
         raise ResponseDenied("source IP is protected")
     if config.response.enforce_allowlist and is_allowlisted(source_ip, store.allowlist_values()):
         raise ResponseDenied("source IP is allowlisted")
+    if automatic and is_private_ip(source_ip) and config.detection.learning_status().get("active"):
+        raise ResponseDenied("automatic internal isolation is disabled during learning mode")
     if automatic and is_private_ip(source_ip) and not config.response.isolate_internal:
         raise ResponseDenied("automatic internal isolation is disabled")
     if automatic and not is_private_ip(source_ip) and not config.response.block_external:
@@ -140,6 +142,7 @@ def _response_target_for_incident(incident: dict[str, Any]) -> str | None:
 def _internal_behavior_actor(evidence: dict[str, Any]) -> str | None:
     detections = evidence.get("detections") if isinstance(evidence.get("detections"), list) else []
     by_source: dict[str, set[str]] = {}
+    confidence_by_source: dict[str, float] = {}
     max_score: dict[str, int] = {}
     for detection in detections:
         if not isinstance(detection, dict):
@@ -151,10 +154,16 @@ def _internal_behavior_actor(evidence: dict[str, Any]) -> str | None:
         if category not in INTERNAL_ISOLATION_CATEGORIES:
             continue
         by_source.setdefault(str(source), set()).add(category)
+        confidence_by_source[str(source)] = max(confidence_by_source.get(str(source), 0.0), float(detection.get("confidence") or 0))
         max_score[str(source)] = max(max_score.get(str(source), 0), int(detection.get("severity") or 0))
     candidates = []
     for source, categories in by_source.items():
-        if len(categories) >= 2 or categories & {"command_and_control", "exfiltration", "lateral_movement"}:
+        if (
+            len(categories) >= 2
+            and categories & {"command_and_control", "exfiltration", "lateral_movement"}
+            and max_score.get(source, 0) >= 9
+            and confidence_by_source.get(source, 0.0) >= 0.95
+        ):
             candidates.append((source, len(categories), max_score.get(source, 0)))
     if not candidates:
         return None

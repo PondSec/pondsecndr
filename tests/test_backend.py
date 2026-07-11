@@ -1130,7 +1130,7 @@ class BackendTests(unittest.TestCase):
                             "source_ip": "192.168.30.3",
                             "destination_ip": "1.1.1.1",
                             "severity": 9,
-                            "confidence": 0.94,
+                            "confidence": 0.96,
                             "title": "Outbound beaconing",
                         },
                         {
@@ -1146,10 +1146,76 @@ class BackendTests(unittest.TestCase):
                 },
                 "risk_factors": [],
             }])
-            config = PondSecConfig(response=ResponseConfig(minimum_risk_score=50, minimum_confidence=50, isolate_internal=True))
+            config = PondSecConfig(
+                response=ResponseConfig(minimum_risk_score=50, minimum_confidence=50, isolate_internal=True),
+                detection=DetectionConfig(machine_learning=True, learning_mode=False),
+            )
             proposal = propose_block_for_incident(store, config, "incident-internal-isolation-target", actor="test", automatic=True)
             self.assertEqual(proposal["source_ip"], "192.168.30.3")
             self.assertIn("Isolation proposal", proposal["reason"])
+
+    def test_response_engine_denies_weak_internal_auto_isolation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            store.insert_incidents([{
+                "incident_id": "incident-weak-internal-isolation",
+                "title": "Weak internal behavior",
+                "status": "open",
+                "risk_score": 92,
+                "severity": 9,
+                "confidence": 0.9,
+                "source_ip": "8.8.4.4",
+                "destination_ip": "192.168.30.3",
+                "category": "multi_stage",
+                "created_at": "2026-07-05T10:00:00+00:00",
+                "updated_at": "2026-07-05T10:20:00+00:00",
+                "evidence": {
+                    "entity_roles": {"external_actor": "8.8.4.4", "affected_host": "192.168.30.3"},
+                    "detections": [{
+                        "detection_id": "d-weak-c2",
+                        "category": "command_and_control",
+                        "source_ip": "192.168.30.3",
+                        "destination_ip": "1.1.1.1",
+                        "severity": 8,
+                        "confidence": 0.9,
+                        "title": "Weak beaconing suspicion",
+                    }],
+                },
+                "risk_factors": [],
+            }])
+            config = PondSecConfig(
+                response=ResponseConfig(minimum_risk_score=50, minimum_confidence=50, isolate_internal=True, block_external=True),
+                detection=DetectionConfig(machine_learning=True, learning_mode=False),
+            )
+            proposal = propose_block_for_incident(store, config, "incident-weak-internal-isolation", actor="test", automatic=True)
+            self.assertEqual(proposal["source_ip"], "8.8.4.4")
+
+    def test_response_engine_denies_internal_isolation_during_learning(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            store.insert_incidents([{
+                "incident_id": "incident-learning-internal-isolation",
+                "title": "Learning internal behavior",
+                "status": "open",
+                "risk_score": 96,
+                "severity": 10,
+                "confidence": 0.98,
+                "source_ip": "192.168.10.250",
+                "destination_ip": "1.1.1.1",
+                "category": "command_and_control",
+                "created_at": "2026-07-05T10:00:00+00:00",
+                "updated_at": "2026-07-05T10:20:00+00:00",
+                "evidence": {},
+                "risk_factors": [],
+            }])
+            config = PondSecConfig(
+                response=ResponseConfig(minimum_risk_score=50, minimum_confidence=50, isolate_internal=True),
+                detection=DetectionConfig(machine_learning=True, learning_mode=True, learning_started_at="2026-07-05T10:00:00+00:00", learning_days=14),
+            )
+            with self.assertRaisesRegex(ResponseDenied, "learning mode"):
+                propose_block_for_incident(store, config, "incident-learning-internal-isolation", actor="test", automatic=True)
 
     def test_response_engine_adds_manual_block_proposal_without_pf_side_effects(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
