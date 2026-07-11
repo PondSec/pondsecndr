@@ -24,7 +24,7 @@ from pondsec_ndr.collectors.zeek import ZeekLogCollector, normalize_zeek_row
 from pondsec_ndr.collectors.zenarmor import ZenarmorCollector, ZenarmorSyslogCollector, normalize_zenarmor_event, parse_zenarmor_line
 from pondsec_ndr.config import DetectionConfig, DnsmasqConfig, InterfaceConfig, PondSecConfig, ResponseConfig, ZeekConfig, ZenarmorConfig, load_config
 from pondsec_ndr.correlation import correlate_detections
-from pondsec_ndr.detection.detectors import BeaconingDetector, DNSTunnelingDetector, PortScanDetector, SuricataAlertAdapter
+from pondsec_ndr.detection.detectors import BeaconingDetector, DNSTunnelingDetector, HostBaselineAnomalyDetector, PortScanDetector, SuricataAlertAdapter
 from pondsec_ndr.diagnostics import diagnostic_archive, diagnostics as diagnostics_payload, eve_access_status
 from pondsec_ndr.features.aggregator import aggregate_features, shannon_entropy
 from pondsec_ndr.models.cicids_features import CICIDS2017_FEATURES, cicids_vector_from_feature
@@ -928,8 +928,94 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(row[5], "reconnaissance")
             self.assertEqual(row[6], "legacy-upgrade")
             self.assertEqual(row[7], 0)
-            self.assertEqual(version, 3)
+            self.assertEqual(version, 4)
             self.assertTrue(any((db_path.parent / "backups").glob("pondsec-ndr.db.schema0-to-2.*.bak")))
+
+    def test_host_baseline_versions_status_and_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            feature = {
+                "feature_version": "1",
+                "source_ip": "192.168.10.91",
+                "destination_count": 1.0,
+                "port_count": 1.0,
+                "bytes_out": 1000.0,
+                "upload_download_ratio": 1.0,
+                "dns_entropy": 0.0,
+                "dns_name_length": 0.0,
+                "connections_60s": 1.0,
+                "internal_connections": 0.0,
+                "external_connections": 1.0,
+                "baseline_deviation": 0.0,
+            }
+
+            store.update_host_baselines([feature], minimum_observations=4)
+            scored = store.score_features_against_baselines([feature], minimum_observations=4)[0]
+            self.assertEqual(scored["baseline_status"], "building")
+            for _ in range(3):
+                store.update_host_baselines([feature], minimum_observations=4)
+            scored = store.score_features_against_baselines([feature], minimum_observations=4)[0]
+            self.assertEqual(scored["baseline_status"], "complete")
+            self.assertGreaterEqual(scored["baseline_version"], 2)
+
+            shifted = dict(feature)
+            shifted["bytes_out"] = 10000.0
+            shifted["upload_download_ratio"] = 10.0
+            store.update_host_baselines([shifted], minimum_observations=4)
+            shifted_scored = store.score_features_against_baselines([shifted], minimum_observations=4)[0]
+            self.assertIn(shifted_scored["baseline_status"], {"updated", "uncertain"})
+            self.assertGreaterEqual(shifted_scored["baseline_drift_score"], 0.35)
+            summary = store.baseline_summary()
+            self.assertGreaterEqual(summary["baseline_versions"], 3)
+            self.assertGreaterEqual(summary["drifted_hosts"], 1)
+
+    def test_established_host_baseline_adapts_slowly_after_learning(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            feature = {
+                "feature_version": "1",
+                "source_ip": "192.168.10.92",
+                "destination_count": 1.0,
+                "port_count": 1.0,
+                "bytes_out": 1000.0,
+                "upload_download_ratio": 1.0,
+                "dns_entropy": 0.0,
+                "dns_name_length": 0.0,
+                "connections_60s": 1.0,
+                "internal_connections": 0.0,
+                "external_connections": 1.0,
+                "baseline_deviation": 0.0,
+            }
+            for _ in range(4):
+                store.update_host_baselines([feature], minimum_observations=4)
+
+            shifted = dict(feature)
+            shifted["bytes_out"] = 5000.0
+            store.update_host_baselines([shifted], minimum_observations=4)
+
+            with store.connect() as conn:
+                row = conn.execute("SELECT baseline_json FROM host_baselines WHERE host_ip = ?", ("192.168.10.92",)).fetchone()
+            baseline = json.loads(row["baseline_json"])
+            self.assertGreater(baseline["bytes_out"], 1000.0)
+            self.assertLess(baseline["bytes_out"], 1500.0)
+
+    def test_host_baseline_detector_accepts_versioned_ready_statuses(self) -> None:
+        features = [{
+            "source_ip": "192.168.10.93",
+            "baseline_status": "complete",
+            "baseline_status_label": "vollstaendig",
+            "baseline_observations": 50,
+            "baseline_deviation": 0.72,
+            "baseline_version": 2,
+            "baseline_drift_score": 0.4,
+            "baseline_anomaly_reasons": [{"metric": "bytes_out", "ratio": 4.0}],
+        }]
+        detections = HostBaselineAnomalyDetector().detect([], features)
+        self.assertEqual(len(detections), 1)
+        self.assertEqual(detections[0]["evidence"]["baseline_status"], "complete")
+        self.assertEqual(detections[0]["evidence"]["baseline_version"], 2)
 
     def test_store_canonicalizes_structured_tls_fingerprints(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

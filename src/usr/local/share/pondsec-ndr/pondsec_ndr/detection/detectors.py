@@ -275,13 +275,15 @@ class DataExfiltrationDetector(Detector):
 
 class HostBaselineAnomalyDetector(Detector):
     detector_id = "pondsec.host_baseline_anomaly"
+    ready_statuses = {"complete", "updated", "uncertain", "established"}
 
     def detect(self, events: list[dict[str, Any]], features: list[dict[str, Any]]) -> list[dict[str, Any]]:
         detections = []
         for item in features:
             deviation = float(item.get("baseline_deviation") or 0)
             observations = int(item.get("baseline_observations") or 0)
-            if item.get("baseline_status") != "established" or deviation < 0.65:
+            baseline_status = str(item.get("baseline_status") or "")
+            if baseline_status not in self.ready_statuses or deviation < 0.65:
                 continue
             detections.append(make_detection(
                 self.detector_id,
@@ -296,10 +298,14 @@ class HostBaselineAnomalyDetector(Detector):
                 {
                     "baseline_deviation": deviation,
                     "baseline_observations": observations,
+                    "baseline_status": baseline_status,
+                    "baseline_status_label": item.get("baseline_status_label"),
+                    "baseline_version": item.get("baseline_version"),
+                    "baseline_drift_score": item.get("baseline_drift_score"),
                     "reasons": item.get("baseline_anomaly_reasons", []),
                     "signature_required": False,
                     "thresholds": [
-                        {"feature": "baseline_status", "operator": "=", "threshold": "established", "observed": item.get("baseline_status")},
+                        {"feature": "baseline_status", "operator": "in", "threshold": sorted(self.ready_statuses), "observed": baseline_status},
                         {"feature": "baseline_deviation", "operator": ">=", "threshold": 0.65, "observed": deviation},
                     ],
                 },

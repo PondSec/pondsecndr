@@ -315,7 +315,11 @@ class PondSecService:
         )
         inserted_incidents = self.store.insert_incidents(incidents)
         anomalous_sources = self._baseline_skip_sources(detections)
-        baseline_updates = self.store.update_host_baselines(features, skip_sources=anomalous_sources)
+        baseline_updates = self.store.update_host_baselines(
+            features,
+            skip_sources=anomalous_sources,
+            minimum_observations=self.config.detection.minimum_observations,
+        )
         response_actions = self._auto_response(incidents, effective_config)
         cleaned = self.store.cleanup(self.config.retention_days)
         resource_usage = self._resource_usage(started_wall, started_cpu)

@@ -146,6 +146,15 @@ DHCP changes for the same MAC update the same entity instead of creating a new
 device identity. `entity_observations` stores the source evidence used for each
 match.
 
+Schema version `4` adds continuous host baseline tracking. `host_baselines`
+stores the current baseline status, entity reference, drift score and baseline
+version. `baseline_versions` keeps historical snapshots when a baseline is
+created, changes maturity state, crosses the minimum observation threshold,
+shows material drift, or reaches a periodic refresh point. After the initial
+learning threshold, host baselines keep adapting with a small weighted update
+instead of replacing old behavior, so the system can keep learning without
+forgetting its original normal profile.
+
 ## Backup
 
 Back up:

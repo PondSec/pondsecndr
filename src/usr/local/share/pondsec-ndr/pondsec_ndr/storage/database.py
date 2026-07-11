@@ -15,10 +15,31 @@ from typing import Any, Iterator
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 INCIDENT_DEDUPE_WINDOW_SECONDS = 1800
 OPEN_INCIDENT_STATUSES = ("open",)
 ARCHIVED_INCIDENT_STATUSES = ("closed", "false_positive", "archived")
+BASELINE_MINIMUM_OBSERVATIONS = 50
+BASELINE_METRICS = [
+    "destination_count",
+    "port_count",
+    "bytes_out",
+    "upload_download_ratio",
+    "dns_entropy",
+    "dns_name_length",
+    "connections_60s",
+    "internal_connections",
+    "external_connections",
+]
+BASELINE_STATUS_LABELS = {
+    "building": "im_aufbau",
+    "incomplete": "unvollstaendig",
+    "complete": "vollstaendig",
+    "updated": "aktualisiert",
+    "uncertain": "unsicher",
+    "learning": "im_aufbau",
+    "established": "vollstaendig",
+}
 
 
 def _json_default(value: Any) -> str:
@@ -114,6 +135,57 @@ def _stable_entity_id(ip: str | None, mac: str | None, hostname: str | None = No
     else:
         basis = f"pondsec-entity:ip:{ip or 'unknown'}"
     return str(uuid5(NAMESPACE_URL, basis))
+
+
+def _baseline_version_id(host_ip: str, version: int) -> str:
+    return str(uuid5(NAMESPACE_URL, f"pondsec-baseline:{host_ip}:{version}"))
+
+
+def _safe_json_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(str(value))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _baseline_status(observations: int, minimum_observations: int = BASELINE_MINIMUM_OBSERVATIONS, drift_score: float = 0.0) -> str:
+    minimum = max(1, int(minimum_observations or BASELINE_MINIMUM_OBSERVATIONS))
+    if observations < max(1, minimum // 2):
+        return "building"
+    if observations < minimum:
+        return "incomplete"
+    if drift_score >= 0.7:
+        return "uncertain"
+    if drift_score >= 0.35:
+        return "updated"
+    return "complete"
+
+
+def _baseline_drift(current: dict[str, Any], baseline: dict[str, Any]) -> tuple[float, list[dict[str, Any]]]:
+    drift = 0.0
+    reasons: list[dict[str, Any]] = []
+    for metric in BASELINE_METRICS:
+        observed = float(current.get(metric) or 0)
+        expected = float(baseline.get(metric) or 0)
+        if observed <= 0 or expected <= 0:
+            continue
+        ratio = observed / max(expected, 1.0)
+        distance = abs(observed - expected) / max(observed, expected, 1.0)
+        drift = max(drift, min(1.0, distance))
+        if ratio >= 3 or ratio <= (1 / 3):
+            reasons.append({
+                "metric": metric,
+                "current": round(observed, 4),
+                "baseline": round(expected, 4),
+                "ratio": round(ratio, 4),
+                "drift": round(min(1.0, distance), 4),
+            })
+    return drift, reasons
 
 
 SCHEMA = [
@@ -214,10 +286,30 @@ SCHEMA = [
     """
     CREATE TABLE IF NOT EXISTS host_baselines (
         host_ip TEXT PRIMARY KEY,
+        entity_id TEXT,
         observation_count INTEGER NOT NULL DEFAULT 0,
         first_observation TEXT,
         last_observation TEXT,
+        baseline_version INTEGER NOT NULL DEFAULT 1,
+        status TEXT NOT NULL DEFAULT 'building',
+        drift_score REAL NOT NULL DEFAULT 0,
+        updated_at TEXT,
         baseline_json TEXT NOT NULL DEFAULT '{}'
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS baseline_versions (
+        version_id TEXT PRIMARY KEY,
+        host_ip TEXT NOT NULL,
+        entity_id TEXT,
+        baseline_version INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        observation_count INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        drift_score REAL NOT NULL DEFAULT 0,
+        reason TEXT NOT NULL,
+        baseline_json TEXT NOT NULL,
+        metadata_json TEXT NOT NULL DEFAULT '{}'
     )
     """,
     """
@@ -397,6 +489,9 @@ SCHEMA = [
     "CREATE INDEX IF NOT EXISTS idx_entities_primary_ip ON entities(primary_ip)",
     "CREATE INDEX IF NOT EXISTS idx_entity_observations_entity ON entity_observations(entity_id, timestamp)",
     "CREATE INDEX IF NOT EXISTS idx_entity_observations_ip ON entity_observations(ip, timestamp)",
+    "CREATE INDEX IF NOT EXISTS idx_host_baselines_status ON host_baselines(status, observation_count)",
+    "CREATE INDEX IF NOT EXISTS idx_baseline_versions_host ON baseline_versions(host_ip, baseline_version)",
+    "CREATE INDEX IF NOT EXISTS idx_baseline_versions_created ON baseline_versions(created_at)",
     "CREATE INDEX IF NOT EXISTS idx_detections_timestamp ON detections(timestamp)",
     "CREATE INDEX IF NOT EXISTS idx_detections_source ON detections(source_ip)",
     "CREATE INDEX IF NOT EXISTS idx_incidents_status ON incidents(status)",
@@ -416,6 +511,7 @@ INCIDENT_V2_COLUMNS = {
     "suppressed_count",
 }
 HOST_V3_COLUMNS = {"entity_id"}
+HOST_BASELINE_V4_COLUMNS = {"entity_id", "baseline_version", "status", "drift_score", "updated_at"}
 
 
 def now_iso() -> str:
@@ -476,6 +572,10 @@ class EventStore:
                 if current_version > 0 or self._schema_needs_v3(conn):
                     self._backup_database(conn, max(current_version, 2), 3)
                 self._migrate_to_v3(conn)
+            if current_version < 4:
+                if current_version > 0 or self._schema_needs_v4(conn):
+                    self._backup_database(conn, max(current_version, 3), 4)
+                self._migrate_to_v4(conn)
             for statement in deferred_indexes:
                 conn.execute(statement)
             conn.execute(
@@ -496,6 +596,11 @@ class EventStore:
         entity_columns = {row["name"] for row in conn.execute("PRAGMA table_info(entities)").fetchall()}
         observation_columns = {row["name"] for row in conn.execute("PRAGMA table_info(entity_observations)").fetchall()}
         return (bool(host_columns) and not HOST_V3_COLUMNS.issubset(host_columns)) or not entity_columns or not observation_columns
+
+    def _schema_needs_v4(self, conn: sqlite3.Connection) -> bool:
+        baseline_columns = {row["name"] for row in conn.execute("PRAGMA table_info(host_baselines)").fetchall()}
+        version_columns = {row["name"] for row in conn.execute("PRAGMA table_info(baseline_versions)").fetchall()}
+        return (bool(baseline_columns) and not HOST_BASELINE_V4_COLUMNS.issubset(baseline_columns)) or not version_columns
 
     def _backup_database(self, conn: sqlite3.Connection, from_version: int, to_version: int) -> Path:
         backup_dir = self.db_path.parent / "backups"
@@ -598,6 +703,104 @@ class EventStore:
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
             (3, now_iso()),
+        )
+
+    def _migrate_to_v4(self, conn: sqlite3.Connection) -> None:
+        baseline_columns = {row["name"] for row in conn.execute("PRAGMA table_info(host_baselines)").fetchall()}
+        additions = {
+            "entity_id": "ALTER TABLE host_baselines ADD COLUMN entity_id TEXT",
+            "baseline_version": "ALTER TABLE host_baselines ADD COLUMN baseline_version INTEGER NOT NULL DEFAULT 1",
+            "status": "ALTER TABLE host_baselines ADD COLUMN status TEXT NOT NULL DEFAULT 'building'",
+            "drift_score": "ALTER TABLE host_baselines ADD COLUMN drift_score REAL NOT NULL DEFAULT 0",
+            "updated_at": "ALTER TABLE host_baselines ADD COLUMN updated_at TEXT",
+        }
+        for column, statement in additions.items():
+            if column not in baseline_columns:
+                conn.execute(statement)
+        rows = conn.execute(
+            """
+            SELECT b.host_ip, b.observation_count, b.first_observation, b.last_observation,
+                   b.baseline_json, b.baseline_version, b.status, b.drift_score,
+                   b.updated_at, h.entity_id AS host_entity_id
+            FROM host_baselines b
+            LEFT JOIN hosts h ON h.ip = b.host_ip
+            """
+        ).fetchall()
+        for row in rows:
+            observations = int(row["observation_count"] or 0)
+            status = row["status"] or _baseline_status(observations)
+            if status == "learning":
+                status = _baseline_status(observations)
+            elif status == "established":
+                status = "complete"
+            baseline_version = int(row["baseline_version"] or 1)
+            observed_at = row["last_observation"] or row["first_observation"] or now_iso()
+            entity_id = row["host_entity_id"]
+            conn.execute(
+                """
+                UPDATE host_baselines
+                SET entity_id = COALESCE(entity_id, ?),
+                    baseline_version = ?,
+                    status = ?,
+                    drift_score = COALESCE(drift_score, 0),
+                    updated_at = COALESCE(updated_at, ?)
+                WHERE host_ip = ?
+                """,
+                (entity_id, baseline_version, status, observed_at, row["host_ip"]),
+            )
+            self._insert_baseline_version(
+                conn,
+                row["host_ip"],
+                entity_id,
+                baseline_version,
+                observed_at,
+                observations,
+                status,
+                float(row["drift_score"] or 0),
+                row["baseline_json"] or "{}",
+                "migration",
+                {"source_schema": 3},
+            )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+            (4, now_iso()),
+        )
+
+    def _insert_baseline_version(
+        self,
+        conn: sqlite3.Connection,
+        host_ip: str,
+        entity_id: str | None,
+        baseline_version: int,
+        created_at: str,
+        observation_count: int,
+        status: str,
+        drift_score: float,
+        baseline_json: str,
+        reason: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO baseline_versions(
+                version_id, host_ip, entity_id, baseline_version, created_at,
+                observation_count, status, drift_score, reason,
+                baseline_json, metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                _baseline_version_id(host_ip, baseline_version),
+                host_ip,
+                entity_id,
+                baseline_version,
+                created_at,
+                observation_count,
+                status,
+                drift_score,
+                reason,
+                baseline_json,
+                json.dumps(metadata or {}, sort_keys=True),
+            ),
         )
 
     def check(self) -> dict[str, Any]:
@@ -976,22 +1179,17 @@ class EventStore:
     def score_features_against_baselines(self, features: list[dict[str, Any]], minimum_observations: int = 50) -> list[dict[str, Any]]:
         if not features:
             return features
-        metrics = [
-            "destination_count",
-            "port_count",
-            "bytes_out",
-            "upload_download_ratio",
-            "dns_entropy",
-            "dns_name_length",
-            "connections_60s",
-            "internal_connections",
-            "external_connections",
-        ]
+        minimum_observations = max(1, int(minimum_observations or BASELINE_MINIMUM_OBSERVATIONS))
         with self.connect() as conn:
             baseline_rows = {
                 row["host_ip"]: row
                 for row in conn.execute(
-                    "SELECT host_ip, observation_count, baseline_json FROM host_baselines WHERE host_ip IN ({})".format(
+                    """
+                    SELECT host_ip, entity_id, observation_count, baseline_json,
+                           baseline_version, status, drift_score, updated_at
+                    FROM host_baselines
+                    WHERE host_ip IN ({})
+                    """.format(
                         ",".join("?" for _ in features)
                     ),
                     [item["source_ip"] for item in features],
@@ -1004,8 +1202,8 @@ class EventStore:
             reasons: list[dict[str, Any]] = []
             score = float(enriched.get("baseline_deviation") or 0)
             if row and int(row["observation_count"]) >= minimum_observations:
-                baseline = json.loads(row["baseline_json"] or "{}")
-                for metric in metrics:
+                baseline = _safe_json_dict(row["baseline_json"])
+                for metric in BASELINE_METRICS:
                     current = float(enriched.get(metric) or 0)
                     expected = float(baseline.get(metric) or 0)
                     if current <= 0 or expected <= 0:
@@ -1015,32 +1213,44 @@ class EventStore:
                         metric_score = min(1.0, (ratio - 1) / 10)
                         score = max(score, metric_score)
                         reasons.append({"metric": metric, "current": round(current, 4), "baseline": round(expected, 4), "ratio": round(ratio, 4)})
-                enriched["baseline_status"] = "established"
+                computed_drift, drift_reasons = _baseline_drift(enriched, baseline)
+                drift_score = max(float(row["drift_score"] or 0), computed_drift, score if reasons else 0.0)
+                status = _baseline_status(int(row["observation_count"]), minimum_observations, drift_score)
+                enriched["baseline_status"] = status
+                enriched["baseline_status_label"] = BASELINE_STATUS_LABELS.get(status, status)
+                enriched["baseline_legacy_status"] = "established"
                 enriched["baseline_observations"] = int(row["observation_count"])
-                enriched["baseline_anomaly_reasons"] = reasons[:6]
+                enriched["baseline_version"] = int(row["baseline_version"] or 1)
+                enriched["baseline_entity_id"] = row["entity_id"]
+                enriched["baseline_drift_score"] = round(min(1.0, drift_score), 4)
+                enriched["baseline_updated_at"] = row["updated_at"]
+                enriched["baseline_anomaly_reasons"] = (reasons + drift_reasons)[:6]
             else:
-                enriched["baseline_status"] = "learning"
+                observations = int(row["observation_count"]) if row else 0
+                status = _baseline_status(observations, minimum_observations)
+                enriched["baseline_status"] = status
+                enriched["baseline_status_label"] = BASELINE_STATUS_LABELS.get(status, status)
+                enriched["baseline_legacy_status"] = "learning"
                 enriched["baseline_observations"] = int(row["observation_count"]) if row else 0
+                enriched["baseline_version"] = int(row["baseline_version"] or 0) if row else 0
+                enriched["baseline_entity_id"] = row["entity_id"] if row else None
+                enriched["baseline_drift_score"] = round(float(row["drift_score"] or 0), 4) if row else 0.0
+                enriched["baseline_updated_at"] = row["updated_at"] if row else None
                 enriched["baseline_anomaly_reasons"] = []
             enriched["baseline_deviation"] = round(min(1.0, score), 4)
             scored.append(enriched)
         return scored
 
-    def update_host_baselines(self, features: list[dict[str, Any]], skip_sources: set[str] | None = None) -> int:
+    def update_host_baselines(
+        self,
+        features: list[dict[str, Any]],
+        skip_sources: set[str] | None = None,
+        minimum_observations: int = BASELINE_MINIMUM_OBSERVATIONS,
+    ) -> int:
         if not features:
             return 0
         skip_sources = skip_sources or set()
-        metrics = [
-            "destination_count",
-            "port_count",
-            "bytes_out",
-            "upload_download_ratio",
-            "dns_entropy",
-            "dns_name_length",
-            "connections_60s",
-            "internal_connections",
-            "external_connections",
-        ]
+        minimum_observations = max(1, int(minimum_observations or BASELINE_MINIMUM_OBSERVATIONS))
         updated = 0
         with self.connect() as conn:
             for item in features:
@@ -1048,35 +1258,121 @@ class EventStore:
                 if source_ip in skip_sources:
                     continue
                 now = now_iso()
-                row = conn.execute("SELECT observation_count, first_observation, baseline_json FROM host_baselines WHERE host_ip = ?", (source_ip,)).fetchone()
+                row = conn.execute(
+                    """
+                    SELECT host_ip, entity_id, observation_count, first_observation,
+                           baseline_json, baseline_version, status, drift_score
+                    FROM host_baselines
+                    WHERE host_ip = ?
+                    """,
+                    (source_ip,),
+                ).fetchone()
+                host_row = conn.execute("SELECT entity_id FROM hosts WHERE ip = ?", (source_ip,)).fetchone()
+                entity_id = (host_row["entity_id"] if host_row else None) or (row["entity_id"] if row else None)
                 if row:
                     count = int(row["observation_count"])
-                    baseline = json.loads(row["baseline_json"] or "{}")
+                    baseline = _safe_json_dict(row["baseline_json"])
                     next_count = count + 1
-                    for metric in metrics:
+                    previous_drift = float(row["drift_score"] or 0)
+                    drift_score, drift_reasons = _baseline_drift(item, baseline)
+                    if count < minimum_observations:
+                        alpha = 1.0 / next_count
+                    else:
+                        alpha = 0.02 if drift_score >= 0.5 else 0.05
+                    for metric in BASELINE_METRICS:
                         current = float(item.get(metric) or 0)
-                        baseline[metric] = ((float(baseline.get(metric) or 0) * count) + current) / next_count
+                        previous = float(baseline.get(metric) or 0)
+                        if count < minimum_observations:
+                            baseline[metric] = ((previous * count) + current) / next_count
+                        else:
+                            baseline[metric] = (previous * (1 - alpha)) + (current * alpha)
+                    previous_status = row["status"] or _baseline_status(count, minimum_observations, previous_drift)
+                    if previous_status == "learning":
+                        previous_status = _baseline_status(count, minimum_observations, previous_drift)
+                    elif previous_status == "established":
+                        previous_status = "complete"
+                    status = _baseline_status(next_count, minimum_observations, drift_score)
+                    current_version = int(row["baseline_version"] or 1)
+                    crossed_drift = drift_score >= 0.35 and previous_drift < 0.35
+                    crossed_minimum = count < minimum_observations <= next_count
+                    status_changed = status != previous_status
+                    periodic_snapshot = next_count >= minimum_observations and next_count % 250 == 0
+                    snapshot_reason = ""
+                    if crossed_minimum:
+                        snapshot_reason = "minimum_observations_reached"
+                    elif crossed_drift:
+                        snapshot_reason = "drift_threshold_crossed"
+                    elif status_changed:
+                        snapshot_reason = "status_changed"
+                    elif periodic_snapshot:
+                        snapshot_reason = "periodic_refresh"
+                    next_version = current_version + 1 if snapshot_reason else current_version
+                    baseline_json = json.dumps(baseline, sort_keys=True)
                     conn.execute(
                         """
                         UPDATE host_baselines
-                        SET observation_count = ?, last_observation = ?, baseline_json = ?
+                        SET entity_id = COALESCE(?, entity_id),
+                            observation_count = ?,
+                            last_observation = ?,
+                            baseline_version = ?,
+                            status = ?,
+                            drift_score = ?,
+                            updated_at = ?,
+                            baseline_json = ?
                         WHERE host_ip = ?
                         """,
-                        (next_count, now, json.dumps(baseline, sort_keys=True), source_ip),
+                        (entity_id, next_count, now, next_version, status, drift_score, now, baseline_json, source_ip),
                     )
+                    if snapshot_reason:
+                        self._insert_baseline_version(
+                            conn,
+                            source_ip,
+                            entity_id,
+                            next_version,
+                            now,
+                            next_count,
+                            status,
+                            drift_score,
+                            baseline_json,
+                            snapshot_reason,
+                            {
+                                "adaptation_alpha": alpha,
+                                "previous_status": previous_status,
+                                "previous_version": current_version,
+                                "drift_reasons": drift_reasons[:6],
+                            },
+                        )
                 else:
-                    baseline = {metric: float(item.get(metric) or 0) for metric in metrics}
+                    baseline = {metric: float(item.get(metric) or 0) for metric in BASELINE_METRICS}
+                    status = _baseline_status(1, minimum_observations)
+                    baseline_json = json.dumps(baseline, sort_keys=True)
                     conn.execute(
                         """
-                        INSERT INTO host_baselines(host_ip, observation_count, first_observation, last_observation, baseline_json)
-                        VALUES (?, ?, ?, ?, ?)
+                        INSERT INTO host_baselines(
+                            host_ip, entity_id, observation_count, first_observation,
+                            last_observation, baseline_version, status, drift_score,
+                            updated_at, baseline_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
-                        (source_ip, 1, now, now, json.dumps(baseline, sort_keys=True)),
+                        (source_ip, entity_id, 1, now, now, 1, status, 0.0, now, baseline_json),
+                    )
+                    self._insert_baseline_version(
+                        conn,
+                        source_ip,
+                        entity_id,
+                        1,
+                        now,
+                        1,
+                        status,
+                        0.0,
+                        baseline_json,
+                        "initial",
+                        {"adaptation_alpha": 1.0},
                     )
                 conn.execute(
                     "UPDATE hosts SET learning_status = ?, baseline_deviation = ? WHERE ip = ?",
                     (
-                        "established" if int((row["observation_count"] if row else 0)) + 1 >= 50 else "learning",
+                        "established" if int((row["observation_count"] if row else 0)) + 1 >= minimum_observations else "learning",
                         float(item.get("baseline_deviation") or 0),
                         source_ip,
                     ),
@@ -2080,14 +2376,35 @@ class EventStore:
     def baseline_summary(self) -> dict[str, Any]:
         with self.connect() as conn:
             total = int(conn.execute("SELECT count(*) FROM host_baselines").fetchone()[0])
-            established = int(conn.execute("SELECT count(*) FROM host_baselines WHERE observation_count >= 50").fetchone()[0])
+            status_rows = conn.execute(
+                "SELECT status, count(*) AS count FROM host_baselines GROUP BY status"
+            ).fetchall()
+            status_counts = {row["status"] or "building": int(row["count"]) for row in status_rows}
+            established = int(conn.execute(
+                """
+                SELECT count(*) FROM host_baselines
+                WHERE observation_count >= ? OR status IN ('complete', 'updated', 'uncertain', 'established')
+                """,
+                (BASELINE_MINIMUM_OBSERVATIONS,),
+            ).fetchone()[0])
             learning = max(0, total - established)
             max_observations = int(conn.execute("SELECT COALESCE(max(observation_count), 0) FROM host_baselines").fetchone()[0])
+            version_count = int(conn.execute("SELECT count(*) FROM baseline_versions").fetchone()[0])
+            drifted = int(conn.execute(
+                "SELECT count(*) FROM host_baselines WHERE drift_score >= 0.35 OR status IN ('updated', 'uncertain')"
+            ).fetchone()[0])
+            uncertain = int(conn.execute(
+                "SELECT count(*) FROM host_baselines WHERE drift_score >= 0.7 OR status = 'uncertain'"
+            ).fetchone()[0])
         return {
             "total_hosts": total,
             "established_hosts": established,
             "learning_hosts": learning,
             "max_observations": max_observations,
+            "status_counts": status_counts,
+            "baseline_versions": version_count,
+            "drifted_hosts": drifted,
+            "uncertain_hosts": uncertain,
         }
 
     def host_baseline_observations(self, host_ip: str | None) -> int:

@@ -93,6 +93,22 @@ Implementation validation:
   source tag, role and service evidence to the entity inventory.
 - Local regression suite: `91` tests passed.
 
+## 2026-07-11: Continuous Host Baseline Versioning
+
+Implementation validation:
+
+- Added schema version `4` with `host_baselines` maturity/drift fields and
+  persistent `baseline_versions` snapshots.
+- Baseline scoring now reports `building`, `incomplete`, `complete`,
+  `updated`, or `uncertain` status plus German status labels.
+- Initial learning still uses the minimum observation threshold; after that,
+  continuous learning applies a small weighted update so normal behavior can
+  evolve without overwriting the earlier profile.
+- Drift and maturity changes create historical baseline snapshots for audit and
+  troubleshooting.
+- Targeted local unit tests covered status progression, slow adaptation, drift
+  versioning, detector compatibility, and learning-mode suppression.
+
 ## 2026-07-05: OPNsense Firewall Development Install
 
 Target:
