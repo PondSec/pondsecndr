@@ -18,7 +18,7 @@ from pondsec_ndr.collectors.eve import EveCollector
 from pondsec_ndr.collectors.filterlog import FilterLogCollector
 from pondsec_ndr.collectors.netflow import NetFlowCollector
 from pondsec_ndr.collectors.zeek import ZeekLogCollector
-from pondsec_ndr.collectors.zenarmor import ZenarmorCollector
+from pondsec_ndr.collectors.zenarmor import ZenarmorCollector, ZenarmorSyslogCollector
 from pondsec_ndr.config import PondSecConfig, ensure_directories, load_config
 from pondsec_ndr.correlation import correlate_detections
 from pondsec_ndr.detection.detectors import default_detectors
@@ -37,6 +37,7 @@ class PondSecService:
         self.store.migrate()
         self._ensure_learning_started_at()
         self.netflow_collector: NetFlowCollector | None = None
+        self.zenarmor_syslog_collector: ZenarmorSyslogCollector | None = None
         self.stop_requested = False
         self.started_at = time.time()
         self.counters: dict[str, Any] = {
@@ -159,25 +160,48 @@ class PondSecService:
             events.extend(zeek_events)
         zenarmor_stats = None
         if self.config.zenarmor.enabled:
-            zenarmor_collector = ZenarmorCollector(
-                Path(self.config.zenarmor.syslog_path),
-                self.config.data_dir / "collector_offsets" / "zenarmor.json",
-                sensor_name=self.config.zenarmor.sensor_name,
-                remote_target=self.config.zenarmor.remote_target,
-                queue_limit=collector_queue_limit,
-                start_at_end=self.config.zenarmor.start_at_end,
-                import_options={
-                    "import_applications": self.config.zenarmor.import_applications,
-                    "import_categories": self.config.zenarmor.import_categories,
-                    "import_tls_metadata": self.config.zenarmor.import_tls_metadata,
-                    "import_session_context": self.config.zenarmor.import_session_context,
-                    "import_policy_actions": self.config.zenarmor.import_policy_actions,
-                    "import_device_context": self.config.zenarmor.import_device_context,
-                    "import_security_events": self.config.zenarmor.import_security_events,
-                },
-            )
-            zenarmor_events, zenarmor_stats = zenarmor_collector.read_once(max_lines=max_lines)
+            zenarmor_import_options = {
+                "import_applications": self.config.zenarmor.import_applications,
+                "import_categories": self.config.zenarmor.import_categories,
+                "import_tls_metadata": self.config.zenarmor.import_tls_metadata,
+                "import_session_context": self.config.zenarmor.import_session_context,
+                "import_policy_actions": self.config.zenarmor.import_policy_actions,
+                "import_device_context": self.config.zenarmor.import_device_context,
+                "import_security_events": self.config.zenarmor.import_security_events,
+            }
+            if self.config.zenarmor.source == "syslog_udp":
+                if self.zenarmor_syslog_collector is None:
+                    self.zenarmor_syslog_collector = ZenarmorSyslogCollector(
+                        self.config.zenarmor.listen_address,
+                        self.config.zenarmor.port,
+                        allowed_senders=self.config.zenarmor.allowed_senders,
+                        sensor_name=self.config.zenarmor.sensor_name,
+                        remote_target=self.config.zenarmor.remote_target,
+                        queue_limit=collector_queue_limit,
+                        max_datagrams_per_run=self.config.zenarmor.max_datagrams_per_run,
+                        import_options=zenarmor_import_options,
+                    )
+                zenarmor_events, zenarmor_stats = self.zenarmor_syslog_collector.read_once(
+                    max_datagrams=self.config.zenarmor.max_datagrams_per_run
+                )
+            else:
+                if self.zenarmor_syslog_collector is not None:
+                    self.zenarmor_syslog_collector.close()
+                    self.zenarmor_syslog_collector = None
+                zenarmor_collector = ZenarmorCollector(
+                    Path(self.config.zenarmor.syslog_path),
+                    self.config.data_dir / "collector_offsets" / "zenarmor.json",
+                    sensor_name=self.config.zenarmor.sensor_name,
+                    remote_target=self.config.zenarmor.remote_target,
+                    queue_limit=collector_queue_limit,
+                    start_at_end=self.config.zenarmor.start_at_end,
+                    import_options=zenarmor_import_options,
+                )
+                zenarmor_events, zenarmor_stats = zenarmor_collector.read_once(max_lines=max_lines)
             events.extend(zenarmor_events)
+        elif self.zenarmor_syslog_collector is not None:
+            self.zenarmor_syslog_collector.close()
+            self.zenarmor_syslog_collector = None
         netflow_stats = None
         if self.config.netflow.enabled:
             if self.netflow_collector is None:

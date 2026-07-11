@@ -409,6 +409,28 @@
         <help>Path to a local file written by the configured Syslog/reporting export receiver.</help>
     </field>
     <field>
+        <id>pondsecndr.zenarmor.listen_address</id>
+        <label>Zenarmor Syslog listen address</label>
+        <type>text</type>
+        <help>Use 127.0.0.1 when Zenarmor streams reporting data locally to PondSec.</help>
+    </field>
+    <field>
+        <id>pondsecndr.zenarmor.port</id>
+        <label>Zenarmor Syslog UDP port</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.zenarmor.allowed_senders</id>
+        <label>Allowed Zenarmor senders</label>
+        <type>text</type>
+        <help>Comma-separated sender IPs. Use 127.0.0.1 for local stream reporting.</help>
+    </field>
+    <field>
+        <id>pondsecndr.zenarmor.max_datagrams_per_run</id>
+        <label>Zenarmor max datagrams per run</label>
+        <type>text</type>
+    </field>
+    <field>
         <id>pondsecndr.zenarmor.start_at_end</id>
         <label>Start at end</label>
         <type>checkbox</type>

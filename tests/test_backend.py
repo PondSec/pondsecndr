@@ -6,6 +6,7 @@ from pathlib import Path
 import pwd
 import sqlite3
 import struct
+import socket
 import subprocess
 import tempfile
 import unittest
@@ -18,7 +19,7 @@ from pondsec_ndr.collectors.eve import EveCollector
 from pondsec_ndr.collectors.filterlog import FilterLogCollector, FilterLogStats, normalize_filterlog_line
 from pondsec_ndr.collectors.netflow import NETFLOW_V5_HEADER, NETFLOW_V5_RECORD, NetFlowCollector
 from pondsec_ndr.collectors.zeek import ZeekLogCollector, normalize_zeek_row
-from pondsec_ndr.collectors.zenarmor import ZenarmorCollector, normalize_zenarmor_event, parse_zenarmor_line
+from pondsec_ndr.collectors.zenarmor import ZenarmorCollector, ZenarmorSyslogCollector, normalize_zenarmor_event, parse_zenarmor_line
 from pondsec_ndr.config import DetectionConfig, DnsmasqConfig, InterfaceConfig, PondSecConfig, ResponseConfig, ZeekConfig, ZenarmorConfig, load_config
 from pondsec_ndr.correlation import correlate_detections
 from pondsec_ndr.detection.detectors import BeaconingDetector, DNSTunnelingDetector, PortScanDetector, SuricataAlertAdapter
@@ -632,6 +633,33 @@ class BackendTests(unittest.TestCase):
         self.assertNotIn("threat_name", metadata)
         self.assertEqual(metadata["event_source"], "zenarmor")
 
+    def test_zenarmor_syslog_udp_collector_reads_local_stream(self) -> None:
+        collector = ZenarmorSyslogCollector(
+            "127.0.0.1",
+            0,
+            allowed_senders=["127.0.0.1"],
+            sensor_name="zenarmor-local",
+            max_datagrams_per_run=10,
+        )
+        try:
+            port = collector._socket().getsockname()[1]
+            payload = (
+                "timestamp=2026-07-05T10:00:00+00:00 src_ip=192.168.10.20 "
+                "dst_ip=198.51.100.30 dst_port=443 protocol=tcp app=Slack action=allowed "
+                "sni=slack.example.test"
+            ).encode()
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sender:
+                sender.sendto(payload, ("127.0.0.1", port))
+            events, stats = collector.read_once(max_datagrams=10)
+        finally:
+            collector.close()
+        self.assertEqual(stats.read_datagrams, 1)
+        self.assertEqual(stats.accepted_events, 1)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["raw_source"], "zenarmor")
+        self.assertEqual(events[0]["metadata"]["application"], "Slack")
+        self.assertEqual(events[0]["metadata"]["sensor_name"], "zenarmor-local")
+
     def test_netflow_v5_datagram_normalizes_to_flow_event(self) -> None:
         collector = NetFlowCollector("127.0.0.1", 2055, allowed_exporters=["192.0.2.10"])
         events, stats = collector.parse_datagram(netflow_v5_datagram(), "192.0.2.10")
@@ -987,8 +1015,12 @@ class BackendTests(unittest.TestCase):
             path.write_text(json.dumps({
                 "zenarmor": {
                     "enabled": "1",
-                    "source": "api",
+                    "source": "syslog_udp",
                     "format": "json",
+                    "listen_address": "127.0.0.1",
+                    "port": "5514",
+                    "allowed_senders": "127.0.0.1,192.0.2.10",
+                    "max_datagrams_per_run": "250",
                     "api_enabled": "1",
                     "api_base_url": "https://127.0.0.1:8090",
                     "api_timeout_seconds": "9",
@@ -1004,8 +1036,12 @@ class BackendTests(unittest.TestCase):
             }), encoding="utf-8")
             config = load_config(path)
             self.assertTrue(config.zenarmor.enabled)
-            self.assertEqual(config.zenarmor.source, "api")
+            self.assertEqual(config.zenarmor.source, "syslog_udp")
             self.assertEqual(config.zenarmor.format, "json")
+            self.assertEqual(config.zenarmor.listen_address, "127.0.0.1")
+            self.assertEqual(config.zenarmor.port, 5514)
+            self.assertEqual(config.zenarmor.allowed_senders, ["127.0.0.1", "192.0.2.10"])
+            self.assertEqual(config.zenarmor.max_datagrams_per_run, 250)
             self.assertEqual(config.zenarmor.api_timeout_seconds, 9)
             self.assertFalse(config.zenarmor.api_verify_tls)
             self.assertFalse(config.zenarmor.import_applications)

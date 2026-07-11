@@ -55,7 +55,7 @@ def _suricata_provider(config: PondSecConfig, stats: dict[str, Any], updated_at:
         version="1",
         enabled=enabled,
         health_status=_health(enabled, last_error, stats),
-        input_type="file",
+        input_type="udp" if config.zenarmor.source == "syslog_udp" else "file",
         event_types=["alert", "drop", "flow", "dns", "tls", "http", "file", "anomaly"],
         configuration={
             "path": config.suricata_eve_path,
@@ -77,7 +77,7 @@ def _filterlog_provider(config: PondSecConfig, stats: dict[str, Any], updated_at
         version="1",
         enabled=True,
         health_status=_health(True, last_error, stats, optional=True),
-        input_type="file",
+        input_type="udp" if config.zenarmor.source == "syslog_udp" else "file",
         event_types=["firewall", "flow", "response"],
         configuration={
             "path": "/var/log/filter/latest.log",
@@ -184,7 +184,7 @@ def _zenarmor_provider(config: PondSecConfig, stats: dict[str, Any], updated_at:
         version="1",
         enabled=enabled,
         health_status=_health(enabled, last_error, stats, optional=True),
-        input_type="file",
+        input_type="udp" if config.zenarmor.source == "syslog_udp" else "file",
         event_types=["flow", "tls", "http", "dns", "application", "security"],
         configuration={
             "source": config.zenarmor.source,
@@ -192,6 +192,10 @@ def _zenarmor_provider(config: PondSecConfig, stats: dict[str, Any], updated_at:
             "sensor_name": config.zenarmor.sensor_name,
             "remote_target": config.zenarmor.remote_target,
             "syslog_path": config.zenarmor.syslog_path,
+            "listen_address": config.zenarmor.listen_address,
+            "port": config.zenarmor.port,
+            "allowed_senders": config.zenarmor.allowed_senders,
+            "max_datagrams_per_run": config.zenarmor.max_datagrams_per_run,
             "start_at_end": config.zenarmor.start_at_end,
             "api_enabled": config.zenarmor.api_enabled,
             "api_base_url": config.zenarmor.api_base_url,
@@ -262,6 +266,7 @@ def _accepted(stats: dict[str, Any]) -> bool:
 def _stats(stats: dict[str, Any]) -> dict[str, Any]:
     return {
         "read_lines": int(stats.get("read_lines") or 0),
+        "read_datagrams": int(stats.get("read_datagrams") or 0),
         "accepted_events": int(stats.get("accepted_events") or 0),
         "parser_errors": int(stats.get("parser_errors") or 0),
         "normalization_errors": int(stats.get("normalization_errors") or 0),

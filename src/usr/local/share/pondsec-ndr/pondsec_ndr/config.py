@@ -21,7 +21,7 @@ RESPONSE_MODES = {"observe", "recommend", "enforce"}
 DIRECTIONS = {"ingress", "egress", "both"}
 ZEEK_MODES = {"external", "local"}
 ZEEK_PARSERS = {"tsv"}
-ZENARMOR_SOURCES = {"syslog_export", "official_log", "api"}
+ZENARMOR_SOURCES = {"syslog_export", "syslog_udp", "official_log", "api"}
 ZENARMOR_FORMATS = {"auto", "json", "key_value"}
 
 
@@ -229,11 +229,15 @@ class ZeekConfig:
 @dataclass(slots=True)
 class ZenarmorConfig:
     enabled: bool = False
-    source: str = "syslog_export"
+    source: str = "syslog_udp"
     format: str = "auto"
     sensor_name: str = ""
     remote_target: str = ""
     syslog_path: str = "/var/log/zenarmor/streaming.log"
+    listen_address: str = "127.0.0.1"
+    port: int = 5514
+    allowed_senders: list[str] = field(default_factory=lambda: ["127.0.0.1"])
+    max_datagrams_per_run: int = 1000
     start_at_end: bool = True
     api_enabled: bool = False
     api_base_url: str = ""
@@ -381,6 +385,12 @@ class PondSecConfig:
             errors.append(f"invalid Zenarmor export format: {self.zenarmor.format}")
         if self.zenarmor.enabled and self.zenarmor.source in {"syslog_export", "official_log"} and not self.zenarmor.syslog_path:
             errors.append("Zenarmor provider requires a syslog/export path")
+        if self.zenarmor.source == "syslog_udp" and not _valid_listen_address(self.zenarmor.listen_address):
+            errors.append(f"invalid Zenarmor listen address: {self.zenarmor.listen_address}")
+        if self.zenarmor.source == "syslog_udp" and not 1 <= self.zenarmor.port <= 65535:
+            errors.append("Zenarmor Syslog port must be between 1 and 65535")
+        if self.zenarmor.source == "syslog_udp" and self.zenarmor.max_datagrams_per_run < 1:
+            errors.append("Zenarmor max_datagrams_per_run must be positive")
         if self.zenarmor.api_enabled and not self.zenarmor.api_base_url:
             errors.append("Zenarmor API integration requires an API base URL")
         if self.zenarmor.api_timeout_seconds < 1:
@@ -440,9 +450,9 @@ def load_config(path: Path | None = None) -> PondSecConfig:
     zeek_parser = str(zeek.get("parser") or "tsv").strip().lower()
     if zeek_parser not in ZEEK_PARSERS:
         zeek_parser = "tsv"
-    zenarmor_source = str(zenarmor.get("source") or "syslog_export").strip().lower()
+    zenarmor_source = str(zenarmor.get("source") or "syslog_udp").strip().lower()
     if zenarmor_source not in ZENARMOR_SOURCES:
-        zenarmor_source = "syslog_export"
+        zenarmor_source = "syslog_udp"
     zenarmor_format = str(zenarmor.get("format") or "auto").strip().lower()
     if zenarmor_format not in ZENARMOR_FORMATS:
         zenarmor_format = "auto"
@@ -536,6 +546,10 @@ def load_config(path: Path | None = None) -> PondSecConfig:
             sensor_name=str(zenarmor.get("sensor_name") or ""),
             remote_target=str(zenarmor.get("remote_target") or ""),
             syslog_path=str(zenarmor.get("syslog_path") or "/var/log/zenarmor/streaming.log"),
+            listen_address=str(zenarmor.get("listen_address") or "127.0.0.1"),
+            port=_int(zenarmor.get("port"), 5514, 1, 65535),
+            allowed_senders=_csv(zenarmor.get("allowed_senders")) or ["127.0.0.1"],
+            max_datagrams_per_run=_int(zenarmor.get("max_datagrams_per_run"), 1000, 1, 100000),
             start_at_end=_bool(zenarmor.get("start_at_end"), True),
             api_enabled=_bool(zenarmor.get("api_enabled"), False),
             api_base_url=str(zenarmor.get("api_base_url") or ""),

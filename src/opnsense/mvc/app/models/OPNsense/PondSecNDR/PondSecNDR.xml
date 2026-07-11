@@ -344,10 +344,11 @@
                 <Required>Y</Required>
             </enabled>
             <source type="OptionField">
-                <default>syslog_export</default>
+                <default>syslog_udp</default>
                 <Required>Y</Required>
                 <OptionValues>
                     <syslog_export>Syslog / reporting export</syslog_export>
+                    <syslog_udp>Syslog UDP listener</syslog_udp>
                     <official_log>Official log file</official_log>
                     <api>Documented API metadata</api>
                 </OptionValues>
@@ -373,6 +374,26 @@
                 <default>/var/log/zenarmor/streaming.log</default>
                 <Required>N</Required>
             </syslog_path>
+            <listen_address type="TextField">
+                <default>127.0.0.1</default>
+                <Required>Y</Required>
+            </listen_address>
+            <port type="IntegerField">
+                <default>5514</default>
+                <MinimumValue>1</MinimumValue>
+                <MaximumValue>65535</MaximumValue>
+                <Required>Y</Required>
+            </port>
+            <allowed_senders type="TextField">
+                <default>127.0.0.1</default>
+                <Required>N</Required>
+            </allowed_senders>
+            <max_datagrams_per_run type="IntegerField">
+                <default>1000</default>
+                <MinimumValue>1</MinimumValue>
+                <MaximumValue>100000</MaximumValue>
+                <Required>Y</Required>
+            </max_datagrams_per_run>
             <start_at_end type="BooleanField">
                 <default>1</default>
                 <Required>Y</Required>

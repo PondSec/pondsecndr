@@ -26,6 +26,17 @@ Decision:
 - Expand Zenarmor settings for documented Syslog/reporting export, official log
   and API metadata references without storing secrets in the PondSec form.
 
+## 2026-07-11: Local Zenarmor Stream Receiver
+
+Implementation validation:
+
+- Added PondSec Zenarmor Syslog UDP listener support for local stream reporting.
+- Default listener: `127.0.0.1:5514`.
+- Default sender allowlist: `127.0.0.1`.
+- Unit test sends a real UDP datagram to the collector and verifies normalized
+  Zenarmor metadata is inserted into the same event path as file exports.
+- Full local regression suite: `90` tests passed.
+
 ## 2026-07-05: OPNsense Firewall Development Install
 
 Target:

@@ -198,6 +198,7 @@ $(function() {
             'Enable Zenarmor provider': 'Zenarmor-Provider aktivieren',
             'Zenarmor source': 'Zenarmor-Quelle',
             'Syslog / reporting export': 'Syslog-/Reporting-Export',
+            'Syslog UDP listener': 'Syslog-UDP-Empfaenger',
             'Official log file': 'Offizielle Logdatei',
             'Documented API metadata': 'Dokumentierte API-Metadaten',
             'Zenarmor export format': 'Zenarmor-Exportformat',
@@ -207,6 +208,10 @@ $(function() {
             'Zenarmor sensor name': 'Zenarmor-Sensorname',
             'Zenarmor remote target': 'Zenarmor-Remote-Ziel',
             'Zenarmor Syslog export path': 'Zenarmor-Syslog-Exportpfad',
+            'Zenarmor Syslog listen address': 'Zenarmor-Syslog-Listen-Adresse',
+            'Zenarmor Syslog UDP port': 'Zenarmor-Syslog-UDP-Port',
+            'Allowed Zenarmor senders': 'Erlaubte Zenarmor-Sender',
+            'Zenarmor max datagrams per run': 'Maximale Zenarmor-Datagramme pro Lauf',
             'Enable Zenarmor API metadata': 'Zenarmor-API-Metadaten aktivieren',
             'Zenarmor API base URL': 'Zenarmor-API-Basis-URL',
             'Zenarmor API key reference': 'Zenarmor-API-Key-Referenz',
@@ -281,6 +286,8 @@ $(function() {
             'Reads documented Zenarmor reporting exports such as Syslog data. PondSec does not change Zenarmor policies, TLS inspection, licensing, or engine files.': 'Liest dokumentierte Zenarmor-Reporting-Exporte wie Syslog-Daten. PondSec aendert keine Zenarmor-Policies, TLS-Inspection, Lizenzierung oder Engine-Dateien.',
             'Optional external Syslog sender, export target, or instance label for correlation.': 'Optionaler externer Syslog-Sender, Export-Ziel oder Instanzlabel fuer Korrelation.',
             'Path to a local file written by the configured Syslog/reporting export receiver.': 'Pfad zu einer lokalen Datei, die vom konfigurierten Syslog-/Reporting-Empfaenger geschrieben wird.',
+            'Use 127.0.0.1 when Zenarmor streams reporting data locally to PondSec.': '127.0.0.1 verwenden, wenn Zenarmor Reporting-Daten lokal zu PondSec streamt.',
+            'Comma-separated sender IPs. Use 127.0.0.1 for local stream reporting.': 'Kommagetrennte Sender-IPs. Fuer lokales Stream-Reporting 127.0.0.1 verwenden.',
             'Reserved for documented API reads only. It does not store API secrets in this form.': 'Nur fuer dokumentierte API-Lesezugriffe vorgesehen. API-Secrets werden hier nicht gespeichert.',
             'Name of an external credential reference. Do not paste API keys, SASE keys, certificates, or passwords here.': 'Name einer externen Credential-Referenz. Hier keine API-Keys, SASE-Keys, Zertifikate oder Passwoerter einfuegen.',
             'Application and application-category context from reporting exports.': 'Anwendungs- und Anwendungskategorie-Kontext aus Reporting-Exporten.',
@@ -363,7 +370,14 @@ $(function() {
 
     function applyLanguage() {
         $('[data-i18n]').each(function() {
-            $(this).text(t($(this).data('i18n')));
+            var $item = $(this);
+            var original = $item.attr('data-pondsec-original-i18n');
+            if (!original) {
+                original = normalizeText($item.text());
+                $item.attr('data-pondsec-original-i18n', original);
+            }
+            var key = $item.data('i18n');
+            $item.text(uiLanguage === 'de' && de[key] ? de[key] : original);
         });
         $('.pondsec-settings-nav button[data-section]').each(function() {
             var section = $(this).data('section');

@@ -106,12 +106,13 @@ detects rotation by inode and size, and reports per-log health in provider
 inventory.
 
 Zenarmor integration reads administrator-configured documented exports and
-metadata. Supported PondSec settings cover Syslog/reporting exports, official
-log files, documented API metadata references, JSON or key-value formats, and
-separate import switches for applications, categories, TLS metadata, session
-context, policy actions, device context, and security events. Do not paste API
-keys, certificates, SASE secrets, or passwords into the PondSec form; use an
-external credential reference.
+metadata. The preferred local path is Zenarmor stream reporting to PondSec's
+UDP listener on `127.0.0.1:5514` with sender allowlist `127.0.0.1`. File-based
+Syslog/reporting exports, official log files, and documented API metadata
+references remain supported. Import switches control applications, categories,
+TLS metadata, session context, policy actions, device context, and security
+events. Do not paste API keys, certificates, SASE secrets, or passwords into
+the PondSec form; use an external credential reference.
 
 ## Logs
 

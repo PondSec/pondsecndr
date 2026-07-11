@@ -11,6 +11,8 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 import re
+import select
+import socket
 from typing import Any, Mapping
 from urllib.parse import urlsplit
 
@@ -19,6 +21,7 @@ from pondsec_ndr.schema import EVENT_SCHEMA_VERSION, event_id_from, is_private_i
 
 @dataclass(slots=True)
 class ZenarmorStats:
+    read_datagrams: int = 0
     read_lines: int = 0
     accepted_events: int = 0
     parser_errors: int = 0
@@ -137,6 +140,107 @@ class ZenarmorCollector:
         with tmp.open("w", encoding="utf-8") as handle:
             json.dump({"inode": inode, "offset": offset}, handle, sort_keys=True)
         tmp.replace(self.offset_path)
+
+
+class ZenarmorSyslogCollector:
+    def __init__(
+        self,
+        listen_address: str,
+        port: int,
+        *,
+        allowed_senders: list[str] | None = None,
+        sensor_name: str = "",
+        remote_target: str = "",
+        queue_limit: int = 10000,
+        max_datagrams_per_run: int = 1000,
+        import_options: Mapping[str, bool] | None = None,
+    ) -> None:
+        self.listen_address = listen_address
+        self.port = int(port)
+        self.allowed_senders = set(allowed_senders or [])
+        self.sensor_name = sensor_name
+        self.remote_target = remote_target
+        self.queue_limit = queue_limit
+        self.max_datagrams_per_run = max(1, int(max_datagrams_per_run))
+        self.import_options = dict(import_options or {})
+        self.socket: socket.socket | None = None
+        self.seen_ids: set[str] = set()
+
+    def close(self) -> None:
+        if self.socket is None:
+            return
+        try:
+            self.socket.close()
+        finally:
+            self.socket = None
+
+    def read_once(self, max_datagrams: int | None = None) -> tuple[list[dict[str, Any]], ZenarmorStats]:
+        stats = ZenarmorStats()
+        try:
+            sock = self._socket()
+        except OSError as exc:
+            stats.last_error = f"Zenarmor Syslog collector cannot bind {self.listen_address}:{self.port}: {exc}"
+            return [], stats
+
+        events: list[dict[str, Any]] = []
+        limit = min(max_datagrams or self.max_datagrams_per_run, self.max_datagrams_per_run)
+        for _ in range(limit):
+            ready, _, _ = select.select([sock], [], [], 0)
+            if not ready:
+                break
+            try:
+                payload, address = sock.recvfrom(65535)
+            except BlockingIOError:
+                break
+            except OSError as exc:
+                stats.last_error = f"Zenarmor Syslog receive failed: {exc}"
+                break
+            sender = str(address[0])
+            stats.read_datagrams += 1
+            stats.read_lines += 1
+            if self.allowed_senders and sender not in self.allowed_senders:
+                stats.parser_errors += 1
+                stats.last_error = f"Zenarmor Syslog sender is not allowed: {sender}"
+                continue
+            text = payload.decode("utf-8", errors="replace").strip()
+            if not text:
+                continue
+            try:
+                raw = parse_zenarmor_line(text)
+            except ValueError as exc:
+                stats.parser_errors += 1
+                stats.last_error = str(exc)
+                continue
+            try:
+                event = normalize_zenarmor_event(raw, self.sensor_name, self.remote_target or sender, self.import_options)
+            except ValueError as exc:
+                stats.normalization_errors += 1
+                stats.last_error = str(exc)
+                continue
+            if event is None:
+                continue
+            event_id = event["event_id"]
+            if event_id in self.seen_ids:
+                stats.duplicates += 1
+                continue
+            self.seen_ids.add(event_id)
+            if len(self.seen_ids) > 50000:
+                self.seen_ids = set(list(self.seen_ids)[-25000:])
+            if len(events) >= self.queue_limit:
+                stats.queue_drops += 1
+                continue
+            events.append(event)
+            stats.accepted_events += 1
+        return events, stats
+
+    def _socket(self) -> socket.socket:
+        if self.socket is not None:
+            return self.socket
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setblocking(False)
+        sock.bind((self.listen_address, self.port))
+        self.socket = sock
+        return sock
 
 
 def parse_zenarmor_line(line: str) -> dict[str, Any]:
