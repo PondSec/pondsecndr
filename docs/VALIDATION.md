@@ -37,6 +37,27 @@ Implementation validation:
   Zenarmor metadata is inserted into the same event path as file exports.
 - Full local regression suite: `90` tests passed.
 
+Firewall integration validation:
+
+- PondSec NDR configured for Zenarmor `syslog_udp` on `127.0.0.1:5514`.
+- Zenarmor Stream Reporting configured through the documented Stream Reporting
+  path after the Zenarmor license check returned allowed.
+- Enabled Zenarmor stream indexes: `conn`, `http`, `dns`, `tls`, `alert`.
+- `ipdrstreamer` observed sending UDP to `127.0.0.1:5514`.
+- PondSec service observed listening on `127.0.0.1:5514` and NetFlow on
+  `127.0.0.1:2055`.
+- Controlled local Zenarmor-style UDP event was persisted in SQLite with
+  `raw_source=zenarmor`, TLS metadata, application, SNI and policy context.
+- Real Zenarmor stream payloads were parsed after adding support for
+  `data={...}` Syslog exports, millisecond `start_time`, and Zenarmor field
+  names such as `ip_src_saddr`, `ip_dst_saddr`, `transport_proto`, `device`,
+  `conn_uuid`, and `index`.
+- Live provider status after parser deployment: `healthy`, `read_datagrams=7`,
+  `accepted_events=7`, `parser_errors=0`, `normalization_errors=0`.
+- Observed real event types from Zenarmor: `flow`, `tls`, and `dns`, with
+  application, domain, OS/device, VLAN/interface and index metadata available
+  where Zenarmor exported it.
+
 ## 2026-07-11: Learning Auto-Arm Runtime Posture
 
 Implementation validation:
