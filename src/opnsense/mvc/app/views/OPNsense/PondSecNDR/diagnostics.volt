@@ -101,7 +101,7 @@ $(function() {
             {label: 'EVE telemetry', value: eve.status || 'unknown', detail: eve.path || data.suricata_eve_path || '-'},
             {label: 'AI model', value: ml.external_model_status || 'unknown', detail: ml.external_model_id || 'No model selected'},
             {label: 'AI learning mode', value: learning.status || 'unknown', detail: learning.warning || ((learning.remaining_days || 0) + ' days remaining')},
-            {label: 'PyTorch runtime', value: ml.pytorch_status || 'unknown', detail: ml.pytorch_version || ml.python_executable || '-'},
+            {label: 'Model runtime', value: ml.external_model_runtime || ml.numpy_status || 'unknown', detail: 'NumPy ' + (ml.numpy_version || ml.numpy_status || '-') + ' · PyTorch optional ' + (ml.pytorch_status || 'unknown')},
             {label: 'PF blocking', value: pf.rule_present ? 'active' : 'missing', detail: pf.table || '-'},
             {label: 'TLS visibility', value: tls.status || 'unknown', detail: 'HTTP ' + numberValue(tls.http_events_24h) + ' / TLS ' + numberValue(tls.tls_events_24h) + ' events in 24h'},
             {label: 'Host baselines', value: baselines.established_hosts + '/' + baselines.total_hosts, detail: baselines.learning_hosts + ' learning hosts'}

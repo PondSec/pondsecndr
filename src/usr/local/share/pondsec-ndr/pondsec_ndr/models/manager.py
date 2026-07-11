@@ -26,11 +26,12 @@ MODEL_CATALOG: dict[str, dict[str, Any]] = {
         "feature_schema_version": FEATURE_SCHEMA_VERSION,
         "trained_on": "CICIDS2017 flow features",
         "preferred": True,
-        "runtime": "optional_pytorch",
+        "runtime": "numpy_exported_cnn1d",
         "status": "catalog",
         "notes": [
+            "Product inference uses the verified pickle-free NumPy export bundled with PondSec.",
+            "Original upstream artifacts are PyTorch/joblib formats and must be loaded only in the unprivileged export worker.",
             "Requires CICFlowMeter-style feature mapping.",
-            "Artifacts are PyTorch/joblib pickle formats and must be loaded only in the unprivileged ML worker.",
             "Automatic blocking is not allowed from this model alone."
         ],
         "artifacts": [

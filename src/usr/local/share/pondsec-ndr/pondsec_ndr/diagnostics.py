@@ -121,7 +121,8 @@ def self_test(config: PondSecConfig, store: EventStore) -> dict[str, Any]:
             "machine_learning": "ok" if config.detection.machine_learning else "disabled",
             "learning_mode": learning_status["status"],
             "host_baselines": "ok" if host_baselines["total_hosts"] >= 0 else "failed",
-            "pytorch_runtime": ml_runtime["pytorch_status"],
+            "numpy_runtime": ml_runtime["numpy_status"],
+            "pytorch_runtime": "optional_" + ml_runtime["pytorch_status"],
         },
         "eve_access": eve_access,
         "ml_runtime": ml_runtime,
@@ -350,6 +351,13 @@ def _ml_runtime_status(config: PondSecConfig) -> dict[str, Any]:
     inventory = model_inventory(config.data_dir)
     preferred = next((item for item in inventory if item.get("preferred")), None)
     learning_status = config.detection.learning_status()
+    numpy_spec = importlib.util.find_spec("numpy")
+    numpy_version = None
+    if numpy_spec is not None:
+        try:
+            numpy_version = importlib.metadata.version("numpy")
+        except importlib.metadata.PackageNotFoundError:
+            numpy_version = "unknown"
     torch_spec = importlib.util.find_spec("torch")
     torch_version = None
     if torch_spec is not None:
@@ -364,11 +372,14 @@ def _ml_runtime_status(config: PondSecConfig) -> dict[str, Any]:
         "external_model_status": preferred["status"] if preferred else "missing",
         "external_model_runtime": preferred["runtime"] if preferred else None,
         "learning_status": learning_status,
+        "numpy_available": numpy_spec is not None,
+        "numpy_status": "available" if numpy_spec is not None else "unavailable",
+        "numpy_version": numpy_version,
         "pytorch_available": torch_spec is not None,
         "pytorch_status": "available" if torch_spec is not None else "unavailable",
         "pytorch_version": torch_version,
         "python_executable": os.sys.executable,
-        "runtime_boundary": "external pretrained models run only in an unprivileged audited worker",
+        "runtime_boundary": "product inference uses a verified pickle-free NumPy export; upstream PyTorch artifacts are handled only by an audited export worker",
     }
 
 

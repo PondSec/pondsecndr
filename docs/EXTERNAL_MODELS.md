@@ -24,6 +24,8 @@ Upstream:
 
 PondSec verifies downloaded artifacts with SHA-256 before use.
 
+The production firewall runtime does not deserialize the upstream `.pth` or `.pkl` files. PondSec ships a verified, pickle-free NumPy export of the preferred CNN pipeline and records its SHA-256 checksum and runtime self-test result before the model is shown as active.
+
 ## Secondary Candidate
 
 Catalog ID:
@@ -52,6 +54,8 @@ Official source:
 ## Safety Rules
 
 - Do not deserialize `.pkl`, `.pth`, or joblib artifacts in the privileged service path.
+- Use the bundled NumPy export for product inference on OPNsense.
+- Treat PyTorch as an offline/export-worker dependency, not as a required firewall service dependency.
 - Do not treat model output as sufficient for automatic blocking.
 - Require checksums before activation.
 - Keep inference in an optional unprivileged ML worker.
