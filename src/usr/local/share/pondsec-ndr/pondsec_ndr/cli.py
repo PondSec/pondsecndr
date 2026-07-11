@@ -29,7 +29,7 @@ from pondsec_ndr.models.manager import ModelError, download_model_artifacts, mod
 from pondsec_ndr.models.runtime import MODEL_ID, SYNTHETIC_AI_VALIDATION_VECTOR, ModelRuntimeUnavailable, SaidimnIdsCnnRuntime
 from pondsec_ndr.privacy import export_privacy_bundle, privacy_status, purge_telemetry_before
 from pondsec_ndr.intel.cve import CveEnrichmentOptions, enrich_case_cves
-from pondsec_ndr.response.engine import ResponseDenied, activate_block, propose_block_for_incident, propose_manual_block, propose_manual_block_for_incident, release_incident_response, remove_block, validate_ip_or_network
+from pondsec_ndr.response.engine import ResponseDenied, activate_block, edit_block_entry, propose_block_for_incident, propose_manual_block, propose_manual_block_for_incident, release_incident_response, remove_block, validate_ip_or_network
 from pondsec_ndr.response.pf import PFTableEnforcer
 from pondsec_ndr.sensor import harden_sensor, sensor_status
 from pondsec_ndr.service import PondSecService
@@ -128,6 +128,10 @@ def main(argv: list[str] | None = None) -> int:
     block_manual_incident = blocklist_sub.add_parser("manual-incident")
     block_manual_incident.add_argument("incident_id")
     block_manual_incident.add_argument("--duration-seconds", type=int, default=None)
+    block_edit = blocklist_sub.add_parser("edit")
+    block_edit.add_argument("block_id")
+    block_edit.add_argument("--reason", default=None)
+    block_edit.add_argument("--expires-at", default=None)
     block_activate = blocklist_sub.add_parser("activate")
     block_activate.add_argument("block_id")
     block_remove = blocklist_sub.add_parser("remove")
@@ -353,6 +357,9 @@ def dispatch(args: argparse.Namespace, config: Any, store: EventStore) -> tuple[
                 "manual_override": True,
                 "threshold_override": "explicit manual incident block bypassed response score thresholds",
             }, 0 if activation["status"] == "ok" else 1
+        if args.section_command == "edit":
+            updated = edit_block_entry(store, config, args.block_id, reason=args.reason, expires_at=args.expires_at, actor="cli")
+            return {"status": "ok", "item": updated}, 0
         if args.section_command == "activate":
             payload = activate_block(store, config, args.block_id, actor="cli")
             return payload, 0 if payload["status"] == "ok" else 1

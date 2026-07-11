@@ -44,7 +44,7 @@ from pondsec_ndr.models.manager import model_inventory
 from pondsec_ndr.models.runtime import SaidimnIdsCnnRuntime
 from pondsec_ndr.normalizers.suricata import normalize_eve
 from pondsec_ndr.privacy import export_privacy_bundle, purge_telemetry_before
-from pondsec_ndr.response.engine import ResponseDenied, activate_block, is_protected_target, propose_block_for_incident, propose_manual_block, propose_manual_block_for_incident, remove_block
+from pondsec_ndr.response.engine import PERMANENT_BLOCK_EXPIRES_AT, ResponseDenied, activate_block, edit_block_entry, is_protected_target, propose_block_for_incident, propose_manual_block, propose_manual_block_for_incident, remove_block
 from pondsec_ndr.response.pf import PFTableEnforcer
 from pondsec_ndr.sensor import eve_types_from_suricata_yaml, patch_suricata_yaml_text, required_eve_types
 from pondsec_ndr.service import PondSecService
@@ -3493,6 +3493,38 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(proposal["source_ip"], "203.0.113.44")
             self.assertEqual(proposal["policy_id"], "manual")
             self.assertEqual(store.list_rows("block_entries")[0]["status"], "proposed")
+
+    def test_response_engine_edits_block_and_empty_expiration_means_permanent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            config = PondSecConfig(response=ResponseConfig(default_block_seconds=300, minimum_risk_score=70))
+            proposal = propose_manual_block(store, config, "203.0.113.45", reason="temporary test", actor="test")
+
+            updated = edit_block_entry(
+                store,
+                config,
+                proposal["block_id"],
+                reason="kept until reviewed",
+                expires_at="",
+                actor="test",
+            )
+
+            self.assertEqual(updated["reason"], "kept until reviewed")
+            self.assertEqual(updated["expires_at"], PERMANENT_BLOCK_EXPIRES_AT)
+            self.assertEqual(updated["status"], "proposed")
+            view = store.blocklist_view()
+            self.assertEqual(view["items"][0]["block_id"], proposal["block_id"])
+            self.assertTrue(view["items"][0]["current"])
+
+    def test_response_engine_rejects_past_block_expiration_edit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            config = PondSecConfig(response=ResponseConfig(default_block_seconds=300, minimum_risk_score=70))
+            proposal = propose_manual_block(store, config, "203.0.113.46", reason="temporary test", actor="test")
+            with self.assertRaisesRegex(ResponseDenied, "future"):
+                edit_block_entry(store, config, proposal["block_id"], reason="past", expires_at="2020-01-01T00:00:00+00:00", actor="test")
 
     def test_response_engine_manual_incident_block_bypasses_score_threshold_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

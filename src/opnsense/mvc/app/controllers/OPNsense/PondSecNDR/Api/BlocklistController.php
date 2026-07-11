@@ -45,6 +45,24 @@ class BlocklistController extends ApiControllerBase
         return $this->runBackendJson('blocklist_manual_incident ' . escapeshellarg($incidentId));
     }
 
+    public function editAction($id = null)
+    {
+        if ($id === null) {
+            return array('status' => 'error', 'message' => 'missing block id');
+        }
+        $reason = trim((string)$this->request->getPost('reason', null, ''));
+        $expiresAt = trim((string)$this->request->getPost('expires_at', null, ''));
+        if ($reason === '') {
+            $reason = 'Manual blocklist entry';
+        }
+        if ($expiresAt === '') {
+            $expiresAt = 'never';
+        }
+        return $this->runBackendJson(
+            'blocklist_edit ' . escapeshellarg($id) . ' ' . escapeshellarg($reason) . ' ' . escapeshellarg($expiresAt)
+        );
+    }
+
     public function activateAction($id = null)
     {
         if ($id === null) {

@@ -2,6 +2,8 @@
 $(function() {
     var allRows = [];
     var rows = [];
+    var blockLookup = {};
+    var permanentExpiresAt = '9999-12-31T23:59:59+00:00';
 
     function escapeHtml(value) {
         return $('<div/>').text(value === null || value === undefined ? '' : String(value)).html();
@@ -29,6 +31,15 @@ $(function() {
             return escapeHtml(value);
         }
         return parsed.toLocaleString();
+    }
+
+    function isPermanentExpires(value) {
+        var text = String(value || '').trim().toLowerCase();
+        return !text || text === 'never' || text === 'permanent' || text === 'unlimited' || text === 'infinite' || text.indexOf('9999-12-31') === 0 || text === permanentExpiresAt.toLowerCase();
+    }
+
+    function formatExpires(value) {
+        return isPermanentExpires(value) ? 'Unbegrenzt' : formatDate(value);
     }
 
     function statusClass(value) {
@@ -80,17 +91,20 @@ $(function() {
 
     function renderRows() {
         renderStats();
+        blockLookup = {};
         if (!rows.length) {
             $('#pondsec_blocklist_rows').html('<tr><td colspan="8" class="pondsec-empty">No block proposals or active blocks.</td></tr>');
             return;
         }
         $('#pondsec_blocklist_rows').html(rows.map(function(row) {
             var id = encodeURIComponent(row.block_id || '');
+            blockLookup[id] = row;
             var actions = '';
             if (row.status === 'proposed') {
                 actions += '<button class="btn btn-xs btn-primary pondsec-block-action" data-action="activate" data-id="' + id + '"><i class="fa fa-play"></i> Activate</button>';
             }
             if (row.status === 'active' || row.status === 'proposed') {
+                actions += '<button class="btn btn-xs btn-default pondsec-block-action pondsec-icon-button" data-action="edit" data-id="' + id + '" title="Block bearbeiten"><i class="fa fa-pencil"></i></button>';
                 actions += '<button class="btn btn-xs btn-default pondsec-block-action" data-action="remove" data-id="' + id + '"><i class="fa fa-ban"></i> Remove</button>';
             }
             return '<tr>' +
@@ -99,7 +113,7 @@ $(function() {
                 '<td>' + riskCell(row.risk_score) + '</td>' +
                 '<td>' + escapeHtml(Math.round(numberValue(row.confidence) * 100) + '%') + '</td>' +
                 '<td>' + escapeHtml(row.reason || '-') + '</td>' +
-                '<td>' + formatDate(row.expires_at) + '</td>' +
+                '<td>' + escapeHtml(formatExpires(row.expires_at)) + '</td>' +
                 '<td>' + escapeHtml(row.created_by || '-') + '</td>' +
                 '<td><div class="pondsec-actions">' + (actions || '-') + '</div></td>' +
             '</tr>';
@@ -134,6 +148,20 @@ $(function() {
         });
     }
 
+    function openEdit(row) {
+        $('#pondsec_edit_block_id').val(row.block_id || '');
+        $('#pondsec_edit_source').val(row.source_ip || '');
+        $('#pondsec_edit_reason').val(row.reason || '');
+        $('#pondsec_edit_expires').val(isPermanentExpires(row.expires_at) ? '' : (row.expires_at || ''));
+        $('#pondsec_block_edit_panel').show();
+        $('#pondsec_edit_reason').trigger('focus');
+    }
+
+    function closeEdit() {
+        $('#pondsec_block_edit_panel').hide();
+        $('#pondsec_block_edit_form')[0].reset();
+    }
+
     $('#pondsec_blocklist_form').on('submit', function(event) {
         event.preventDefault();
         ajaxCall('/api/pondsecndr/blocklist/add', {
@@ -152,13 +180,33 @@ $(function() {
 
     $(document).on('click', '.pondsec-block-action', function() {
         var action = $(this).data('action');
-        var id = $(this).data('id');
+        var id = $(this).attr('data-id');
+        if (action === 'edit') {
+            openEdit(blockLookup[id] || {});
+            return;
+        }
         var endpoint = action === 'activate' ? '/api/pondsecndr/blocklist/activate/' + id : '/api/pondsecndr/blocklist/remove/' + id;
         ajaxCall(endpoint, {}, function(data) {
             renderResult(data);
+            closeEdit();
             loadRows();
         });
     });
+    $('#pondsec_block_edit_form').on('submit', function(event) {
+        event.preventDefault();
+        var id = encodeURIComponent($('#pondsec_edit_block_id').val() || '');
+        ajaxCall('/api/pondsecndr/blocklist/edit/' + id, {
+            reason: $('#pondsec_edit_reason').val(),
+            expires_at: $('#pondsec_edit_expires').val()
+        }, function(data) {
+            renderResult(data);
+            if (data && data.status === 'ok') {
+                closeEdit();
+                loadRows();
+            }
+        });
+    });
+    $('#pondsec_edit_cancel').on('click', closeEdit);
     $('#pondsec_block_search, #pondsec_block_status').on('input change', applyFilters);
     $('#pondsec_block_reset').on('click', function() {
         $('#pondsec_block_search').val('');
@@ -343,6 +391,9 @@ $(function() {
     flex-wrap: wrap;
     gap: 6px;
 }
+.pondsec-icon-button {
+    min-width: 28px;
+}
 .pondsec-notice {
     align-items: center;
     background: #202a36;
@@ -357,9 +408,41 @@ $(function() {
     color: #8f9dac;
     padding: 18px;
 }
+.pondsec-edit-grid {
+    align-items: end;
+    display: grid;
+    gap: 12px;
+    grid-template-columns: 1fr 1.4fr 1.3fr auto auto;
+}
+.pondsec-edit-grid label {
+    color: #8f9dac;
+    display: block;
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+}
+.pondsec-edit-grid input {
+    background: #151d26;
+    border: 1px solid #334153;
+    border-radius: 5px;
+    color: #e5edf5;
+    height: 34px;
+    padding: 6px 8px;
+    width: 100%;
+}
+.pondsec-edit-grid input[readonly] {
+    background: #1b2430;
+    color: #9ca9b7;
+}
+.pondsec-help {
+    color: #8f9dac;
+    grid-column: 1 / -1;
+    margin: 0;
+}
 @media (max-width: 1080px) {
     .pondsec-pagehead,
     .pondsec-form-grid,
+    .pondsec-edit-grid,
     .pondsec-filterbar {
         align-items: stretch;
         display: flex;
@@ -409,6 +492,26 @@ $(function() {
                 <input id="pondsec_block_duration" type="number" min="60" value="3600">
             </div>
             <button class="btn btn-primary" type="submit"><i class="fa fa-plus"></i> {{ lang._('Propose block') }}</button>
+        </form>
+    </div>
+    <div id="pondsec_block_edit_panel" class="pondsec-panel" style="display:none">
+        <form id="pondsec_block_edit_form" class="pondsec-edit-grid">
+            <input id="pondsec_edit_block_id" type="hidden">
+            <div>
+                <label for="pondsec_edit_source">{{ lang._('Source') }}</label>
+                <input id="pondsec_edit_source" type="text" readonly>
+            </div>
+            <div>
+                <label for="pondsec_edit_reason">{{ lang._('Reason') }}</label>
+                <input id="pondsec_edit_reason" type="text" autocomplete="off">
+            </div>
+            <div>
+                <label for="pondsec_edit_expires">{{ lang._('Expires') }}</label>
+                <input id="pondsec_edit_expires" type="text" placeholder="2026-07-12T12:00:00+00:00" autocomplete="off">
+            </div>
+            <button class="btn btn-primary" type="submit"><i class="fa fa-save"></i> {{ lang._('Save') }}</button>
+            <button class="btn btn-default" id="pondsec_edit_cancel" type="button"><i class="fa fa-times"></i> {{ lang._('Cancel') }}</button>
+            <p class="pondsec-help">{{ lang._('Ablauf leer lassen fuer einen unbegrenzten Block, bis er entfernt wird.') }}</p>
         </form>
     </div>
     <div class="pondsec-tablebox">

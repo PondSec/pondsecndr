@@ -30,6 +30,7 @@ INTERNAL_ISOLATION_CATEGORIES = {
     "command_and_control",
     "exfiltration",
 }
+PERMANENT_BLOCK_EXPIRES_AT = "9999-12-31T23:59:59+00:00"
 
 
 class ResponseDenied(ValueError):
@@ -71,6 +72,22 @@ def is_allowlisted(value: str, allowlist_values: list[str]) -> bool:
         if target.subnet_of(allowed_network) or target.overlaps(allowed_network):
             return True
     return False
+
+
+def normalize_block_expires_at(value: str | None) -> str:
+    text = str(value or "").strip()
+    if not text or text.lower() in {"never", "permanent", "unlimited", "infinite"}:
+        return PERMANENT_BLOCK_EXPIRES_AT
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ResponseDenied("invalid expiration timestamp") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    parsed = parsed.astimezone(timezone.utc)
+    if parsed <= datetime.now(timezone.utc):
+        raise ResponseDenied("expiration timestamp must be in the future")
+    return parsed.isoformat()
 
 
 def propose_block_for_incident(
@@ -286,6 +303,35 @@ def propose_manual_block_for_incident(
         "automatic": False,
         "status": "proposed",
     }, actor=actor)
+
+
+def edit_block_entry(
+    store: EventStore,
+    config: PondSecConfig,
+    block_id: str,
+    reason: str | None = None,
+    expires_at: str | None = None,
+    actor: str = "system",
+) -> dict[str, Any]:
+    block = store.get_block_entry(block_id)
+    if block is None:
+        raise ResponseDenied("block entry not found")
+    if block.get("status") not in {"proposed", "active"}:
+        raise ResponseDenied("block entry is not editable")
+    source_ip = validate_ip_or_network(str(block["source_ip"]))
+    if is_protected_target(source_ip, config):
+        raise ResponseDenied("source IP is protected")
+    if config.response.enforce_allowlist and is_allowlisted(source_ip, store.allowlist_values() + config.response.break_glass_values):
+        raise ResponseDenied("source IP is allowlisted")
+    updated = store.update_block_entry(
+        block_id,
+        reason=str(reason or "").strip() or block.get("reason") or "Manual blocklist entry",
+        expires_at=str(block.get("expires_at")) if expires_at is None else normalize_block_expires_at(expires_at),
+        actor=actor,
+    )
+    if updated is None:
+        raise ResponseDenied("block entry not found")
+    return updated
 
 
 def activate_block(

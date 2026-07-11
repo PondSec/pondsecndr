@@ -2280,6 +2280,22 @@ class EventStore:
             row = conn.execute("SELECT * FROM block_entries WHERE block_id = ?", (block_id,)).fetchone()
         return dict(row) if row else None
 
+    def update_block_entry(self, block_id: str, reason: str, expires_at: str, actor: str = "system") -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM block_entries WHERE block_id = ?", (block_id,)).fetchone()
+            if row is None:
+                return None
+            conn.execute(
+                "UPDATE block_entries SET reason = ?, expires_at = ? WHERE block_id = ?",
+                (reason, expires_at, block_id),
+            )
+            if row["status"] in {"proposed", "active"}:
+                host_status = self._current_host_block_status(conn, row["source_ip"])
+                conn.execute("UPDATE hosts SET block_status = ? WHERE ip = ?", (host_status, row["source_ip"]))
+            self._audit(conn, actor, "block.updated", block_id, {"reason": reason, "expires_at": expires_at})
+            updated = conn.execute("SELECT * FROM block_entries WHERE block_id = ?", (block_id,)).fetchone()
+        return dict(updated) if updated else None
+
     def existing_response_block(self, incident_id: str | None, source_ip: str | None) -> dict[str, Any] | None:
         if not incident_id and not source_ip:
             return None
