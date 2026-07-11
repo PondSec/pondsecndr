@@ -14,6 +14,8 @@ STRONG_INTERNAL_CATEGORIES = {
     "lateral_movement",
     "exfiltration",
     "credential_abuse",
+    "exploit_attempt",
+    "supply_chain",
     "malware",
 }
 
@@ -288,6 +290,10 @@ def _engine_for_detection(detection: dict[str, Any]) -> str:
         return "dns"
     if detector_id == "pondsec.unusual_tls_fingerprint":
         return "tls"
+    if detector_id in {"pondsec.exploit_attempt", "pondsec.exploit_blocked"}:
+        return "suricata"
+    if detector_id in {"pondsec.supply_chain_callback", "pondsec.malware_callback"}:
+        return "behavior"
     if "intel" in detector_id or category == "threat_intelligence":
         return "threat_intel"
     return "behavior"
@@ -322,6 +328,14 @@ def _supporting_indicators(detection: dict[str, Any], config: PondSecConfig) -> 
         indicators.add("baseline_deviation")
     if detector_id == "pondsec.lateral_movement" or category == "lateral_movement":
         indicators.add("unusual_internal_access")
+    if detector_id == "pondsec.credential_bruteforce" or category == "credential_abuse":
+        indicators.add("credential_pressure")
+    if detector_id in {"pondsec.exploit_attempt", "pondsec.exploit_blocked"} or category == "exploit_attempt":
+        indicators.add("exploit_attempt")
+    if detector_id == "pondsec.supply_chain_callback" or category == "supply_chain":
+        indicators.add("supply_chain_callback")
+    if detector_id == "pondsec.malware_callback" or category == "malware":
+        indicators.add("malware_callback")
     if detector_id == "pondsec.data_exfiltration" or category == "exfiltration":
         indicators.add("data_transfer")
     if detector_id == "pondsec.unusual_tls_fingerprint":

@@ -67,10 +67,16 @@ def main(argv: list[str] | None = None) -> int:
     dashboard_sub.add_parser("summary")
     dashboard_sub.add_parser("timeline")
 
-    for name in ("detections", "hosts", "policies", "logs"):
+    for name in ("detections", "policies", "logs"):
         section = sub.add_parser(name)
         section_sub = section.add_subparsers(dest="section_command", required=True)
         section_sub.add_parser("list")
+
+    hosts = sub.add_parser("hosts")
+    hosts_sub = hosts.add_subparsers(dest="section_command", required=True)
+    hosts_sub.add_parser("list")
+    host_get = hosts_sub.add_parser("get")
+    host_get.add_argument("host_id")
 
     incidents = sub.add_parser("incidents")
     incidents_sub = incidents.add_subparsers(dest="section_command", required=True)
@@ -308,7 +314,14 @@ def dispatch(args: argparse.Namespace, config: Any, store: EventStore) -> tuple[
         changed = store.update_incident_status(args.incident_id, status_map[args.section_command], actor="cli")
         return {"status": "ok" if changed else "not_found", "incident_id": args.incident_id}, 0 if changed else 1
     if command == "hosts":
-        return _decode_entity_inventory(store.host_inventory()), 0
+        if args.section_command == "list":
+            return _decode_entity_inventory(store.host_inventory()), 0
+        if args.section_command == "get":
+            payload = store.host_detail(args.host_id)
+            if payload.get("status") == "ok":
+                payload = _decode_entity_inventory({"items": [payload["item"]], "summary": payload.get("summary", {})})
+                return {"status": "ok", "item": payload["items"][0], "summary": payload.get("summary", {})}, 0
+            return payload, 1
     if command == "allowlist":
         if args.section_command == "list":
             return {"items": _decode_rows(store.list_rows("allowlist_entries"))}, 0
@@ -1240,6 +1253,14 @@ def _stage_for_detection(detection: dict[str, Any], incident: dict[str, Any]) ->
     title = str(detection.get("title") or "").lower()
     if "lateral" in detector_id or category == "lateral_movement":
         return "lateral_movement"
+    if "credential" in detector_id or category == "credential_abuse":
+        return "initial_access"
+    if "exploit" in detector_id or category == "exploit_attempt":
+        return "initial_access"
+    if "supply_chain" in detector_id or category == "supply_chain":
+        return "initial_access"
+    if "malware" in detector_id or category == "malware":
+        return "execution"
     if "beacon" in detector_id or category == "command_and_control":
         return "command_and_control"
     if "exfil" in detector_id or category == "exfiltration":
@@ -1312,6 +1333,14 @@ def _signature_indicates_reconnaissance(detection: dict[str, Any]) -> bool:
 def _edge_kind_for_stage(stage: str, category: str | None = None) -> str:
     if stage == "reconnaissance":
         return "scan"
+    if category == "credential_abuse":
+        return "credential_access"
+    if category == "exploit_attempt":
+        return "exploit_attempt"
+    if category == "supply_chain":
+        return "supply_chain_callback"
+    if category == "malware":
+        return "malware_activity"
     if stage == "initial_access":
         return "exploit_attempt"
     if stage == "lateral_movement":
@@ -1339,6 +1368,8 @@ def _certainty_for_detection(detection: dict[str, Any]) -> str:
         return "prevented"
     if category == "signature":
         return "observed" if confidence >= 0.6 else "suspected"
+    if category in {"credential_abuse", "exploit_attempt", "supply_chain", "malware"}:
+        return "observed" if confidence >= 0.65 else "suspected"
     if confidence >= 0.75:
         return "observed"
     return "suspected"

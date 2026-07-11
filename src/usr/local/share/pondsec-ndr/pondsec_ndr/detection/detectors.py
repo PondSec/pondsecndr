@@ -242,6 +242,55 @@ class LateralMovementDetector(Detector):
         return detections
 
 
+class CredentialBruteforceDetector(Detector):
+    detector_id = "pondsec.credential_bruteforce"
+    auth_ports = {22, 25, 88, 110, 135, 139, 143, 389, 445, 465, 587, 636, 993, 995, 1433, 3306, 3389, 5432, 5900, 5985, 5986}
+    failure_reasons = {"timeout", "reject", "reset", "denied", "failed"}
+
+    def detect(self, events: list[dict[str, Any]], features: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        by_source: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for event in events:
+            src = event.get("source", {}).get("ip")
+            port = event.get("destination", {}).get("port")
+            metadata = event.get("metadata", {})
+            reason = str(metadata.get("flow_reason") or metadata.get("auth_result") or "").lower()
+            if src and port in self.auth_ports and (event.get("event_type") != "flow" or reason in self.failure_reasons):
+                by_source[src].append(event)
+
+        detections = []
+        for src, source_events in by_source.items():
+            destinations = {str(event.get("destination", {}).get("ip")) for event in source_events if event.get("destination", {}).get("ip")}
+            ports = {int(event.get("destination", {}).get("port")) for event in source_events if event.get("destination", {}).get("port") is not None}
+            failed = sum(1 for event in source_events if str(event.get("metadata", {}).get("flow_reason") or "").lower() in self.failure_reasons)
+            if len(source_events) < 12 and not (failed >= 8 and len(destinations) >= 3):
+                continue
+            spray_score = min(1.0, (len(destinations) / 12) + (failed / 40))
+            detections.append(make_detection(
+                self.detector_id,
+                "credential_abuse",
+                "Possible brute-force or credential spraying",
+                "Repeated failed or denied connections to authentication services resemble credential pressure.",
+                src,
+                next(iter(destinations)) if len(destinations) == 1 else "auth_services",
+                8 if failed >= 8 else 7,
+                min(0.96, 0.62 + len(source_events) / 80 + len(destinations) / 60),
+                spray_score,
+                {
+                    "event_count": len(source_events),
+                    "failed_connections": failed,
+                    "destination_count": len(destinations),
+                    "auth_ports": sorted(ports),
+                    "signature_required": False,
+                    "thresholds": [
+                        {"feature": "auth_service_events", "operator": ">=", "threshold": 12, "observed": len(source_events)},
+                        {"feature": "failed_auth_service_connections", "operator": ">=", "threshold": 8, "observed": failed},
+                    ],
+                },
+                recommended_action="block",
+            ))
+        return detections
+
+
 class DataExfiltrationDetector(Detector):
     detector_id = "pondsec.data_exfiltration"
 
@@ -270,6 +319,208 @@ class DataExfiltrationDetector(Detector):
                         ],
                     },
                 ))
+        return detections
+
+
+class SupplyChainCallbackDetector(Detector):
+    detector_id = "pondsec.supply_chain_callback"
+    marker_terms = (
+        "supply chain",
+        "dependency confusion",
+        "typosquat",
+        "package manager",
+        "npm",
+        "pypi",
+        "rubygems",
+        "installer",
+        "software update",
+        "update callback",
+        "ci/cd",
+        "build agent",
+    )
+
+    def detect(self, events: list[dict[str, Any]], features: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        detections = []
+        marked_sources: set[str] = set()
+        for event in events:
+            if event.get("event_type") not in {"alert", "drop"}:
+                continue
+            metadata = event.get("metadata", {})
+            haystack = " ".join(str(value or "").lower() for value in (
+                metadata.get("signature"),
+                metadata.get("category"),
+            ))
+            if any(term in haystack for term in self.marker_terms):
+                src = event.get("source", {}).get("ip")
+                if src:
+                    marked_sources.add(str(src))
+                    detections.append(make_detection(
+                        self.detector_id,
+                        "supply_chain",
+                        "Possible supply-chain callback",
+                        "A security marker or reporting export indicates package, installer or update callback behavior.",
+                        str(src),
+                        event.get("destination", {}).get("ip"),
+                        8,
+                        0.88,
+                        0.7,
+                        {
+                            "signature_id": metadata.get("signature_id"),
+                            "signature": metadata.get("signature"),
+                            "suricata_category": metadata.get("category"),
+                            "event_source": metadata.get("event_source"),
+                            "thresholds": [
+                                {"feature": "supply_chain_marker", "operator": "present", "threshold": "present", "observed": metadata.get("signature")},
+                            ],
+                        },
+                        recommended_action="block",
+                    ))
+
+        for item in features:
+            source_ip = item["source_ip"]
+            destinations = int(item.get("destination_count") or 0)
+            external = int(item.get("external_connections") or 0)
+            burst = float(item.get("burst_score") or 0)
+            dns_entropy = float(item.get("dns_entropy") or 0)
+            if source_ip in marked_sources:
+                continue
+            if destinations >= 35 and external >= 35 and (burst >= 0.2 or dns_entropy >= 3.8):
+                detections.append(make_detection(
+                    self.detector_id,
+                    "supply_chain",
+                    "Possible supply-chain callback fan-out",
+                    "One host contacted many external destinations in an installer-like burst with DNS or burst indicators.",
+                    source_ip,
+                    None,
+                    7,
+                    min(0.93, 0.58 + destinations / 140 + min(dns_entropy, 5) / 20),
+                    min(1.0, destinations / 80),
+                    {
+                        "destination_count": destinations,
+                        "external_connections": external,
+                        "burst_score": burst,
+                        "dns_entropy": dns_entropy,
+                        "signature_required": False,
+                        "thresholds": [
+                            {"feature": "destination_count", "operator": ">=", "threshold": 35, "observed": destinations},
+                            {"feature": "external_connections", "operator": ">=", "threshold": 35, "observed": external},
+                            {"feature": "burst_or_dns_entropy", "operator": "burst>=0.2 OR dns_entropy>=3.8", "threshold": "0.2/3.8", "observed": {"burst_score": burst, "dns_entropy": dns_entropy}},
+                        ],
+                    },
+                    recommended_action="block",
+                ))
+        return detections
+
+
+class ExploitAttemptDetector(Detector):
+    detector_id = "pondsec.exploit_attempt"
+    exploit_terms = (
+        "exploit",
+        "remote code execution",
+        "rce",
+        "command injection",
+        "code injection",
+        "sql injection",
+        "xss",
+        "path traversal",
+        "directory traversal",
+        "deserialization",
+        "shellshock",
+        "log4j",
+        "cve-",
+        "attempted-admin",
+        "attempted-user",
+        "web attack",
+        "privilege gain",
+    )
+
+    def detect(self, events: list[dict[str, Any]], features: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        detections = []
+        for event in events:
+            if event.get("event_type") not in {"alert", "drop"}:
+                continue
+            metadata = event.get("metadata", {})
+            haystack = " ".join(str(value or "").lower() for value in (
+                metadata.get("signature"),
+                metadata.get("category"),
+            ))
+            if not any(term in haystack for term in self.exploit_terms):
+                continue
+            severity = int(metadata.get("severity") or 2)
+            detections.append(make_detection(
+                "pondsec.exploit_blocked" if event.get("event_type") == "drop" else self.detector_id,
+                "exploit_attempt",
+                "Possible exploit attempt",
+                "A signature or reporting marker indicates exploit-like traffic against a service.",
+                event.get("source", {}).get("ip"),
+                event.get("destination", {}).get("ip"),
+                max(7, min(10, 11 - severity)),
+                0.9 if event.get("event_type") == "drop" else 0.86,
+                0.75,
+                {
+                    "signature_id": metadata.get("signature_id"),
+                    "signature": metadata.get("signature"),
+                    "suricata_category": metadata.get("category"),
+                    "suricata_action": metadata.get("action"),
+                    "event_source": metadata.get("event_source"),
+                    "thresholds": [
+                        {"feature": "exploit_marker", "operator": "present", "threshold": "present", "observed": metadata.get("signature")},
+                    ],
+                },
+                recommended_action="block",
+            ))
+        return detections
+
+
+class MalwareCallbackDetector(Detector):
+    detector_id = "pondsec.malware_callback"
+    malware_terms = (
+        "malware",
+        "trojan",
+        "ransomware",
+        "botnet",
+        "loader",
+        "dropper",
+        "c2",
+        "command and control",
+        "payload download",
+        "malicious download",
+    )
+
+    def detect(self, events: list[dict[str, Any]], features: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        detections = []
+        for event in events:
+            if event.get("event_type") not in {"alert", "drop"}:
+                continue
+            metadata = event.get("metadata", {})
+            haystack = " ".join(str(value or "").lower() for value in (
+                metadata.get("signature"),
+                metadata.get("category"),
+            ))
+            if not any(term in haystack for term in self.malware_terms):
+                continue
+            detections.append(make_detection(
+                self.detector_id,
+                "malware",
+                "Possible malware callback or payload retrieval",
+                "A signature or reporting marker indicates malware, loader, botnet or payload retrieval behavior.",
+                event.get("source", {}).get("ip"),
+                event.get("destination", {}).get("ip"),
+                8,
+                0.88,
+                0.72,
+                {
+                    "signature_id": metadata.get("signature_id"),
+                    "signature": metadata.get("signature"),
+                    "suricata_category": metadata.get("category"),
+                    "suricata_action": metadata.get("action"),
+                    "event_source": metadata.get("event_source"),
+                    "thresholds": [
+                        {"feature": "malware_marker", "operator": "present", "threshold": "present", "observed": metadata.get("signature")},
+                    ],
+                },
+                recommended_action="block",
+            ))
         return detections
 
 
@@ -431,7 +682,9 @@ class UnusualDestinationDetector(Detector):
         detections = []
         for item in features:
             destinations = int(item.get("destination_count") or 0)
-            if destinations >= 50 and float(item.get("burst_score") or 0) >= 0.2:
+            burst = float(item.get("burst_score") or 0)
+            connections_60s = int(item.get("connections_60s") or 0)
+            if destinations >= 50 and (burst >= 0.2 or connections_60s >= 50):
                 detections.append(make_detection(
                     self.detector_id,
                     "anomaly",
@@ -444,10 +697,11 @@ class UnusualDestinationDetector(Detector):
                     min(1.0, destinations / 100),
                     {
                         "destination_count": destinations,
-                        "burst_score": item.get("burst_score"),
+                        "connections_60s": connections_60s,
+                        "burst_score": burst,
                         "thresholds": [
                             {"feature": "destination_count", "operator": ">=", "threshold": 50, "observed": destinations},
-                            {"feature": "burst_score", "operator": ">=", "threshold": 0.2, "observed": item.get("burst_score")},
+                            {"feature": "burst_or_connections_60s", "operator": "burst>=0.2 OR connections_60s>=50", "threshold": "0.2/50", "observed": {"burst_score": burst, "connections_60s": connections_60s}},
                         ],
                     },
                 ))
@@ -502,8 +756,12 @@ def default_detectors() -> list[Detector]:
         PretrainedIdsModelDetector(),
         HostBaselineAnomalyDetector(),
         UnusualDestinationDetector(),
+        CredentialBruteforceDetector(),
         LateralMovementDetector(),
         DataExfiltrationDetector(),
         UnusualTlsFingerprintDetector(),
+        SupplyChainCallbackDetector(),
+        ExploitAttemptDetector(),
+        MalwareCallbackDetector(),
         SuricataAlertAdapter(),
     ]

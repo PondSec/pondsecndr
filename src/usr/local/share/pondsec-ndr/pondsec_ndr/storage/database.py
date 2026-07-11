@@ -97,6 +97,10 @@ def _target_network_key(value: str | None, category: str | None = None) -> str:
 def _attack_stage(category: str | None) -> str:
     return {
         "reconnaissance": "reconnaissance",
+        "credential_abuse": "initial_access",
+        "exploit_attempt": "initial_access",
+        "supply_chain": "initial_access",
+        "malware": "execution",
         "command_and_control": "command_and_control",
         "lateral_movement": "lateral_movement",
         "exfiltration": "exfiltration",
@@ -2592,6 +2596,27 @@ class EventStore:
                 "peer_groups": peer_groups,
             },
         }
+
+    def host_detail(self, host_id: str, limit: int = 10000) -> dict[str, Any]:
+        target = str(host_id or "").strip().lower()
+        if not target:
+            return {"status": "not_found", "host_id": host_id}
+        inventory = self.host_inventory(limit=limit)
+        for item in inventory.get("items", []):
+            values = {
+                item.get("entity_id"),
+                item.get("ip"),
+                item.get("primary_ip"),
+                item.get("mac"),
+                item.get("hostname"),
+            }
+            values.update(item.get("current_ips") or [])
+            values.update(item.get("previous_ips") or [])
+            for host in item.get("host_records") or []:
+                values.update({host.get("ip"), host.get("entity_id"), host.get("mac"), host.get("hostname")})
+            if target in {str(value).strip().lower() for value in values if value}:
+                return {"status": "ok", "item": item, "summary": inventory.get("summary", {})}
+        return {"status": "not_found", "host_id": host_id}
 
     @staticmethod
     def _compact_host_record(host: dict[str, Any]) -> dict[str, Any]:

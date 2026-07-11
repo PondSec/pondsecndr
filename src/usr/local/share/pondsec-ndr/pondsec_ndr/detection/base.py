@@ -37,6 +37,21 @@ def _default_admin_guidance(category: str, recommended_action: str) -> list[str]
             "Review authentication logs on contacted internal hosts.",
             "Check segmentation rules between the involved VLANs.",
         ],
+        "credential_abuse": [
+            "Review authentication logs for failed logons, lockouts, or password spraying from this source.",
+            "Confirm whether the target service should accept connections from this network segment.",
+            "Temporarily rate-limit or block the source if the activity is not an approved test.",
+        ],
+        "exploit_attempt": [
+            "Open the referenced signature or marker and verify the attempted service, CVE, and target exposure.",
+            "Patch or shield the targeted service if the traffic reached a vulnerable application path.",
+            "Treat this as attempted exploitation; do not assume successful compromise without host evidence.",
+        ],
+        "supply_chain": [
+            "Check whether the source host recently ran package, update, CI/CD, or installer activity.",
+            "Review DNS, TLS, proxy, and endpoint telemetry for unexpected callback destinations.",
+            "Quarantine only after corroborating the callback with endpoint or policy evidence.",
+        ],
         "exfiltration": [
             "Identify the destination and confirm whether large outbound transfer is expected.",
             "Review proxy, DNS, TLS, and application logs for the same transfer window.",

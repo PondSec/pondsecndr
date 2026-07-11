@@ -24,7 +24,17 @@ from pondsec_ndr.collectors.zeek import ZeekLogCollector, normalize_zeek_row
 from pondsec_ndr.collectors.zenarmor import ZenarmorCollector, ZenarmorSyslogCollector, normalize_zenarmor_event, parse_zenarmor_line
 from pondsec_ndr.config import DetectionConfig, DnsmasqConfig, InterfaceConfig, PondSecConfig, ResponseConfig, ZeekConfig, ZenarmorConfig, load_config
 from pondsec_ndr.correlation import correlate_detections
-from pondsec_ndr.detection.detectors import BeaconingDetector, DNSTunnelingDetector, HostBaselineAnomalyDetector, PortScanDetector, SuricataAlertAdapter
+from pondsec_ndr.detection.detectors import (
+    BeaconingDetector,
+    CredentialBruteforceDetector,
+    DNSTunnelingDetector,
+    ExploitAttemptDetector,
+    HostBaselineAnomalyDetector,
+    PortScanDetector,
+    SupplyChainCallbackDetector,
+    SuricataAlertAdapter,
+    UnusualDestinationDetector,
+)
 from pondsec_ndr.diagnostics import diagnostic_archive, diagnostics as diagnostics_payload, eve_access_status
 from pondsec_ndr.features.aggregator import aggregate_features, shannon_entropy
 from pondsec_ndr.models.cicids_features import CICIDS2017_FEATURES, cicids_vector_from_feature
@@ -816,6 +826,104 @@ class BackendTests(unittest.TestCase):
         detections = DNSTunnelingDetector().detect(events, features)
         self.assertEqual(len(detections), 1)
 
+    def test_credential_bruteforce_detector_finds_auth_pressure(self) -> None:
+        events = [
+            normalize_eve(flow_event(f"2026-07-05T10:00:{i:02d}+00:00", "192.168.20.55", "192.168.30.21", 22, "reset"))
+            for i in range(14)
+        ]
+        detections = CredentialBruteforceDetector().detect(events, aggregate_features(events))
+        self.assertEqual(len(detections), 1)
+        self.assertEqual(detections[0]["category"], "credential_abuse")
+        self.assertEqual(detections[0]["recommended_action"], "block")
+
+    def test_exploit_attempt_detector_labels_safe_suricata_marker(self) -> None:
+        event = normalize_eve({
+            "timestamp": "2026-07-05T11:00:00+00:00",
+            "event_type": "alert",
+            "src_ip": "8.8.8.77",
+            "src_port": 45123,
+            "dest_ip": "192.168.30.44",
+            "dest_port": 443,
+            "proto": "TCP",
+            "alert": {
+                "signature_id": 9101501,
+                "signature": "PondSec validation marker: CVE-2026-0001 remote code execution exploit attempt",
+                "category": "Attempted Administrator Privilege Gain",
+                "severity": 2,
+            },
+        })
+        detections = ExploitAttemptDetector().detect([event], [])
+        self.assertEqual(len(detections), 1)
+        self.assertEqual(detections[0]["category"], "exploit_attempt")
+        self.assertEqual(detections[0]["destination_ip"], "192.168.30.44")
+
+    def test_supply_chain_detector_finds_callback_fanout(self) -> None:
+        flow_events = [
+            normalize_eve({
+                "timestamp": f"2026-07-05T11:00:{i % 10:02d}+00:00",
+                "event_type": "flow",
+                "src_ip": "192.168.10.70",
+                "src_port": 42000 + i,
+                "dest_ip": f"8.8.4.{10 + i}",
+                "dest_port": 443,
+                "proto": "TCP",
+                "app_proto": "tls",
+                "flow": {
+                    "state": "closed",
+                    "reason": "finished",
+                    "age": 1,
+                    "pkts_toserver": 3,
+                    "pkts_toclient": 1,
+                    "bytes_toserver": 2000,
+                    "bytes_toclient": 200,
+                },
+            })
+            for i in range(40)
+        ]
+        dns_events = [
+            normalize_eve({
+                "timestamp": f"2026-07-05T11:01:{i:02d}+00:00",
+                "event_type": "dns",
+                "src_ip": "192.168.10.70",
+                "src_port": 53000 + i,
+                "dest_ip": "9.9.9.9",
+                "dest_port": 53,
+                "proto": "UDP",
+                "dns": {"rrname": f"q9w8e7r6t5y4u3i2o1p0asdfghjkl{i:02d}.example.test", "rrtype": "TXT", "rcode": "NXDOMAIN"},
+            })
+            for i in range(12)
+        ]
+        events = flow_events + dns_events
+        detections = SupplyChainCallbackDetector().detect(events, aggregate_features(events))
+        self.assertEqual(len(detections), 1)
+        self.assertEqual(detections[0]["category"], "supply_chain")
+
+    def test_unusual_destination_detector_finds_one_minute_fanout(self) -> None:
+        events = [
+            normalize_eve({
+                "timestamp": f"2026-07-05T11:00:{i:02d}+00:00",
+                "event_type": "flow",
+                "src_ip": "192.168.10.70",
+                "src_port": 42000 + i,
+                "dest_ip": f"8.8.4.{10 + i}",
+                "dest_port": 443,
+                "proto": "TCP",
+                "flow": {
+                    "state": "closed",
+                    "reason": "finished",
+                    "age": 1,
+                    "pkts_toserver": 3,
+                    "pkts_toclient": 1,
+                    "bytes_toserver": 2000,
+                    "bytes_toclient": 200,
+                },
+            })
+            for i in range(55)
+        ]
+        detections = UnusualDestinationDetector().detect(events, aggregate_features(events))
+        self.assertEqual(len(detections), 1)
+        self.assertEqual(detections[0]["detector_id"], "pondsec.unusual_destination")
+
     def test_suricata_drop_event_is_imported_as_signature_detection(self) -> None:
         event = normalize_eve({
             "timestamp": "2026-07-05T12:21:17.149193+0200",
@@ -1115,6 +1223,12 @@ class BackendTests(unittest.TestCase):
             self.assertIn("dhcp_client", inventory["items"][0]["roles"])
             self.assertEqual(inventory["items"][0]["peer_group"], "clients")
             self.assertEqual(inventory["summary"]["peer_groups"], {"clients": 1})
+            detail_by_ip = store.host_detail("192.168.10.20")
+            detail_by_mac = store.host_detail("aa:bb:cc:dd:ee:ff")
+            self.assertEqual(detail_by_ip["status"], "ok")
+            self.assertEqual(detail_by_ip["item"]["entity_id"], detail_by_mac["item"]["entity_id"])
+            self.assertEqual(detail_by_ip["item"]["hostname"], "laptop-20")
+            self.assertIn("192.168.10.20", detail_by_ip["item"]["current_ips"])
 
     def test_entity_resolution_keeps_dhcp_ip_change_on_same_entity(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -3112,6 +3226,35 @@ class CliTests(unittest.TestCase):
             try:
                 self.assertEqual(cli_main(["allowlist", "add", "192.168.10.0/24", "--json"]), 0)
                 self.assertEqual(cli_main(["allowlist", "list", "--json"]), 0)
+            finally:
+                for key, value in old_env.items():
+                    if value is None:
+                        __import__("os").environ.pop(key, None)
+                    else:
+                        __import__("os").environ[key] = value
+
+    def test_cli_hosts_get_returns_resolved_entity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = EventStore(root / "db" / "pondsec-ndr.db")
+            store.migrate()
+            event = normalize_dnsmasq_lease(
+                "1783261000 aa:bb:cc:dd:ee:ff 192.168.10.20 laptop-20 01:aa:bb:cc:dd:ee:ff",
+                "2026-07-05T10:00:00+00:00",
+            )
+            assert event is not None
+            store.insert_events([event])
+            old_env = dict()
+            for key, value in {
+                "PONDSEC_NDR_DATA_DIR": str(root / "db"),
+                "PONDSEC_NDR_LOG_DIR": str(root / "log"),
+                "PONDSEC_NDR_RUN_DIR": str(root / "run"),
+                "PONDSEC_NDR_CONFIG": str(root / "missing.json"),
+            }.items():
+                old_env[key] = __import__("os").environ.get(key)
+                __import__("os").environ[key] = value
+            try:
+                self.assertEqual(cli_main(["hosts", "get", "192.168.10.20", "--json"]), 0)
             finally:
                 for key, value in old_env.items():
                     if value is None:

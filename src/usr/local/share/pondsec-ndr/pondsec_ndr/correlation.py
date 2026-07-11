@@ -277,6 +277,10 @@ def _stage_for_category(category: str) -> str:
     return {
         "reconnaissance": "reconnaissance",
         "signature": "reconnaissance",
+        "credential_abuse": "initial_access",
+        "exploit_attempt": "initial_access",
+        "supply_chain": "initial_access",
+        "malware": "execution",
         "machine_learning": "execution",
         "anomaly": "execution",
         "lateral_movement": "lateral_movement",

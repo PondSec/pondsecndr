@@ -31,6 +31,24 @@ See [VALIDATION.md](VALIDATION.md) for firewall-level validation results.
 python3 -m unittest discover -s tests
 ```
 
+## Validation Lab
+
+`tools/ndr_validation_lab.py` generates harmless Suricata EVE JSONL telemetry
+for broad NDR validation. It covers reconnaissance, brute-force-like credential
+pressure, exploit-attempt markers, DNS tunneling, TLS fingerprint churn,
+beaconing, malware callback markers, supply-chain callback patterns, lateral
+movement, exfiltration, and multi-stage correlation.
+
+```sh
+python3 tools/ndr_validation_lab.py --json generate --scenario all --output reports/validation-lab/all-scenarios.eve.jsonl
+python3 tools/ndr_validation_lab.py --json analyze --input reports/validation-lab/all-scenarios.eve.jsonl --manifest reports/validation-lab/all-scenarios.eve.jsonl.manifest.json
+python3 tools/ndr_validation_lab.py --json report --analysis reports/validation-lab/all-scenarios.analysis.json --output reports/validation-lab/all-scenarios.report.md
+```
+
+The lab data is synthetic and must not include real credentials, working
+exploits, malware, or destructive payloads. Use it as a regression harness
+before controlled live network-path testing.
+
 ## Test Data Policy
 
 All test data must be synthetic. Do not commit real firewall logs or personally identifiable network traffic.
