@@ -169,9 +169,13 @@ class PondSecService:
 
         learning_status = self.config.detection.learning_status()
         detections: list[dict[str, Any]] = []
-        enabled_detectors, learning_suppressed_detectors = self._enabled_detectors(learning_status)
-        for detector in enabled_detectors:
-            detections.extend(detector.detect(events, features))
+        if learning_status.get("active"):
+            learning_suppressed_detectors = [getattr(detector, "detector_id", "") for detector in default_detectors()]
+            enabled_detectors = []
+        else:
+            enabled_detectors, learning_suppressed_detectors = self._enabled_detectors(learning_status)
+            for detector in enabled_detectors:
+                detections.extend(detector.detect(events, features))
         inserted_detections = self.store.insert_detections(detections)
 
         incidents = correlate_detections(detections, window_seconds=self.config.detection.correlation_window_minutes * 60)
@@ -214,6 +218,7 @@ class PondSecService:
             "resource_usage": resource_usage,
             "resource_warnings": resource_warnings,
             "learning_status": learning_status,
+            "learning_collection_only": bool(learning_status.get("active")),
             "learning_suppressed_detectors": learning_suppressed_detectors,
             "optional_collector_warnings": self.counters["last_optional_collector_errors"],
             "limits": {
@@ -243,6 +248,7 @@ class PondSecService:
             "baseline_updates": baseline_updates,
             "resource_warnings": resource_warnings,
             "learning_status": learning_status,
+            "learning_collection_only": bool(learning_status.get("active")),
             "learning_suppressed_detectors": learning_suppressed_detectors,
             "optional_collector_warnings": self.counters["last_optional_collector_errors"],
         }

@@ -788,6 +788,7 @@ class BackendTests(unittest.TestCase):
                 data_dir=root / "db",
                 log_dir=root / "log",
                 run_dir=root / "run",
+                detection=DetectionConfig(machine_learning=True, learning_mode=False),
             )
             service = PondSecService(config)
             result = service.run_once(max_lines=100)
@@ -1380,6 +1381,39 @@ class BackendTests(unittest.TestCase):
             actions = service._auto_response([incident])
             self.assertEqual(actions[0]["status"], "skipped")
             self.assertEqual(service.store.list_rows("block_entries"), [])
+
+    def test_service_learning_phase_collects_without_incidents(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            eve = root / "eve.json"
+            eve.write_text(
+                "\n".join(
+                    json.dumps(flow_event(f"2026-07-05T10:00:{index:02d}+00:00", "192.168.10.20", "192.168.20.10", 20 + index))
+                    for index in range(18)
+                ) + "\n",
+                encoding="utf-8",
+            )
+            config = PondSecConfig(
+                enabled=True,
+                mode="prevent",
+                suricata_eve_path=str(eve),
+                data_dir=root / "db",
+                log_dir=root / "log",
+                run_dir=root / "run",
+                detection=DetectionConfig(machine_learning=True, learning_mode=True, learning_started_at="2026-07-05T10:00:00+00:00", learning_days=14),
+                response=ResponseConfig(automatic_blocking=True, manual_confirmation=False, block_external=True, isolate_internal=True),
+            )
+            service = PondSecService(config)
+            result = service.run_once(max_lines=100)
+
+            self.assertEqual(result["inserted_events"], 18)
+            self.assertEqual(result["detections"], 0)
+            self.assertEqual(result["incidents"], 0)
+            self.assertTrue(result["learning_collection_only"])
+            self.assertEqual(service.store.list_rows("detections"), [])
+            self.assertEqual(service.store.list_rows("incidents"), [])
+            self.assertEqual(service.store.list_rows("block_entries"), [])
+            self.assertGreater(service.store.baseline_summary()["total_hosts"], 0)
 
     def test_service_expected_response_denials_do_not_pollute_error_state(self) -> None:
         self.assertTrue(PondSecService._is_expected_response_denial("source IP is protected"))
