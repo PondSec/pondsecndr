@@ -1037,19 +1037,20 @@ $(function() {
 }
 .pondsec-case-panel {
     background: #151d26;
-    border-left: 1px solid #2a3544;
-    bottom: 54px;
-    box-shadow: -12px 0 32px rgba(0, 0, 0, 0.32);
-    left: 304px;
+    border-left: 0;
+    bottom: 0;
+    box-shadow: 0 0 44px rgba(0, 0, 0, 0.48);
+    left: 0;
     max-width: none;
+    overscroll-behavior: contain;
     overflow-y: auto;
-    padding: 26px 30px;
+    padding: 22px 34px 34px;
     position: fixed;
     right: 0;
-    top: 104px;
+    top: 0;
     transform: translateX(105%);
     transition: transform 0.22s ease;
-    width: auto;
+    width: 100vw;
     z-index: 9999;
 }
 .pondsec-case-panel.open {
@@ -1057,10 +1058,15 @@ $(function() {
 }
 .pondsec-case-head {
     align-items: flex-start;
+    background: #151d26;
     display: flex;
     gap: 14px;
     justify-content: space-between;
     margin-bottom: 14px;
+    padding-bottom: 10px;
+    position: sticky;
+    top: -22px;
+    z-index: 2;
 }
 .pondsec-case-head h3 {
     color: #f5f8fb;
@@ -1507,6 +1513,7 @@ $(function() {
         bottom: 0;
         left: 0;
         top: 0;
+        padding: 16px;
         width: 100vw;
     }
     .pondsec-analysis-grid,
