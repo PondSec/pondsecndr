@@ -50,7 +50,23 @@ from pondsec_ndr.models.manager import model_inventory
 from pondsec_ndr.models.runtime import SaidimnIdsCnnRuntime
 from pondsec_ndr.normalizers.suricata import normalize_eve
 from pondsec_ndr.privacy import export_privacy_bundle, purge_telemetry_before
-from pondsec_ndr.response.engine import PERMANENT_BLOCK_EXPIRES_AT, ResponseDenied, activate_block, edit_block_entry, is_protected_target, propose_block_for_incident, propose_manual_block, propose_manual_block_for_incident, remove_block
+from pondsec_ndr.response.dns import DnsmasqSinkholeEnforcer, SinkholeDenied, normalize_domain
+from pondsec_ndr.response.engine import (
+    PERMANENT_BLOCK_EXPIRES_AT,
+    ResponseDenied,
+    activate_block,
+    activate_sinkhole,
+    edit_block_entry,
+    edit_sinkhole_entry,
+    is_protected_target,
+    propose_block_for_incident,
+    propose_manual_block,
+    propose_manual_block_for_incident,
+    propose_manual_sinkhole,
+    propose_sinkhole_for_incident,
+    remove_block,
+    remove_sinkhole,
+)
 from pondsec_ndr.response.pf import PFTableEnforcer
 from pondsec_ndr.sensor import eve_types_from_suricata_yaml, patch_suricata_yaml_text, required_eve_types
 from pondsec_ndr.service import PondSecService
@@ -1523,7 +1539,7 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(row[5], "reconnaissance")
             self.assertEqual(row[6], "legacy-upgrade")
             self.assertEqual(row[7], 0)
-            self.assertEqual(version, 6)
+            self.assertEqual(version, 7)
             self.assertTrue(any((db_path.parent / "backups").glob("pondsec-ndr.db.schema0-to-2.*.bak")))
 
     def test_host_baseline_versions_status_and_drift(self) -> None:
@@ -4038,6 +4054,90 @@ class BackendTests(unittest.TestCase):
             self.assertNotIn(removed["block_id"], {item["block_id"] for item in view["items"]})
             self.assertEqual(view["summary"]["hidden_historical_duplicates"], 1)
 
+    def test_dns_sinkhole_enforcer_writes_and_removes_managed_hosts_entries(self) -> None:
+        commands: list[list[str]] = []
+
+        def fake_runner(command: list[str]) -> subprocess.CompletedProcess[str]:
+            commands.append(command)
+            return subprocess.CompletedProcess(command, 0, "reloaded", "")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            hosts_path = Path(tmp) / "dns-sinkhole.hosts"
+            enforcer = DnsmasqSinkholeEnforcer(hosts_path, runner=fake_runner, reload_enabled=True)
+            added = enforcer.add("C2.Validation.PondSec.Test.")
+            self.assertTrue(added.ok)
+            self.assertTrue(added.changed)
+            self.assertEqual(enforcer.active_domains(), ["c2.validation.pondsec.test"])
+            self.assertIn("0.0.0.0 c2.validation.pondsec.test", hosts_path.read_text(encoding="utf-8"))
+            removed = enforcer.delete("c2.validation.pondsec.test")
+            self.assertTrue(removed.ok)
+            self.assertEqual(enforcer.active_domains(), [])
+            self.assertEqual(commands, [
+                ["/usr/local/sbin/configctl", "dnsmasq", "restart"],
+                ["/usr/local/sbin/configctl", "dnsmasq", "restart"],
+            ])
+            with self.assertRaises(SinkholeDenied):
+                normalize_domain("bad domain.local")
+
+    def test_response_engine_manages_manual_dns_sinkhole_lifecycle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            config = PondSecConfig(response=ResponseConfig(default_block_seconds=300, minimum_risk_score=70))
+            proposal = propose_manual_sinkhole(store, config, "malicious.validation.pondsec.test", reason="manual dns test", actor="test")
+            self.assertEqual(proposal["status"], "proposed")
+            self.assertEqual(proposal["domain"], "malicious.validation.pondsec.test")
+            updated = edit_sinkhole_entry(store, proposal["sinkhole_id"], reason="keep until reviewed", expires_at="", actor="test")
+            self.assertEqual(updated["expires_at"], PERMANENT_BLOCK_EXPIRES_AT)
+            hosts_path = Path(tmp) / "sinkhole.hosts"
+            enforcer = DnsmasqSinkholeEnforcer(hosts_path, reload_enabled=False)
+            activation = activate_sinkhole(store, proposal["sinkhole_id"], actor="test", enforcer=enforcer)
+            self.assertEqual(activation["status"], "ok")
+            self.assertEqual(store.get_sinkhole_entry(proposal["sinkhole_id"])["status"], "active")
+            self.assertEqual(enforcer.active_domains(), ["malicious.validation.pondsec.test"])
+            removal = remove_sinkhole(store, proposal["sinkhole_id"], "test cleanup", actor="test", enforcer=enforcer)
+            self.assertEqual(removal["status"], "ok")
+            self.assertEqual(enforcer.active_domains(), [])
+
+    def test_response_engine_proposes_dns_sinkhole_from_incident_evidence_domain(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            incident = {
+                "incident_id": "incident-dns-sinkhole-test",
+                "title": "DNS sinkhole candidate",
+                "status": "open",
+                "risk_score": 92,
+                "severity": 9,
+                "confidence": 0.96,
+                "source_ip": "192.168.10.28",
+                "destination_ip": "203.0.113.28",
+                "category": "command_and_control",
+                "created_at": "2026-07-05T10:00:00+00:00",
+                "updated_at": "2026-07-05T10:00:00+00:00",
+                "evidence": {
+                    "detections": [{
+                        "detection_id": "d-url-threat",
+                        "detector_id": "pondsec.url_threat",
+                        "category": "command_and_control",
+                        "source_ip": "192.168.10.28",
+                        "destination_ip": "203.0.113.28",
+                        "severity": 9,
+                        "confidence": 0.96,
+                        "evidence": {"domain": "c2.validation.pondsec.test"},
+                    }],
+                },
+                "risk_factors": [{"name": "test", "value": 92}],
+                "detection_ids": [],
+            }
+            store.insert_incidents([incident])
+            config = PondSecConfig(response=ResponseConfig(default_block_seconds=300))
+            proposal = propose_sinkhole_for_incident(store, config, "incident-dns-sinkhole-test", actor="test")
+            self.assertEqual(proposal["domain"], "c2.validation.pondsec.test")
+            self.assertEqual(proposal["incident_id"], "incident-dns-sinkhole-test")
+            reused = propose_sinkhole_for_incident(store, config, "incident-dns-sinkhole-test", actor="test")
+            self.assertEqual(reused["sinkhole_id"], proposal["sinkhole_id"])
+
     def test_runtime_reset_keeps_allowlist_and_models(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -4076,6 +4176,15 @@ class BackendTests(unittest.TestCase):
                 "risk_factors": [],
             }])
             store.add_allowlist_entry("192.168.10.0/24", "trusted network", actor="test")
+            store.add_sinkhole_entry({
+                "sinkhole_id": "runtime-reset-sinkhole",
+                "domain": "c2.validation.pondsec.test",
+                "reason": "runtime reset test",
+                "risk_score": 90,
+                "confidence": 0.95,
+                "expires_at": "2030-01-01T00:00:00+00:00",
+                "status": "active",
+            }, actor="test")
             eve = root / "eve.json"
             eve.write_text('{"event_type":"flow"}\n', encoding="utf-8")
             config = PondSecConfig(data_dir=root, suricata_eve_path=str(eve))
@@ -4091,6 +4200,7 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(store.list_rows("detections"), [])
             self.assertEqual(store.list_rows("incidents"), [])
             self.assertEqual(store.list_rows("block_entries"), [])
+            self.assertEqual(store.list_rows("sinkhole_entries"), [])
             self.assertEqual(store.list_rows("allowlist_entries")[0]["value"], "192.168.10.0/24")
             self.assertFalse((root / "learning_started_at").exists())
             offset = json.loads((offset_dir / "suricata_eve.json").read_text(encoding="utf-8"))

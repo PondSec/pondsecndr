@@ -15,7 +15,7 @@ from typing import Any, Iterator
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 INCIDENT_DEDUPE_WINDOW_SECONDS = 1800
 OPEN_INCIDENT_STATUSES = ("open",)
 ARCHIVED_INCIDENT_STATUSES = ("closed", "false_positive", "archived")
@@ -434,6 +434,23 @@ SCHEMA = [
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS sinkhole_entries (
+        sinkhole_id TEXT PRIMARY KEY,
+        incident_id TEXT,
+        domain TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        risk_score INTEGER NOT NULL,
+        confidence REAL NOT NULL,
+        policy_id TEXT,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        automatic INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        removal_reason TEXT
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS allowlist_entries (
         allowlist_id TEXT PRIMARY KEY,
         value TEXT NOT NULL,
@@ -531,6 +548,7 @@ SCHEMA = [
     "CREATE INDEX IF NOT EXISTS idx_incidents_source ON incidents(source_ip)",
     "CREATE INDEX IF NOT EXISTS idx_incidents_dedupe ON incidents(status, source_ip, category, destination_ip, validation_tag, last_seen)",
     "CREATE INDEX IF NOT EXISTS idx_incident_feedback_source ON incident_feedback(feedback_type, source_ip, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_sinkhole_domain ON sinkhole_entries(domain, status, expires_at)",
 ]
 
 INCIDENT_V2_COLUMNS = {
@@ -2475,12 +2493,157 @@ class EventStore:
                 self._audit(conn, actor, "block.expired", row["block_id"], {})
             return len(rows)
 
+    def add_sinkhole_entry(self, entry: dict[str, Any], actor: str = "system") -> dict[str, Any]:
+        sinkhole_id = entry.get("sinkhole_id") or str(uuid4())
+        created_at = entry.get("created_at") or now_iso()
+        record = {
+            "sinkhole_id": sinkhole_id,
+            "incident_id": entry.get("incident_id"),
+            "domain": str(entry["domain"]).lower(),
+            "reason": entry["reason"],
+            "risk_score": int(entry["risk_score"]),
+            "confidence": float(entry["confidence"]),
+            "policy_id": entry.get("policy_id"),
+            "created_at": created_at,
+            "expires_at": entry["expires_at"],
+            "created_by": entry.get("created_by") or actor,
+            "automatic": 1 if entry.get("automatic") else 0,
+            "status": entry.get("status", "proposed"),
+            "removal_reason": entry.get("removal_reason"),
+        }
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO sinkhole_entries(
+                    sinkhole_id, incident_id, domain, reason, risk_score, confidence,
+                    policy_id, created_at, expires_at, created_by, automatic,
+                    status, removal_reason
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record["sinkhole_id"], record["incident_id"], record["domain"], record["reason"],
+                    record["risk_score"], record["confidence"], record["policy_id"], record["created_at"],
+                    record["expires_at"], record["created_by"], record["automatic"], record["status"],
+                    record["removal_reason"],
+                ),
+            )
+            self._audit(conn, actor, f"sinkhole.{record['status']}", record["domain"], record)
+        return record
+
+    def get_sinkhole_entry(self, sinkhole_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM sinkhole_entries WHERE sinkhole_id = ?", (sinkhole_id,)).fetchone()
+        return dict(row) if row else None
+
+    def existing_sinkhole_entry(self, incident_id: str | None, domain: str | None) -> dict[str, Any] | None:
+        if not incident_id and not domain:
+            return None
+        now = now_iso()
+        clauses = ["status IN ('proposed', 'active')", "expires_at > ?"]
+        values: list[Any] = [now]
+        if incident_id:
+            clauses.append("incident_id = ?")
+            values.append(incident_id)
+        if domain:
+            clauses.append("domain = ?")
+            values.append(str(domain).lower())
+        with self.connect() as conn:
+            row = conn.execute(
+                f"SELECT * FROM sinkhole_entries WHERE {' AND '.join(clauses)} ORDER BY created_at DESC LIMIT 1",
+                values,
+            ).fetchone()
+        return dict(row) if row else None
+
+    def update_sinkhole_entry(self, sinkhole_id: str, reason: str, expires_at: str, actor: str = "system") -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM sinkhole_entries WHERE sinkhole_id = ?", (sinkhole_id,)).fetchone()
+            if row is None:
+                return None
+            conn.execute(
+                "UPDATE sinkhole_entries SET reason = ?, expires_at = ? WHERE sinkhole_id = ?",
+                (reason, expires_at, sinkhole_id),
+            )
+            self._audit(conn, actor, "sinkhole.updated", sinkhole_id, {"reason": reason, "expires_at": expires_at})
+            updated = conn.execute("SELECT * FROM sinkhole_entries WHERE sinkhole_id = ?", (sinkhole_id,)).fetchone()
+        return dict(updated) if updated else None
+
+    def update_sinkhole_status(self, sinkhole_id: str, status: str, removal_reason: str | None = None, actor: str = "system") -> bool:
+        if status not in {"proposed", "active", "removed", "expired", "rejected"}:
+            raise ValueError("invalid sinkhole status")
+        with self.connect() as conn:
+            before = conn.total_changes
+            conn.execute(
+                "UPDATE sinkhole_entries SET status = ?, removal_reason = COALESCE(?, removal_reason) WHERE sinkhole_id = ?",
+                (status, removal_reason, sinkhole_id),
+            )
+            changed = conn.total_changes - before
+            self._audit(conn, actor, f"sinkhole.{status}", sinkhole_id, {"removal_reason": removal_reason})
+            return changed > 0
+
+    def sinkhole_view(self, limit: int = 100) -> dict[str, Any]:
+        rows = self.list_rows("sinkhole_entries", limit=limit)
+        now = now_iso()
+        current_domains: set[str] = set()
+        visible = []
+        history = []
+        for row in rows:
+            is_current = row.get("status") in {"proposed", "active"} and str(row.get("expires_at") or "") > now
+            if is_current:
+                current_domains.add(str(row.get("domain")))
+                item = dict(row)
+                item["current"] = True
+                visible.append(item)
+        for row in rows:
+            if row.get("status") in {"proposed", "active"} and str(row.get("expires_at") or "") > now:
+                continue
+            item = dict(row)
+            item["current"] = False
+            item["superseded_by_current"] = str(row.get("domain")) in current_domains
+            history.append(item)
+        return {
+            "items": visible,
+            "history": history,
+            "summary": {
+                "current": len(current_domains),
+                "history": len(history),
+                "hidden_historical_duplicates": sum(1 for item in history if item.get("superseded_by_current")),
+            },
+        }
+
+    def active_sinkhole_domains(self) -> list[str]:
+        now = now_iso()
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT domain FROM sinkhole_entries WHERE status = 'active' AND expires_at > ?",
+                (now,),
+            ).fetchall()
+        return [row["domain"] for row in rows]
+
+    def expired_active_sinkhole_domains(self) -> list[str]:
+        now = now_iso()
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT domain FROM sinkhole_entries WHERE status = 'active' AND expires_at <= ?",
+                (now,),
+            ).fetchall()
+        return [row["domain"] for row in rows]
+
+    def expire_sinkhole_entries(self, actor: str = "system") -> int:
+        now = now_iso()
+        with self.connect() as conn:
+            rows = conn.execute("SELECT sinkhole_id FROM sinkhole_entries WHERE status IN ('proposed', 'active') AND expires_at <= ?", (now,)).fetchall()
+            for row in rows:
+                conn.execute("UPDATE sinkhole_entries SET status = 'expired', removal_reason = 'expired' WHERE sinkhole_id = ?", (row["sinkhole_id"],))
+                self._audit(conn, actor, "sinkhole.expired", row["sinkhole_id"], {})
+            return len(rows)
+
     def reset_runtime_state(self, actor: str = "system") -> dict[str, Any]:
         """Clear runtime telemetry while keeping configuration, models, policies, and allowlists."""
         runtime_tables = [
             "incident_detections",
             "responses",
             "block_entries",
+            "sinkhole_entries",
             "incidents",
             "detections",
             "features",
@@ -2669,7 +2832,12 @@ class EventStore:
         return parsed[0] if parsed else None
 
     def list_rows(self, table: str, limit: int = 100) -> list[dict[str, Any]]:
-        allowed = {"events", "detections", "incidents", "hosts", "entities", "entity_observations", "block_entries", "allowlist_entries", "policies", "models", "audit_log", "incident_feedback"}
+        allowed = {
+            "events", "detections", "incidents", "hosts", "entities",
+            "entity_observations", "block_entries", "sinkhole_entries",
+            "allowlist_entries", "policies", "models", "audit_log",
+            "incident_feedback",
+        }
         if table not in allowed:
             raise ValueError(f"unsupported table: {table}")
         order = "timestamp" if table in {"events", "detections", "audit_log"} else "rowid"

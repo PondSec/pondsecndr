@@ -7,6 +7,7 @@ import ipaddress
 from typing import Any
 
 from pondsec_ndr.config import PondSecConfig
+from pondsec_ndr.response.dns import DnsmasqSinkholeEnforcer, SinkholeDenied, normalize_domain
 from pondsec_ndr.response.policy import evaluate_automatic_response_policy
 from pondsec_ndr.response.pf import PFTableEnforcer
 from pondsec_ndr.schema import is_private_ip
@@ -348,6 +349,163 @@ def edit_block_entry(
     if updated is None:
         raise ResponseDenied("block entry not found")
     return updated
+
+
+def propose_manual_sinkhole(
+    store: EventStore,
+    config: PondSecConfig,
+    domain: str,
+    reason: str | None = None,
+    actor: str = "system",
+    duration_seconds: int | None = None,
+) -> dict[str, Any]:
+    target = normalize_domain(domain)
+    existing = store.existing_sinkhole_entry(None, target)
+    if existing:
+        return existing
+    duration = duration_seconds or config.response.default_block_seconds
+    duration = min(duration, config.response.max_block_seconds)
+    expires_at = (datetime.now(timezone.utc) + timedelta(seconds=duration)).isoformat()
+    return store.add_sinkhole_entry({
+        "incident_id": None,
+        "domain": target,
+        "reason": reason or "Manual DNS sinkhole entry",
+        "risk_score": config.response.minimum_risk_score,
+        "confidence": 1.0,
+        "policy_id": "manual-dns-sinkhole",
+        "expires_at": expires_at,
+        "created_by": actor,
+        "automatic": False,
+        "status": "proposed",
+    }, actor=actor)
+
+
+def propose_sinkhole_for_incident(
+    store: EventStore,
+    config: PondSecConfig,
+    incident_id: str,
+    actor: str = "system",
+    duration_seconds: int | None = None,
+) -> dict[str, Any]:
+    incident = store.get_incident(incident_id)
+    if incident is None:
+        raise ResponseDenied("incident not found")
+    domain = _domain_target_for_incident(incident)
+    if not domain:
+        raise ResponseDenied("incident has no DNS domain response target")
+    target = normalize_domain(domain)
+    existing = store.existing_sinkhole_entry(incident_id, target) or store.existing_sinkhole_entry(None, target)
+    if existing:
+        return dict(existing)
+    duration = duration_seconds or config.response.default_block_seconds
+    duration = min(duration, config.response.max_block_seconds)
+    expires_at = (datetime.now(timezone.utc) + timedelta(seconds=duration)).isoformat()
+    return store.add_sinkhole_entry({
+        "incident_id": incident_id,
+        "domain": target,
+        "reason": f"DNS sinkhole for incident {incident_id}",
+        "risk_score": int(incident.get("risk_score") or 0),
+        "confidence": float(incident.get("confidence") or 0),
+        "policy_id": "incident-dns-sinkhole",
+        "expires_at": expires_at,
+        "created_by": actor,
+        "automatic": False,
+        "status": "proposed",
+    }, actor=actor)
+
+
+def edit_sinkhole_entry(
+    store: EventStore,
+    sinkhole_id: str,
+    reason: str | None = None,
+    expires_at: str | None = None,
+    actor: str = "system",
+) -> dict[str, Any]:
+    sinkhole = store.get_sinkhole_entry(sinkhole_id)
+    if sinkhole is None:
+        raise ResponseDenied("sinkhole entry not found")
+    if sinkhole.get("status") not in {"proposed", "active"}:
+        raise ResponseDenied("sinkhole entry is not editable")
+    updated = store.update_sinkhole_entry(
+        sinkhole_id,
+        reason=str(reason or "").strip() or sinkhole.get("reason") or "Manual DNS sinkhole entry",
+        expires_at=str(sinkhole.get("expires_at")) if expires_at is None else normalize_block_expires_at(expires_at),
+        actor=actor,
+    )
+    if updated is None:
+        raise ResponseDenied("sinkhole entry not found")
+    return updated
+
+
+def activate_sinkhole(
+    store: EventStore,
+    sinkhole_id: str,
+    actor: str = "system",
+    enforcer: DnsmasqSinkholeEnforcer | None = None,
+) -> dict[str, Any]:
+    sinkhole = store.get_sinkhole_entry(sinkhole_id)
+    if sinkhole is None:
+        raise ResponseDenied("sinkhole entry not found")
+    domain = normalize_domain(str(sinkhole["domain"]))
+    dns = enforcer or DnsmasqSinkholeEnforcer()
+    result = dns.add(domain)
+    if not result.ok:
+        raise ResponseDenied(f"DNS sinkhole add failed: {result.reload_stderr or result.reload_stdout or result.reload_returncode}")
+    changed = store.update_sinkhole_status(sinkhole_id, "active", actor=actor)
+    return {
+        "status": "ok" if changed else "not_found",
+        "sinkhole_id": sinkhole_id,
+        "domain": domain,
+        "dns_sinkhole": result.as_dict(),
+    }
+
+
+def remove_sinkhole(
+    store: EventStore,
+    sinkhole_id: str,
+    reason: str = "manual removal",
+    actor: str = "system",
+    enforcer: DnsmasqSinkholeEnforcer | None = None,
+) -> dict[str, Any]:
+    sinkhole = store.get_sinkhole_entry(sinkhole_id)
+    if sinkhole is None:
+        raise ResponseDenied("sinkhole entry not found")
+    domain = normalize_domain(str(sinkhole["domain"]))
+    changed = store.update_sinkhole_status(sinkhole_id, "removed", reason, actor=actor)
+    still_active = domain in store.active_sinkhole_domains()
+    dns = enforcer or DnsmasqSinkholeEnforcer()
+    result = None if still_active else dns.delete(domain)
+    return {
+        "status": "ok" if changed else "not_found",
+        "sinkhole_id": sinkhole_id,
+        "domain": domain,
+        "dns_sinkhole": result.as_dict() if result else None,
+        "dns_kept_for_other_active_entries": still_active,
+    }
+
+
+def _domain_target_for_incident(incident: dict[str, Any]) -> str | None:
+    evidence = incident.get("evidence") if isinstance(incident.get("evidence"), dict) else {}
+    detections = evidence.get("detections") if isinstance(evidence.get("detections"), list) else []
+    for detection in detections:
+        if not isinstance(detection, dict):
+            continue
+        detection_evidence = detection.get("evidence") if isinstance(detection.get("evidence"), dict) else {}
+        for key in ("domain", "hostname", "tls_sni", "rrname", "indicator"):
+            value = detection_evidence.get(key)
+            if not value:
+                continue
+            try:
+                return normalize_domain(str(value))
+            except SinkholeDenied:
+                continue
+    destination = incident.get("destination_ip")
+    if destination:
+        try:
+            return normalize_domain(str(destination))
+        except SinkholeDenied:
+            return None
+    return None
 
 
 def activate_block(

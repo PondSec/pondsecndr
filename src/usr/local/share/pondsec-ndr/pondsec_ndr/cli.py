@@ -29,7 +29,23 @@ from pondsec_ndr.models.manager import ModelError, download_model_artifacts, mod
 from pondsec_ndr.models.runtime import MODEL_ID, SYNTHETIC_AI_VALIDATION_VECTOR, ModelRuntimeUnavailable, SaidimnIdsCnnRuntime
 from pondsec_ndr.privacy import export_privacy_bundle, privacy_status, purge_telemetry_before
 from pondsec_ndr.intel.cve import CveEnrichmentOptions, enrich_case_cves
-from pondsec_ndr.response.engine import ResponseDenied, activate_block, edit_block_entry, propose_block_for_incident, propose_manual_block, propose_manual_block_for_incident, release_incident_response, remove_block, validate_ip_or_network
+from pondsec_ndr.response.dns import DnsmasqSinkholeEnforcer
+from pondsec_ndr.response.engine import (
+    ResponseDenied,
+    activate_block,
+    activate_sinkhole,
+    edit_block_entry,
+    edit_sinkhole_entry,
+    propose_block_for_incident,
+    propose_manual_block,
+    propose_manual_block_for_incident,
+    propose_manual_sinkhole,
+    propose_sinkhole_for_incident,
+    release_incident_response,
+    remove_block,
+    remove_sinkhole,
+    validate_ip_or_network,
+)
 from pondsec_ndr.response.pf import PFTableEnforcer
 from pondsec_ndr.sensor import harden_sensor, sensor_status
 from pondsec_ndr.service import PondSecService
@@ -138,6 +154,27 @@ def main(argv: list[str] | None = None) -> int:
     block_remove.add_argument("block_id")
     block_remove.add_argument("--reason", default="manual removal")
     blocklist_sub.add_parser("expire")
+
+    sinkhole = sub.add_parser("sinkhole")
+    sinkhole_sub = sinkhole.add_subparsers(dest="section_command", required=True)
+    sinkhole_sub.add_parser("list")
+    sinkhole_add = sinkhole_sub.add_parser("add")
+    sinkhole_add.add_argument("domain")
+    sinkhole_add.add_argument("--reason", default=None)
+    sinkhole_add.add_argument("--duration-seconds", type=int, default=None)
+    sinkhole_propose = sinkhole_sub.add_parser("propose")
+    sinkhole_propose.add_argument("incident_id")
+    sinkhole_propose.add_argument("--duration-seconds", type=int, default=None)
+    sinkhole_edit = sinkhole_sub.add_parser("edit")
+    sinkhole_edit.add_argument("sinkhole_id")
+    sinkhole_edit.add_argument("--reason", default=None)
+    sinkhole_edit.add_argument("--expires-at", default=None)
+    sinkhole_activate = sinkhole_sub.add_parser("activate")
+    sinkhole_activate.add_argument("sinkhole_id")
+    sinkhole_remove = sinkhole_sub.add_parser("remove")
+    sinkhole_remove.add_argument("sinkhole_id")
+    sinkhole_remove.add_argument("--reason", default="manual removal")
+    sinkhole_sub.add_parser("expire")
 
     pf = sub.add_parser("pf")
     pf_sub = pf.add_subparsers(dest="pf_command", required=True)
@@ -375,6 +412,33 @@ def dispatch(args: argparse.Namespace, config: Any, store: EventStore) -> tuple[
                 if source_ip not in store.active_block_sources():
                     removed.append(enforcer.delete(source_ip).as_dict())
             return {"status": "ok", "expired": expired, "pf_removed": removed}, 0
+    if command == "sinkhole":
+        if args.section_command == "list":
+            return _decode_blocklist_view(store.sinkhole_view()), 0
+        if args.section_command == "add":
+            proposal = propose_manual_sinkhole(store, config, args.domain, args.reason or None, actor="cli", duration_seconds=args.duration_seconds)
+            return {"status": "ok", "item": proposal, "dns_side_effects": "none_until_activated"}, 0
+        if args.section_command == "propose":
+            proposal = propose_sinkhole_for_incident(store, config, args.incident_id, actor="cli", duration_seconds=args.duration_seconds)
+            return {"status": "ok", "item": proposal, "dns_side_effects": "none_until_activated"}, 0
+        if args.section_command == "edit":
+            updated = edit_sinkhole_entry(store, args.sinkhole_id, reason=args.reason, expires_at=args.expires_at, actor="cli")
+            return {"status": "ok", "item": updated}, 0
+        if args.section_command == "activate":
+            payload = activate_sinkhole(store, args.sinkhole_id, actor="cli")
+            return payload, 0 if payload["status"] == "ok" else 1
+        if args.section_command == "remove":
+            payload = remove_sinkhole(store, args.sinkhole_id, args.reason, actor="cli")
+            return payload, 0 if payload["status"] == "ok" else 1
+        if args.section_command == "expire":
+            expired_domains = store.expired_active_sinkhole_domains()
+            expired = store.expire_sinkhole_entries(actor="cli")
+            enforcer = DnsmasqSinkholeEnforcer()
+            removed = []
+            for domain in expired_domains:
+                if domain not in store.active_sinkhole_domains():
+                    removed.append(enforcer.delete(domain).as_dict())
+            return {"status": "ok", "expired": expired, "dns_removed": removed}, 0
     if command == "pf":
         enforcer = PFTableEnforcer(allow_configctl=False)
         if args.pf_command == "rule-present":
