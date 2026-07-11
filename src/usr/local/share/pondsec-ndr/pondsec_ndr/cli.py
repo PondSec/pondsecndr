@@ -9,6 +9,8 @@ import ipaddress
 import json
 import os
 from pathlib import Path
+import grp
+import pwd
 import shutil
 import subprocess
 import sys
@@ -447,11 +449,27 @@ def _seed_collector_offsets_at_end(config: Any) -> list[dict[str, Any]]:
         payload = {"inode": int(stat.st_ino), "offset": int(stat.st_size)}
         try:
             offset_path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+            _chown_service_path(offset_dir)
+            _chown_service_path(offset_path)
         except OSError as exc:
             seeded.append({"provider": provider, "status": "failed", "path": str(offset_path), "reason": str(exc)})
             continue
         seeded.append({"provider": provider, "status": "ok", "path": str(offset_path), "offset": payload["offset"]})
     return seeded
+
+
+def _chown_service_path(path: Path) -> None:
+    if os.geteuid() != 0:
+        return
+    try:
+        user = pwd.getpwnam("pondsecndr")
+        group = grp.getgrnam("pondsecndr")
+    except KeyError:
+        return
+    try:
+        os.chown(path, user.pw_uid, group.gr_gid)
+    except OSError:
+        return
 
 
 def _run_service_action(action: str) -> dict[str, Any]:
