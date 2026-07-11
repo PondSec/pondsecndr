@@ -1,0 +1,48 @@
+name: External worm-lookalike validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: external-worm-lookalike-validation
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Record runner source address
+        run: |
+          mkdir -p reports/external-validation
+          {
+            echo "started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "runner_public_ip=$(curl -fsS https://ifconfig.me/ip || true)"
+            getent hosts proxy.pondsec.com || true
+          } | tee reports/external-validation/external-worm-lookalike-runner.txt
+
+      - name: Run harmless external worm-lookalike traffic
+        run: |
+          python3 tools/pentest/ndr_worm_lookalike.py \
+            --execute \
+            --profile external \
+            --target proxy.pondsec.com \
+            --ports 22 23 80 135 139 443 445 3389 5985 8080 8443 \
+            --rounds 2 \
+            --beacon-target proxy.pondsec.com \
+            --beacon-port 443 \
+            --beacon-count 5 \
+            --beacon-interval 15 \
+            --output reports/external-validation/external-worm-lookalike.json
+
+      - name: Upload validation logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: external-worm-lookalike-validation
+          path: reports/external-validation/
