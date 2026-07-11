@@ -162,6 +162,21 @@ class PackagingTests(unittest.TestCase):
         self.assertIn("'raw_excerpt'", trait)
         self.assertIn("Bad Gateway", trait)
 
+    def test_safe_pentest_tools_cover_enterprise_validation_and_evidence_collection(self) -> None:
+        suite = (ROOT / "tools" / "pentest" / "ndr_safe_pentest_suite.py").read_text(encoding="utf-8")
+        dummy = (ROOT / "tools" / "pentest" / "ndr_dummy_vulnerable_service.py").read_text(encoding="utf-8")
+        collector = (ROOT / "tools" / "pentest" / "ndr_collect_evidence.py").read_text(encoding="utf-8")
+        readme = (ROOT / "tools" / "pentest" / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn("email_url_file_like", suite)
+        self.assertIn("exfil_like_transfer", suite)
+        self.assertIn("--include-eicar", suite)
+        self.assertIn("/webmail/attachment/", dummy)
+        self.assertIn("/upload/dummy-exfil", dummy)
+        self.assertIn("false_negative", collector)
+        self.assertIn("detection_latency_seconds", collector)
+        self.assertIn("ndr_collect_evidence.py", readme)
+
 
 if __name__ == "__main__":
     unittest.main()
