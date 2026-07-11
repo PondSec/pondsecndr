@@ -347,7 +347,7 @@ $(function() {
         <div class="pondsec-setup-card">
             <span>{{ lang._('AI safety') }}</span>
             <strong>{{ lang._('Learning mode') }}</strong>
-            <p>{{ lang._('Keep AI alarms in learning mode for 7 to 14 days. Early activation is possible, but likely increases false positives.') }}</p>
+            <p>{{ lang._('Keep AI alarms in learning mode for 14 days. Early activation is possible, but should be treated as a high false-positive risk.') }}</p>
         </div>
         <div class="pondsec-setup-card">
             <span>{{ lang._('Optional') }}</span>
@@ -356,8 +356,8 @@ $(function() {
         </div>
         <div class="pondsec-setup-card">
             <span>{{ lang._('Safety') }}</span>
-            <strong>{{ lang._('Allowlist first') }}</strong>
-            <p>{{ lang._('Add management hosts and trusted scanners to the Allowlist before enabling prevent mode.') }}</p>
+            <strong>{{ lang._('Observe first') }}</strong>
+            <p>{{ lang._('Start in Observe mode. Internal auto-isolation requires Enforce mode, AI full decision mode, stable baselines, and protected asset checks.') }}</p>
         </div>
     </div>
 

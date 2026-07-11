@@ -222,7 +222,7 @@
         <id>pondsecndr.detection.learning_days</id>
         <label>Learning days</label>
         <type>text</type>
-        <help>Recommended 7 to 14 days before enabling AI alarms for production response.</help>
+        <help>Recommended default is 14 days before enabling AI alarms for production response.</help>
     </field>
     <field>
         <id>pondsecndr.detection.early_ai_activation_override</id>
@@ -285,13 +285,13 @@
         <id>pondsecndr.response.mode</id>
         <label>Response mode</label>
         <type>dropdown</type>
-        <help>Observe never changes PF, Recommend creates proposals, Enforce can automatically execute eligible response policies.</help>
+        <help>Observe never changes PF, Recommend creates proposals, Enforce can execute only eligible policies after learning, baseline stability, and safety checks.</help>
     </field>
     <field>
         <id>pondsecndr.response.ai_full_decision_mode</id>
         <label>AI full decision mode</label>
         <type>checkbox</type>
-        <help>Allows verified AI evidence to contribute to automatic decisions after learning, but never bypasses safety checks.</help>
+        <help>Required for internal auto-isolation in Enforce mode after the 14-day learning phase. AI evidence never bypasses multi-source safety checks.</help>
     </field>
     <field>
         <id>pondsecndr.response.kill_switch</id>
@@ -307,6 +307,7 @@
         <id>pondsecndr.response.automatic_blocking</id>
         <label>Automatic blocking</label>
         <type>checkbox</type>
+        <help>Keep disabled during learning. Automatic PF changes require Enforce mode and all response-policy conditions to pass.</help>
     </field>
     <field>
         <id>pondsecndr.response.minimum_confidence</id>
