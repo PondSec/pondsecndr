@@ -265,6 +265,79 @@
                 <Required>Y</Required>
             </api_timeout_seconds>
         </threat_intel>
+        <zeek>
+            <enabled type="BooleanField">
+                <default>0</default>
+                <Required>Y</Required>
+            </enabled>
+            <mode type="OptionField">
+                <default>external</default>
+                <Required>Y</Required>
+                <OptionValues>
+                    <external>External sensor</external>
+                    <local>Local package</local>
+                </OptionValues>
+            </mode>
+            <parser type="OptionField">
+                <default>tsv</default>
+                <Required>Y</Required>
+                <OptionValues>
+                    <tsv>TSV logs</tsv>
+                </OptionValues>
+            </parser>
+            <sensor_name type="TextField">
+                <default></default>
+                <Required>N</Required>
+            </sensor_name>
+            <interface type="TextField">
+                <default></default>
+                <Required>N</Required>
+            </interface>
+            <remote_target type="TextField">
+                <default></default>
+                <Required>N</Required>
+            </remote_target>
+            <log_dir type="TextField">
+                <default>/var/log/zeek/current</default>
+                <Required>Y</Required>
+            </log_dir>
+            <start_at_end type="BooleanField">
+                <default>1</default>
+                <Required>Y</Required>
+            </start_at_end>
+            <conn_log type="TextField">
+                <default>conn.log</default>
+                <Required>N</Required>
+            </conn_log>
+            <dns_log type="TextField">
+                <default>dns.log</default>
+                <Required>N</Required>
+            </dns_log>
+            <ssl_log type="TextField">
+                <default>ssl.log</default>
+                <Required>N</Required>
+            </ssl_log>
+            <x509_log type="TextField">
+                <default>x509.log</default>
+                <Required>N</Required>
+            </x509_log>
+            <http_log type="TextField">
+                <default>http.log</default>
+                <Required>N</Required>
+            </http_log>
+            <files_log type="TextField">
+                <default>files.log</default>
+                <Required>N</Required>
+            </files_log>
+            <notice_log type="TextField">
+                <default>notice.log</default>
+                <Required>N</Required>
+            </notice_log>
+            <weird_log type="TextField">
+                <default>weird.log</default>
+                <Required>N</Required>
+            </weird_log>
+        </zeek>
         <response>
             <mode type="OptionField">
                 <default>observe</default>

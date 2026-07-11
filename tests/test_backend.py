@@ -14,6 +14,7 @@ import pondsec_ndr.diagnostics as diagnostics_mod
 from pondsec_ndr.cli import _incident_analysis, main as cli_main, reset_runtime_state
 from pondsec_ndr.collectors.eve import EveCollector
 from pondsec_ndr.collectors.filterlog import FilterLogCollector, FilterLogStats, normalize_filterlog_line
+from pondsec_ndr.collectors.zeek import ZeekLogCollector, normalize_zeek_row
 from pondsec_ndr.config import DetectionConfig, InterfaceConfig, PondSecConfig, ResponseConfig
 from pondsec_ndr.correlation import correlate_detections
 from pondsec_ndr.detection.detectors import BeaconingDetector, DNSTunnelingDetector, PortScanDetector, SuricataAlertAdapter
@@ -249,6 +250,173 @@ class BackendTests(unittest.TestCase):
             events, stats = FilterLogCollector(log, offset).read_once(max_lines=100)
             self.assertEqual(len(events), 1)
             self.assertEqual(stats.accepted_events, 1)
+
+    def test_zeek_normalizer_supports_required_log_types(self) -> None:
+        conn = normalize_zeek_row("conn", {
+            "ts": "2026-07-05T10:00:00+00:00",
+            "uid": "C1",
+            "id.orig_h": "192.168.10.20",
+            "id.orig_p": "51515",
+            "id.resp_h": "198.51.100.10",
+            "id.resp_p": "443",
+            "proto": "tcp",
+            "service": "ssl",
+            "orig_bytes": "1200",
+            "resp_bytes": "800",
+            "orig_pkts": "9",
+            "resp_pkts": "8",
+        }, sensor_name="edge-zeek", interface="igb1")
+        self.assertIsNotNone(conn)
+        assert conn is not None
+        self.assertEqual(conn["event_type"], "flow")
+        self.assertEqual(conn["raw_source"], "zeek")
+        self.assertEqual(conn["metadata"]["byte_count"], 2000)
+        self.assertEqual(conn["metadata"]["sensor_name"], "edge-zeek")
+
+        dns = normalize_zeek_row("dns", {
+            "ts": "2026-07-05T10:00:01+00:00",
+            "uid": "D1",
+            "id.orig_h": "192.168.10.20",
+            "id.orig_p": "53000",
+            "id.resp_h": "9.9.9.9",
+            "id.resp_p": "53",
+            "proto": "udp",
+            "query": "example.test",
+            "qtype_name": "A",
+            "answers": "198.51.100.10,198.51.100.11",
+        })
+        self.assertEqual(dns["event_type"], "dns")
+        self.assertEqual(dns["metadata"]["answers"], ["198.51.100.10", "198.51.100.11"])
+
+        ssl = normalize_zeek_row("ssl", {
+            "ts": "2026-07-05T10:00:02+00:00",
+            "uid": "S1",
+            "id.orig_h": "192.168.10.20",
+            "id.orig_p": "53001",
+            "id.resp_h": "203.0.113.10",
+            "id.resp_p": "443",
+            "version": "TLSv13",
+            "server_name": "tls.example.test",
+            "ja3": "abcd",
+            "ja3s": "ef01",
+        })
+        self.assertEqual(ssl["event_type"], "tls")
+        self.assertEqual(ssl["metadata"]["ja3"], "abcd")
+
+        x509 = normalize_zeek_row("x509", {
+            "ts": "2026-07-05T10:00:03+00:00",
+            "id": "F1",
+            "fingerprint": "SHA256:abc",
+            "certificate.subject": "CN=example.test",
+            "san.dns": "example.test,www.example.test",
+        })
+        self.assertEqual(x509["event_type"], "tls")
+        self.assertEqual(x509["metadata"]["certificate_fingerprint"], "SHA256:abc")
+
+        http = normalize_zeek_row("http", {
+            "ts": "2026-07-05T10:00:04+00:00",
+            "uid": "H1",
+            "id.orig_h": "192.168.10.20",
+            "id.orig_p": "53002",
+            "id.resp_h": "198.51.100.20",
+            "id.resp_p": "80",
+            "method": "GET",
+            "host": "web.example.test",
+            "uri": "/login?token=secret",
+            "status_code": "200",
+        })
+        self.assertEqual(http["event_type"], "http")
+        self.assertEqual(http["metadata"]["url_path"], "/login")
+
+        files = normalize_zeek_row("files", {
+            "ts": "2026-07-05T10:00:05+00:00",
+            "fuid": "F2",
+            "tx_hosts": "192.168.10.20",
+            "rx_hosts": "198.51.100.21",
+            "filename": "/tmp/sample.bin",
+            "mime_type": "application/octet-stream",
+            "seen_bytes": "4096",
+            "sha256": "abc123",
+        })
+        self.assertEqual(files["event_type"], "fileinfo")
+        self.assertEqual(files["metadata"]["filename"], "sample.bin")
+
+        notice = normalize_zeek_row("notice", {
+            "ts": "2026-07-05T10:00:06+00:00",
+            "uid": "N1",
+            "id.orig_h": "192.168.10.20",
+            "id.resp_h": "198.51.100.22",
+            "note": "Scan::Port_Scan",
+            "msg": "scan detected",
+            "actions": "Notice::ACTION_LOG",
+        })
+        self.assertEqual(notice["event_type"], "notice")
+        self.assertEqual(notice["metadata"]["note"], "Scan::Port_Scan")
+
+        weird = normalize_zeek_row("weird", {
+            "ts": "2026-07-05T10:00:07+00:00",
+            "uid": "W1",
+            "id.orig_h": "192.168.10.20",
+            "id.resp_h": "198.51.100.23",
+            "name": "bad_TCP_checksum",
+            "notice": "F",
+        })
+        self.assertEqual(weird["event_type"], "anomaly")
+        self.assertEqual(weird["metadata"]["notice"], False)
+
+    def test_zeek_collector_tails_tsv_logs_and_persists_offsets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            conn_log = root / "conn.log"
+            conn_log.write_text(
+                "#separator \\x09\n"
+                "#set_separator\t,\n"
+                "#empty_field\t(empty)\n"
+                "#unset_field\t-\n"
+                "#fields\tts\tuid\tid.orig_h\tid.orig_p\tid.resp_h\tid.resp_p\tproto\tservice\torig_bytes\tresp_bytes\torig_pkts\tresp_pkts\n"
+                "2026-07-05T10:00:00+00:00\tC1\t192.168.10.20\t51515\t198.51.100.10\t443\ttcp\tssl\t1200\t800\t9\t8\n",
+                encoding="utf-8",
+            )
+            collector = ZeekLogCollector({"conn": conn_log}, root / "offsets", start_at_end=False)
+            events, stats = collector.read_once(max_lines=10)
+            self.assertEqual(len(events), 1)
+            self.assertEqual(stats.accepted_events, 1)
+            self.assertEqual(stats.sources["conn"]["accepted_events"], 1)
+            self.assertEqual(events[0]["raw_source"], "zeek")
+
+            events2, stats2 = collector.read_once(max_lines=10)
+            self.assertEqual(events2, [])
+            self.assertEqual(stats2.read_lines, 0)
+
+    def test_zeek_collector_can_start_at_end_on_first_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            conn_log = root / "conn.log"
+            header = (
+                "#separator \\x09\n"
+                "#set_separator\t,\n"
+                "#empty_field\t(empty)\n"
+                "#unset_field\t-\n"
+                "#fields\tts\tuid\tid.orig_h\tid.orig_p\tid.resp_h\tid.resp_p\tproto\tservice\torig_bytes\tresp_bytes\torig_pkts\tresp_pkts\n"
+            )
+            conn_log.write_text(
+                header
+                + "2026-07-05T10:00:00+00:00\tC1\t192.168.10.20\t51515\t198.51.100.10\t443\ttcp\tssl\t1200\t800\t9\t8\n",
+                encoding="utf-8",
+            )
+            collector = ZeekLogCollector({"conn": conn_log}, root / "offsets")
+            events, stats = collector.read_once(max_lines=10)
+            self.assertEqual(events, [])
+            self.assertEqual(stats.read_lines, 0)
+            self.assertFalse(stats.rotation_detected)
+
+            with conn_log.open("a", encoding="utf-8") as handle:
+                handle.write(
+                    "2026-07-05T10:00:01+00:00\tC2\t192.168.10.21\t51516\t198.51.100.11\t443\ttcp\tssl\t1400\t700\t10\t7\n"
+                )
+            events2, stats2 = collector.read_once(max_lines=10)
+            self.assertEqual(len(events2), 1)
+            self.assertEqual(stats2.accepted_events, 1)
 
     def test_service_run_once_tolerates_unreadable_filterlog(self) -> None:
         class DeniedFilterLogCollector:

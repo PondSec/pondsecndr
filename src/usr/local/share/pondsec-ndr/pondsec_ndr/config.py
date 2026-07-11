@@ -18,6 +18,8 @@ RUN_DIR = Path(os.environ.get("PONDSEC_NDR_RUN_DIR", "/var/run/pondsec-ndr"))
 MODES = {"monitor", "alert", "interactive", "prevent"}
 RESPONSE_MODES = {"observe", "recommend", "enforce"}
 DIRECTIONS = {"ingress", "egress", "both"}
+ZEEK_MODES = {"external", "local"}
+ZEEK_PARSERS = {"tsv"}
 
 
 def _bool(value: Any, default: bool = False) -> bool:
@@ -168,6 +170,46 @@ class ThreatIntelConfig:
 
 
 @dataclass(slots=True)
+class ZeekConfig:
+    enabled: bool = False
+    mode: str = "external"
+    parser: str = "tsv"
+    sensor_name: str = ""
+    interface: str = ""
+    remote_target: str = ""
+    log_dir: str = "/var/log/zeek/current"
+    start_at_end: bool = True
+    conn_log: str = "conn.log"
+    dns_log: str = "dns.log"
+    ssl_log: str = "ssl.log"
+    x509_log: str = "x509.log"
+    http_log: str = "http.log"
+    files_log: str = "files.log"
+    notice_log: str = "notice.log"
+    weird_log: str = "weird.log"
+
+    def log_paths(self) -> dict[str, Path]:
+        root = Path(self.log_dir)
+        configured = {
+            "conn": self.conn_log,
+            "dns": self.dns_log,
+            "ssl": self.ssl_log,
+            "x509": self.x509_log,
+            "http": self.http_log,
+            "files": self.files_log,
+            "notice": self.notice_log,
+            "weird": self.weird_log,
+        }
+        paths: dict[str, Path] = {}
+        for log_type, value in configured.items():
+            if not value:
+                continue
+            path = Path(value)
+            paths[log_type] = path if path.is_absolute() else root / path
+        return paths
+
+
+@dataclass(slots=True)
 class ResponseConfig:
     mode: str = "observe"
     ai_full_decision_mode: bool = False
@@ -224,6 +266,7 @@ class PondSecConfig:
     interfaces: InterfaceConfig = field(default_factory=InterfaceConfig)
     detection: DetectionConfig = field(default_factory=DetectionConfig)
     threat_intel: ThreatIntelConfig = field(default_factory=ThreatIntelConfig)
+    zeek: ZeekConfig = field(default_factory=ZeekConfig)
     response: ResponseConfig = field(default_factory=ResponseConfig)
     data_dir: Path = DATA_DIR
     log_dir: Path = LOG_DIR
@@ -259,6 +302,14 @@ class PondSecConfig:
             errors.append("false_positive_feedback_days must be positive")
         if self.threat_intel.cache_ttl_hours < 1:
             errors.append("threat_intel cache_ttl_hours must be positive")
+        if self.threat_intel.api_timeout_seconds < 1:
+            errors.append("threat_intel api_timeout_seconds must be positive")
+        if self.zeek.mode not in ZEEK_MODES:
+            errors.append(f"invalid Zeek mode: {self.zeek.mode}")
+        if self.zeek.parser not in ZEEK_PARSERS:
+            errors.append(f"invalid Zeek parser: {self.zeek.parser}")
+        if self.zeek.enabled and not self.zeek.log_paths():
+            errors.append("Zeek provider requires at least one configured log path")
         if self.response.max_internal_isolations_per_hour < 0:
             errors.append("max_internal_isolations_per_hour must not be negative")
         if self.response.internal_isolation_cooldown_seconds < 0:
@@ -281,10 +332,18 @@ def load_config(path: Path | None = None) -> PondSecConfig:
     interfaces = raw.get("interfaces") or {}
     detection = raw.get("detection") or {}
     threat_intel = raw.get("threat_intel") or {}
+    zeek = raw.get("zeek") or {}
+    zeek_logs = zeek.get("logs") or {}
     response = raw.get("response") or {}
     mode = str(raw.get("mode", "monitor")).strip().lower()
     if mode not in MODES:
         mode = "monitor"
+    zeek_mode = str(zeek.get("mode") or "external").strip().lower()
+    if zeek_mode not in ZEEK_MODES:
+        zeek_mode = "external"
+    zeek_parser = str(zeek.get("parser") or "tsv").strip().lower()
+    if zeek_parser not in ZEEK_PARSERS:
+        zeek_parser = "tsv"
 
     return PondSecConfig(
         enabled=_bool(raw.get("enabled"), False),
@@ -349,6 +408,24 @@ def load_config(path: Path | None = None) -> PondSecConfig:
             external_lookup=_bool(threat_intel.get("external_lookup"), False),
             cache_ttl_hours=_int(threat_intel.get("cache_ttl_hours"), 24, 1, 168),
             api_timeout_seconds=_int(threat_intel.get("api_timeout_seconds"), 5, 1, 30),
+        ),
+        zeek=ZeekConfig(
+            enabled=_bool(zeek.get("enabled"), False),
+            mode=zeek_mode,
+            parser=zeek_parser,
+            sensor_name=str(zeek.get("sensor_name") or ""),
+            interface=str(zeek.get("interface") or ""),
+            remote_target=str(zeek.get("remote_target") or ""),
+            log_dir=str(zeek.get("log_dir") or "/var/log/zeek/current"),
+            start_at_end=_bool(zeek.get("start_at_end"), True),
+            conn_log=str(zeek_logs.get("conn") or zeek.get("conn_log") or "conn.log"),
+            dns_log=str(zeek_logs.get("dns") or zeek.get("dns_log") or "dns.log"),
+            ssl_log=str(zeek_logs.get("ssl") or zeek.get("ssl_log") or "ssl.log"),
+            x509_log=str(zeek_logs.get("x509") or zeek.get("x509_log") or "x509.log"),
+            http_log=str(zeek_logs.get("http") or zeek.get("http_log") or "http.log"),
+            files_log=str(zeek_logs.get("files") or zeek.get("files_log") or "files.log"),
+            notice_log=str(zeek_logs.get("notice") or zeek.get("notice_log") or "notice.log"),
+            weird_log=str(zeek_logs.get("weird") or zeek.get("weird_log") or "weird.log"),
         ),
         response=ResponseConfig(
             mode=str(response.get("mode") or "observe").strip().lower() if str(response.get("mode") or "observe").strip().lower() in RESPONSE_MODES else "observe",

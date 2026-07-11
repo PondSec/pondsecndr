@@ -15,6 +15,7 @@ from typing import Any
 
 from pondsec_ndr.collectors.eve import EveCollector
 from pondsec_ndr.collectors.filterlog import FilterLogCollector
+from pondsec_ndr.collectors.zeek import ZeekLogCollector
 from pondsec_ndr.config import PondSecConfig, ensure_directories, load_config
 from pondsec_ndr.correlation import correlate_detections
 from pondsec_ndr.detection.detectors import default_detectors
@@ -126,11 +127,37 @@ class PondSecService:
         )
         filter_events, filter_stats = filter_collector.read_once(max_lines=max_lines)
         events.extend(filter_events)
+        zeek_stats = None
+        if self.config.zeek.enabled:
+            zeek_collector = ZeekLogCollector(
+                self.config.zeek.log_paths(),
+                self.config.data_dir / "collector_offsets",
+                sensor_name=self.config.zeek.sensor_name,
+                interface=self.config.zeek.interface,
+                remote_target=self.config.zeek.remote_target,
+                queue_limit=collector_queue_limit,
+                start_at_end=self.config.zeek.start_at_end,
+            )
+            zeek_events, zeek_stats = zeek_collector.read_once(max_lines=max_lines)
+            events.extend(zeek_events)
         events = self._filter_events(events)
         events, backpressure_drops = self._apply_queue_backpressure(events)
-        parser_errors = stats.parser_errors + (filter_stats.parser_errors if filter_stats else 0)
-        normalization_errors = stats.normalization_errors + (filter_stats.normalization_errors if filter_stats else 0)
-        queue_drops = stats.queue_drops + (filter_stats.queue_drops if filter_stats else 0) + backpressure_drops
+        parser_errors = (
+            stats.parser_errors
+            + (filter_stats.parser_errors if filter_stats else 0)
+            + (zeek_stats.parser_errors if zeek_stats else 0)
+        )
+        normalization_errors = (
+            stats.normalization_errors
+            + (filter_stats.normalization_errors if filter_stats else 0)
+            + (zeek_stats.normalization_errors if zeek_stats else 0)
+        )
+        queue_drops = (
+            stats.queue_drops
+            + (filter_stats.queue_drops if filter_stats else 0)
+            + (zeek_stats.queue_drops if zeek_stats else 0)
+            + backpressure_drops
+        )
         self.counters["parser_errors"] += parser_errors
         self.counters["queue_drops"] += queue_drops
         if stats.last_error:
@@ -138,6 +165,10 @@ class PondSecService:
         if filter_stats and filter_stats.last_error:
             self.counters["last_optional_collector_errors"] = (
                 [filter_stats.last_error] + self.counters["last_optional_collector_errors"]
+            )[:5]
+        if zeek_stats and zeek_stats.last_error:
+            self.counters["last_optional_collector_errors"] = (
+                [zeek_stats.last_error] + self.counters["last_optional_collector_errors"]
             )[:5]
 
         if self._database_over_limit():
@@ -201,8 +232,16 @@ class PondSecService:
         if suppressed_incidents or backpressure_drops:
             status = "degraded" if status == "healthy" else status
         self._write_health(status, {
-            "read_lines": stats.read_lines + (filter_stats.read_lines if filter_stats else 0),
-            "accepted_events": stats.accepted_events + (filter_stats.accepted_events if filter_stats else 0),
+            "read_lines": (
+                stats.read_lines
+                + (filter_stats.read_lines if filter_stats else 0)
+                + (zeek_stats.read_lines if zeek_stats else 0)
+            ),
+            "accepted_events": (
+                stats.accepted_events
+                + (filter_stats.accepted_events if filter_stats else 0)
+                + (zeek_stats.accepted_events if zeek_stats else 0)
+            ),
             "inserted_events": inserted_events,
             "inserted_detections": inserted_detections,
             "inserted_incidents": inserted_incidents,
@@ -228,10 +267,15 @@ class PondSecService:
                 "incident_rate_limit_per_minute": self.config.incident_rate_limit_per_minute,
                 "pf_action_rate_limit_per_minute": self.config.pf_action_rate_limit_per_minute,
             },
-            "rotation_detected": stats.rotation_detected or (filter_stats.rotation_detected if filter_stats else False),
+            "rotation_detected": (
+                stats.rotation_detected
+                or (filter_stats.rotation_detected if filter_stats else False)
+                or (zeek_stats.rotation_detected if zeek_stats else False)
+            ),
             "collector_sources": {
                 "suricata_eve": asdict(stats),
                 "opnsense_filterlog": asdict(filter_stats) if filter_stats else None,
+                "zeek": asdict(zeek_stats) if zeek_stats else None,
             },
         })
         return {
@@ -239,6 +283,7 @@ class PondSecService:
             "collector": {
                 "suricata_eve": asdict(stats),
                 "opnsense_filterlog": asdict(filter_stats) if filter_stats else None,
+                "zeek": asdict(zeek_stats) if zeek_stats else None,
             },
             "inserted_events": inserted_events,
             "detections": inserted_detections,

@@ -53,7 +53,34 @@
     "learning_phase_observations": "{{ OPNsense.pondsecndr.detection.learning_phase_observations|default("1000") }}",
     "minimum_observations": "{{ OPNsense.pondsecndr.detection.minimum_observations|default("50") }}",
     "minimum_incident_confidence": "{{ OPNsense.pondsecndr.detection.minimum_incident_confidence|default("75") }}",
+    "correlation_window_minutes": "{{ OPNsense.pondsecndr.detection.correlation_window_minutes|default("30") }}",
     "false_positive_feedback_days": "{{ OPNsense.pondsecndr.detection.false_positive_feedback_days|default("14") }}"
+  },
+  "threat_intel": {
+    "cve_enrichment": "{{ OPNsense.pondsecndr.threat_intel.cve_enrichment|default("1") }}",
+    "external_lookup": "{{ OPNsense.pondsecndr.threat_intel.external_lookup|default("0") }}",
+    "cache_ttl_hours": "{{ OPNsense.pondsecndr.threat_intel.cache_ttl_hours|default("24") }}",
+    "api_timeout_seconds": "{{ OPNsense.pondsecndr.threat_intel.api_timeout_seconds|default("5") }}"
+  },
+  "zeek": {
+    "enabled": "{{ OPNsense.pondsecndr.zeek.enabled|default("0") }}",
+    "mode": "{{ OPNsense.pondsecndr.zeek.mode|default("external") }}",
+    "parser": "{{ OPNsense.pondsecndr.zeek.parser|default("tsv") }}",
+    "sensor_name": "{{ OPNsense.pondsecndr.zeek.sensor_name|default("") }}",
+    "interface": "{{ OPNsense.pondsecndr.zeek.interface|default("") }}",
+    "remote_target": "{{ OPNsense.pondsecndr.zeek.remote_target|default("") }}",
+    "log_dir": "{{ OPNsense.pondsecndr.zeek.log_dir|default("/var/log/zeek/current") }}",
+    "start_at_end": "{{ OPNsense.pondsecndr.zeek.start_at_end|default("1") }}",
+    "logs": {
+      "conn": "{{ OPNsense.pondsecndr.zeek.conn_log|default("conn.log") }}",
+      "dns": "{{ OPNsense.pondsecndr.zeek.dns_log|default("dns.log") }}",
+      "ssl": "{{ OPNsense.pondsecndr.zeek.ssl_log|default("ssl.log") }}",
+      "x509": "{{ OPNsense.pondsecndr.zeek.x509_log|default("x509.log") }}",
+      "http": "{{ OPNsense.pondsecndr.zeek.http_log|default("http.log") }}",
+      "files": "{{ OPNsense.pondsecndr.zeek.files_log|default("files.log") }}",
+      "notice": "{{ OPNsense.pondsecndr.zeek.notice_log|default("notice.log") }}",
+      "weird": "{{ OPNsense.pondsecndr.zeek.weird_log|default("weird.log") }}"
+    }
   },
   "response": {
     "mode": "{{ OPNsense.pondsecndr.response.mode|default("observe") }}",

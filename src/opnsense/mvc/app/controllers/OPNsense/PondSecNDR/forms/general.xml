@@ -285,6 +285,94 @@
     </field>
     <field>
         <type>header</type>
+        <label>Zeek telemetry</label>
+    </field>
+    <field>
+        <id>pondsecndr.zeek.enabled</id>
+        <label>Enable Zeek provider</label>
+        <type>checkbox</type>
+        <help>Reads configured Zeek logs only. PondSec does not change packet capture interfaces automatically.</help>
+    </field>
+    <field>
+        <id>pondsecndr.zeek.mode</id>
+        <label>Zeek mode</label>
+        <type>dropdown</type>
+    </field>
+    <field>
+        <id>pondsecndr.zeek.parser</id>
+        <label>Zeek parser</label>
+        <type>dropdown</type>
+    </field>
+    <field>
+        <id>pondsecndr.zeek.sensor_name</id>
+        <label>Zeek sensor name</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.zeek.interface</id>
+        <label>Zeek sensor interface</label>
+        <type>text</type>
+        <help>Informational label for correlation. It does not configure or modify the interface.</help>
+    </field>
+    <field>
+        <id>pondsecndr.zeek.remote_target</id>
+        <label>Zeek remote target</label>
+        <type>text</type>
+        <help>Optional source or host description when logs are produced by an external sensor.</help>
+    </field>
+    <field>
+        <id>pondsecndr.zeek.log_dir</id>
+        <label>Zeek log directory</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.zeek.start_at_end</id>
+        <label>Start at end</label>
+        <type>checkbox</type>
+        <help>Recommended for production so existing historical logs are not ingested unexpectedly.</help>
+    </field>
+    <field>
+        <id>pondsecndr.zeek.conn_log</id>
+        <label>Zeek conn.log</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.zeek.dns_log</id>
+        <label>Zeek dns.log</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.zeek.ssl_log</id>
+        <label>Zeek ssl.log</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.zeek.x509_log</id>
+        <label>Zeek x509.log</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.zeek.http_log</id>
+        <label>Zeek http.log</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.zeek.files_log</id>
+        <label>Zeek files.log</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.zeek.notice_log</id>
+        <label>Zeek notice.log</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.zeek.weird_log</id>
+        <label>Zeek weird.log</label>
+        <type>text</type>
+    </field>
+    <field>
+        <type>header</type>
         <label>Response</label>
     </field>
     <field>
