@@ -1560,6 +1560,110 @@ class BackendTests(unittest.TestCase):
         self.assertTrue(explanation["thresholds_exceeded"])
         self.assertTrue(explanation["administrator_guidance"])
 
+    def test_correlation_suppresses_internal_https_fanout_incident(self) -> None:
+        detections = [{
+            "detection_id": "d-normal-https-fanout",
+            "detector_id": "pondsec.horizontal_scan",
+            "detector_version": "1",
+            "category": "reconnaissance",
+            "title": "Possible horizontal scan",
+            "description": "Host contacted the same service across many destinations.",
+            "timestamp": "2026-07-05T10:00:00+00:00",
+            "source_ip": "192.168.10.20",
+            "destination_ip": "port:443",
+            "severity": 7,
+            "confidence": 0.95,
+            "anomaly_score": 1.0,
+            "evidence": {"destination_count": 60, "port": 443},
+            "recommended_action": "investigate",
+        }]
+        self.assertEqual(correlate_detections(detections), [])
+
+    def test_correlation_promotes_credential_pressure_with_beaconing(self) -> None:
+        detections = [
+            {
+                "detection_id": "d-credential-pressure",
+                "detector_id": "pondsec.credential_bruteforce",
+                "detector_version": "1",
+                "category": "credential_abuse",
+                "title": "Possible brute-force or credential spraying",
+                "description": "Repeated failed connections to authentication services.",
+                "timestamp": "2026-07-05T10:00:00+00:00",
+                "source_ip": "192.168.10.20",
+                "destination_ip": "auth_services",
+                "severity": 8,
+                "confidence": 0.86,
+                "anomaly_score": 0.8,
+                "evidence": {"event_count": 18, "failed_connections": 16, "auth_ports": [22, 993]},
+                "recommended_action": "block",
+            },
+            {
+                "detection_id": "d-beacon",
+                "detector_id": "pondsec.beaconing",
+                "detector_version": "1",
+                "category": "command_and_control",
+                "title": "Possible command-and-control beaconing",
+                "description": "Connections recur at regular intervals.",
+                "timestamp": "2026-07-05T10:02:00+00:00",
+                "source_ip": "192.168.10.20",
+                "destination_ip": "1.1.1.1",
+                "severity": 8,
+                "confidence": 0.93,
+                "anomaly_score": 1.0,
+                "evidence": {"connections": 5, "average_interval_seconds": 15, "port": 443},
+                "recommended_action": "investigate",
+            },
+        ]
+        incidents = correlate_detections(detections)
+        self.assertEqual(len(incidents), 1)
+        self.assertEqual(incidents[0]["category"], "multi_stage")
+        self.assertEqual(incidents[0]["evidence"]["correlation"]["promotion"]["reason"], "strong_detector")
+
+    def test_correlation_suppresses_heuristic_supply_chain_fanout(self) -> None:
+        detections = [{
+            "detection_id": "d-heuristic-supply-chain",
+            "detector_id": "pondsec.supply_chain_callback",
+            "detector_version": "1",
+            "category": "supply_chain",
+            "title": "Possible supply-chain callback fan-out",
+            "description": "One host contacted many external destinations.",
+            "timestamp": "2026-07-05T10:00:00+00:00",
+            "source_ip": "192.168.10.128",
+            "destination_ip": None,
+            "severity": 6,
+            "confidence": 0.85,
+            "anomaly_score": 0.5,
+            "evidence": {
+                "destination_count": 42,
+                "external_connections": 80,
+                "burst_score": 0.3,
+                "signature_required": False,
+            },
+            "recommended_action": "investigate",
+        }]
+        self.assertEqual(correlate_detections(detections), [])
+
+    def test_correlation_promotes_marker_supply_chain_signal(self) -> None:
+        detections = [{
+            "detection_id": "d-marker-supply-chain",
+            "detector_id": "pondsec.supply_chain_callback",
+            "detector_version": "1",
+            "category": "supply_chain",
+            "title": "Possible supply-chain callback",
+            "description": "A reporting marker indicates package callback behavior.",
+            "timestamp": "2026-07-05T10:00:00+00:00",
+            "source_ip": "192.168.10.128",
+            "destination_ip": "203.0.113.22",
+            "severity": 8,
+            "confidence": 0.88,
+            "anomaly_score": 0.7,
+            "evidence": {"signature_id": 900200, "signature": "package manager update callback"},
+            "recommended_action": "block",
+        }]
+        incidents = correlate_detections(detections)
+        self.assertEqual(len(incidents), 1)
+        self.assertEqual(incidents[0]["evidence"]["correlation"]["promotion"]["reason"], "supply_chain_marker")
+
     def test_incident_analysis_builds_threat_graph_and_stage_view(self) -> None:
         incident = {
             "incident_id": "incident-analysis-1",

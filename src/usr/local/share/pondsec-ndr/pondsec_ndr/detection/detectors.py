@@ -392,8 +392,8 @@ class SupplyChainCallbackDetector(Detector):
                     "One host contacted many external destinations in an installer-like burst with DNS or burst indicators.",
                     source_ip,
                     None,
-                    7,
-                    min(0.93, 0.58 + destinations / 140 + min(dns_entropy, 5) / 20),
+                    6,
+                    min(0.88, 0.52 + destinations / 180 + min(dns_entropy, 5) / 24),
                     min(1.0, destinations / 80),
                     {
                         "destination_count": destinations,
@@ -407,7 +407,7 @@ class SupplyChainCallbackDetector(Detector):
                             {"feature": "burst_or_dns_entropy", "operator": "burst>=0.2 OR dns_entropy>=3.8", "threshold": "0.2/3.8", "observed": {"burst_score": burst, "dns_entropy": dns_entropy}},
                         ],
                     },
-                    recommended_action="block",
+                    recommended_action="investigate",
                 ))
         return detections
 

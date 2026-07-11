@@ -19,6 +19,17 @@ INTERNAL_NETWORKS = (
     ipaddress.ip_network("fc00::/7"),
     ipaddress.ip_network("fe80::/10"),
 )
+STRONG_INCIDENT_DETECTORS = {
+    "pondsec.credential_bruteforce",
+    "pondsec.data_exfiltration",
+    "pondsec.dns_tunneling",
+    "pondsec.exploit_attempt",
+    "pondsec.exploit_blocked",
+    "pondsec.lateral_movement",
+    "pondsec.malware_callback",
+    "pondsec.suricata_drop",
+}
+WEB_FANOUT_PORTS = {80, 443, 853}
 
 
 def correlate_detections(detections: list[dict[str, Any]], window_seconds: int = DEFAULT_CORRELATION_WINDOW_SECONDS) -> list[dict[str, Any]]:
@@ -53,6 +64,9 @@ def correlate_detections(detections: list[dict[str, Any]], window_seconds: int =
         roles = _entity_roles(items)
         categories = sorted({str(item.get("category") or "unknown") for item in items})
         category = "multi_stage" if len(categories) > 1 else categories[0]
+        promotable, promotion = _incident_promotion(items, categories, risk_score, roles)
+        if not promotable:
+            continue
         first_seen = min(str(item.get("timestamp") or now) for item in items)
         last_seen = max(str(item.get("timestamp") or now) for item in items)
         source_ip = roles.get("threat_source") or _most_common([item.get("source_ip") for item in items])
@@ -96,6 +110,7 @@ def correlate_detections(detections: list[dict[str, Any]], window_seconds: int =
                     "last_seen": last_seen,
                     "risk_factors": factors,
                     "category_equality_required": False,
+                    "promotion": promotion,
                     "certainty_note": "This case links related detections; it does not confirm successful compromise without explicit success evidence.",
                 },
             },
@@ -104,6 +119,117 @@ def correlate_detections(detections: list[dict[str, Any]], window_seconds: int =
         }
         incidents.append(incident)
     return incidents
+
+
+def _incident_promotion(
+    detections: list[dict[str, Any]],
+    categories: list[str],
+    risk_score: int,
+    roles: dict[str, Any],
+) -> tuple[bool, dict[str, Any]]:
+    detector_ids = {str(item.get("detector_id") or "") for item in detections}
+    if detector_ids & STRONG_INCIDENT_DETECTORS:
+        return True, {
+            "decision": "promoted",
+            "reason": "strong_detector",
+            "detectors": sorted(detector_ids & STRONG_INCIDENT_DETECTORS),
+        }
+
+    if _has_marker_supply_chain(detections):
+        return True, {"decision": "promoted", "reason": "supply_chain_marker"}
+
+    if _has_high_confidence_signature(detections):
+        return True, {"decision": "promoted", "reason": "high_confidence_signature"}
+
+    if _has_high_confidence_ml(detections):
+        return True, {"decision": "promoted", "reason": "high_confidence_model"}
+
+    non_recon_categories = set(categories) - {"reconnaissance", "anomaly"}
+    if len(non_recon_categories) >= 2 and risk_score >= 80:
+        return True, {
+            "decision": "promoted",
+            "reason": "corroborated_non_recon_categories",
+            "categories": sorted(non_recon_categories),
+        }
+
+    if _has_actionable_reconnaissance(detections, roles):
+        return True, {"decision": "promoted", "reason": "actionable_reconnaissance"}
+
+    return False, {
+        "decision": "suppressed",
+        "reason": "telemetry_only_without_strong_corroboration",
+        "categories": categories,
+        "detectors": sorted(detector_ids),
+    }
+
+
+def _has_marker_supply_chain(detections: list[dict[str, Any]]) -> bool:
+    for detection in detections:
+        if detection.get("detector_id") != "pondsec.supply_chain_callback":
+            continue
+        evidence = detection.get("evidence") if isinstance(detection.get("evidence"), dict) else {}
+        if evidence.get("signature_required") is False:
+            continue
+        if evidence.get("signature") or evidence.get("signature_id") or evidence.get("suricata_category"):
+            return True
+    return False
+
+
+def _has_high_confidence_signature(detections: list[dict[str, Any]]) -> bool:
+    for detection in detections:
+        if detection.get("category") != "signature":
+            continue
+        if detection.get("detector_id") == "pondsec.suricata_drop":
+            return True
+        if int(detection.get("severity") or 0) >= 8 and float(detection.get("confidence") or 0) >= 0.9:
+            return True
+    return False
+
+
+def _has_high_confidence_ml(detections: list[dict[str, Any]]) -> bool:
+    for detection in detections:
+        if detection.get("detector_id") != "pondsec.pretrained_ids_model":
+            continue
+        evidence = detection.get("evidence") if isinstance(detection.get("evidence"), dict) else {}
+        if float(evidence.get("attack_probability") or 0) >= 0.9 and float(detection.get("confidence") or 0) >= 0.9:
+            return True
+    return False
+
+
+def _has_actionable_reconnaissance(detections: list[dict[str, Any]], roles: dict[str, Any]) -> bool:
+    for detection in detections:
+        if detection.get("category") != "reconnaissance":
+            continue
+        evidence = detection.get("evidence") if isinstance(detection.get("evidence"), dict) else {}
+        detector_id = str(detection.get("detector_id") or "")
+        if detector_id == "pondsec.portscan":
+            unique_ports = int(evidence.get("unique_ports") or 0)
+            failed = int(evidence.get("failed_connections") or 0)
+            if unique_ports >= 12 and failed >= 8:
+                return True
+        if detector_id == "pondsec.horizontal_scan":
+            port = _safe_int(evidence.get("port"))
+            destinations = int(evidence.get("destination_count") or 0)
+            source = _text_or_none(detection.get("source_ip"))
+            destination = _text_or_none(detection.get("destination_ip"))
+            if port in WEB_FANOUT_PORTS and source and _is_internal_address(source):
+                continue
+            if port not in WEB_FANOUT_PORTS and destinations >= 20:
+                return True
+            if destination and not str(destination).startswith("port:") and _is_internal_address(destination):
+                return True
+        if detector_id == "pondsec.vertical_scan":
+            unique_ports = int(evidence.get("unique_ports") or 0)
+            source = _text_or_none(detection.get("source_ip"))
+            destination = _text_or_none(detection.get("destination_ip"))
+            if unique_ports >= 20 and destination and _is_internal_address(destination):
+                if not source or not _is_internal_address(source):
+                    return True
+        external_actor = roles.get("external_actor")
+        victim = roles.get("victim")
+        if external_actor and victim and int(detection.get("severity") or 0) >= 8:
+            return True
+    return False
 
 
 def _new_case(detection: dict[str, Any]) -> dict[str, Any]:
@@ -308,6 +434,13 @@ def _text_or_none(value: Any) -> str | None:
     if value in (None, ""):
         return None
     return str(value)
+
+
+def _safe_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _is_internal_address(value: str | None) -> bool:
