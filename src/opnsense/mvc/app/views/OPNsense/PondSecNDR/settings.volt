@@ -354,7 +354,7 @@ $(function() {
 
     function translateNativeForm() {
         var formMap = uiLanguage === 'de' ? de.form : {};
-        $('#frm_GeneralSettings').find('label, .control-label, legend, h1, h2, h3, h4, .help-block, .text-muted, option').each(function() {
+        $('#frm_GeneralSettings').find('label, .control-label, legend, h1, h2, h3, h4, th b, .help-block, .text-muted, option').each(function() {
             var $item = $(this);
             var original = $item.attr('data-pondsec-original-text');
             if (!original) {
@@ -363,6 +363,62 @@ $(function() {
             }
             $item.text(formMap[original] || original);
         });
+    }
+
+    function sectionFromFieldId(fieldId) {
+        fieldId = String(fieldId || '').replace(/^row_/, '');
+        if (fieldId.indexOf('pondsecndr.general.') === 0) {
+            return 'engine';
+        }
+        if (fieldId.indexOf('pondsecndr.interfaces.') === 0) {
+            return 'interfaces';
+        }
+        if (fieldId.indexOf('pondsecndr.detection.') === 0) {
+            return 'detection';
+        }
+        if (fieldId.indexOf('pondsecndr.threat_intel.') === 0) {
+            return 'intel';
+        }
+        if (fieldId.indexOf('pondsecndr.zeek.') === 0) {
+            return 'zeek';
+        }
+        if (fieldId.indexOf('pondsecndr.zenarmor.') === 0) {
+            return 'zenarmor';
+        }
+        if (fieldId.indexOf('pondsecndr.netflow.') === 0) {
+            return 'netflow';
+        }
+        if (fieldId.indexOf('pondsecndr.dnsmasq.') === 0) {
+            return 'dnsmasq';
+        }
+        if (fieldId.indexOf('pondsecndr.response.') === 0) {
+            return 'response';
+        }
+        return '';
+    }
+
+    function fieldIdFromRow($row) {
+        var rowId = $row.attr('id') || '';
+        if (rowId.indexOf('row_pondsecndr.') === 0) {
+            return rowId.substring(4);
+        }
+        var $field = $row.find('input[id^="pondsecndr."], select[id^="pondsecndr."], textarea[id^="pondsecndr."], span[id^="pondsecndr."]').first();
+        return $field.attr('id') || '';
+    }
+
+    function sectionFromGroup($group, fallback) {
+        var heading = normalizeText($group.find('thead th b, thead th').first().text());
+        if (headingToSection[heading]) {
+            return headingToSection[heading];
+        }
+        var section = '';
+        $group.find('tr').each(function() {
+            if (section) {
+                return false;
+            }
+            section = sectionFromFieldId(fieldIdFromRow($(this)));
+        });
+        return section || fallback || 'engine';
     }
 
     function updateSectionHeader(section) {
@@ -385,14 +441,25 @@ $(function() {
         }
         $form.addClass('pondsec-native-form').data('pondsec-section-ready', true);
         var current = 'engine';
-        $form.find('.form-group, tr').each(function() {
+        $form.children('.table-responsive').each(function() {
+            var $group = $(this);
+            current = sectionFromGroup($group, current);
+            $group.addClass('pondsec-section-group').attr('data-section', current);
+            $group.find('thead tr').addClass('pondsec-form-heading').attr('data-section', current);
+            $group.find('tbody tr').each(function() {
+                var rowSection = sectionFromFieldId(fieldIdFromRow($(this))) || current;
+                $(this).addClass('pondsec-form-row').attr('data-section', rowSection);
+            });
+        });
+        $form.find('tr').each(function() {
             var $row = $(this);
-            var label = normalizeText($row.find('label, .control-label, legend, h1, h2, h3, h4').first().text());
+            var label = normalizeText($row.find('label, .control-label, legend, h1, h2, h3, h4, th b, th').first().text());
             if (headingToSection[label]) {
                 current = headingToSection[label];
                 $row.addClass('pondsec-form-heading').attr('data-section', current);
             } else {
-                $row.addClass('pondsec-form-row').attr('data-section', current);
+                var rowSection = sectionFromFieldId(fieldIdFromRow($row)) || $row.attr('data-section') || current;
+                $row.addClass('pondsec-form-row').attr('data-section', rowSection);
             }
         });
         $('.pondsec-settings-nav button[data-section]').each(function() {
@@ -415,8 +482,8 @@ $(function() {
             $('.pondsec-reset-panel').show();
         } else {
             $('#frm_GeneralSettings').show();
-            $('#frm_GeneralSettings').find('[data-section]').hide();
-            $('#frm_GeneralSettings').find('[data-section="' + activeSection + '"]').show();
+            $('#frm_GeneralSettings').find('.pondsec-section-group').hide();
+            $('#frm_GeneralSettings').find('.pondsec-section-group[data-section="' + activeSection + '"]').show();
             $('.pondsec-reset-panel').hide();
         }
         updateSectionHeader(activeSection);
