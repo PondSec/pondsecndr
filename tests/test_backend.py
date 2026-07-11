@@ -17,7 +17,7 @@ from pondsec_ndr.collectors.filterlog import FilterLogCollector, FilterLogStats,
 from pondsec_ndr.config import DetectionConfig, InterfaceConfig, PondSecConfig, ResponseConfig
 from pondsec_ndr.correlation import correlate_detections
 from pondsec_ndr.detection.detectors import BeaconingDetector, DNSTunnelingDetector, PortScanDetector, SuricataAlertAdapter
-from pondsec_ndr.diagnostics import diagnostic_archive, eve_access_status
+from pondsec_ndr.diagnostics import diagnostic_archive, diagnostics as diagnostics_payload, eve_access_status
 from pondsec_ndr.features.aggregator import aggregate_features, shannon_entropy
 from pondsec_ndr.models.cicids_features import CICIDS2017_FEATURES, cicids_vector_from_feature
 from pondsec_ndr.models.manager import model_inventory
@@ -490,6 +490,34 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(result["status"], "ok")
             self.assertTrue(output.exists())
             self.assertFalse(result["sensitive_payloads_included"])
+
+    def test_diagnostics_exposes_provider_inventory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = EventStore(root / "pondsec-ndr.db")
+            store.migrate()
+            store.set_health("healthy", 123, {
+                "collector_sources": {
+                    "suricata_eve": {
+                        "read_lines": 10,
+                        "accepted_events": 8,
+                        "parser_errors": 0,
+                        "normalization_errors": 0,
+                        "queue_drops": 0,
+                    },
+                    "opnsense_filterlog": {
+                        "last_error": "filterlog unavailable in test",
+                        "read_lines": 0,
+                        "accepted_events": 0,
+                    },
+                }
+            })
+            payload = diagnostics_payload(PondSecConfig(data_dir=root), store)
+            providers = {item["provider_id"]: item for item in payload["providers"]}
+            self.assertEqual(providers["suricata_eve"]["health_status"], "healthy")
+            self.assertEqual(providers["opnsense_filterlog"]["health_status"], "warning")
+            self.assertEqual(providers["zeek_logs"]["health_status"], "not_configured")
+            self.assertIn("flow", providers["netflow"]["event_types"])
 
     def test_correlation_creates_explainable_incident(self) -> None:
         events = [

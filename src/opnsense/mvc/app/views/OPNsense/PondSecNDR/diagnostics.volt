@@ -140,10 +140,31 @@ $(function() {
         }).join(''));
     }
 
+    function renderProviders(data) {
+        var providers = data.providers || [];
+        $('#providers_table tbody').html(providers.map(function(item) {
+            var configuration = item.configuration || {};
+            var stats = item.statistics || {};
+            var detail = [
+                configuration.path || configuration.input || configuration.requires_configuration || '-',
+                'events ' + numberValue(stats.accepted_events).toLocaleString(),
+                'errors ' + (numberValue(stats.parser_errors) + numberValue(stats.normalization_errors)).toLocaleString()
+            ].join(' · ');
+            return '<tr>' +
+                '<td><strong>' + escapeHtml(item.display_name || item.provider_id) + '</strong><div class="pondsec-muted">' + escapeHtml(item.provider_id || '-') + '</div></td>' +
+                '<td>' + badge(item.health_status || 'unknown') + '</td>' +
+                '<td>' + escapeHtml(item.input_type || '-') + '</td>' +
+                '<td>' + escapeHtml((item.event_types || []).join(', ') || '-') + '</td>' +
+                '<td>' + escapeHtml(detail) + (item.last_error ? '<div class="pondsec-error-text">' + escapeHtml(item.last_error) + '</div>' : '') + '</td>' +
+            '</tr>';
+        }).join('') || '<tr><td colspan="5" class="pondsec-empty">No providers reported.</td></tr>');
+    }
+
     function renderRaw(data) {
         var compact = {
             status: data.status,
             readiness: data.readiness,
+            providers: data.providers,
             eve_access: data.eve_access,
             ml_runtime: data.ml_runtime,
             learning_status: data.learning_status,
@@ -163,6 +184,7 @@ $(function() {
             renderReadiness(data);
             renderRuntime(data);
             renderHealth(data);
+            renderProviders(data);
             renderRaw(data);
         });
     }
@@ -278,7 +300,8 @@ $(function() {
 }
 .pondsec-check p,
 .pondsec-runtime-card p,
-.pondsec-recommendation {
+.pondsec-recommendation,
+.pondsec-muted {
     color: #9ba8b6;
     margin: 5px 0 0;
 }
@@ -367,6 +390,11 @@ $(function() {
     color: #8f9dac;
     padding: 14px;
 }
+.pondsec-error-text {
+    color: #ff9da4;
+    margin-top: 6px;
+    overflow-wrap: anywhere;
+}
 .pondsec-diag-page pre {
     background: #111821;
     border: 1px solid #2a3544;
@@ -428,6 +456,22 @@ $(function() {
     <section class="pondsec-panel">
         <h3>{{ lang._('Runtime overview') }}</h3>
         <div class="pondsec-runtime-grid" id="runtime_grid"></div>
+    </section>
+
+    <section class="pondsec-panel">
+        <h3>{{ lang._('Data source providers') }}</h3>
+        <table id="providers_table" class="pondsec-table">
+            <thead>
+                <tr>
+                    <th>{{ lang._('Provider') }}</th>
+                    <th>{{ lang._('Status') }}</th>
+                    <th>{{ lang._('Input') }}</th>
+                    <th>{{ lang._('Event types') }}</th>
+                    <th>{{ lang._('Details') }}</th>
+                </tr>
+            </thead>
+            <tbody><tr><td colspan="5" class="pondsec-empty">{{ lang._('Loading') }}</td></tr></tbody>
+        </table>
     </section>
 
     <div class="pondsec-table-grid">

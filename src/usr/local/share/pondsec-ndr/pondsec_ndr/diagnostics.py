@@ -19,6 +19,7 @@ from typing import Any
 from pondsec_ndr.config import PondSecConfig
 from pondsec_ndr.models.manager import model_inventory
 from pondsec_ndr.privacy import privacy_status, sanitize_for_export, sanitized_config
+from pondsec_ndr.providers import provider_inventory
 from pondsec_ndr.response.pf import PFTableEnforcer
 from pondsec_ndr.storage.database import EventStore
 
@@ -54,6 +55,7 @@ def diagnostics(config: PondSecConfig, store: EventStore) -> dict[str, Any]:
     tls_inspection = _tls_inspection_status(telemetry_counts)
     resource_usage = detail.get("resource_usage", {})
     learning_status = config.detection.learning_status()
+    providers = provider_inventory(config, health)
     return {
         "status": health["status"],
         "pid": health["pid"],
@@ -90,6 +92,7 @@ def diagnostics(config: PondSecConfig, store: EventStore) -> dict[str, Any]:
         "ml_runtime": ml_runtime,
         "host_baselines": store.baseline_summary(),
         "tls_inspection": tls_inspection,
+        "providers": providers,
     }
 
 
@@ -132,6 +135,7 @@ def diagnostic_archive(config: PondSecConfig, store: EventStore, output_path: Pa
         "service_status.json": service_status(config, store),
         "database.json": store.check(),
         "models.json": {"items": model_inventory(config.data_dir)},
+        "providers.json": {"items": provider_inventory(config, store.get_health())},
         "privacy.json": privacy_status(config),
         "sanitized_config.json": sanitized_config(config),
         "permissions.json": {
