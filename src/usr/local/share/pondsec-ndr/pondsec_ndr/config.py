@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
 import os
+import ipaddress
 from pathlib import Path
 from typing import Any
 
@@ -72,6 +73,14 @@ def _read_learning_started_marker(data_dir: Path) -> str:
     except OSError:
         return ""
     return value if _parse_datetime(value) else ""
+
+
+def _valid_listen_address(value: Any) -> bool:
+    try:
+        ipaddress.ip_address(str(value))
+    except ValueError:
+        return False
+    return True
 
 
 @dataclass(slots=True)
@@ -224,6 +233,18 @@ class ZenarmorConfig:
 
 
 @dataclass(slots=True)
+class NetFlowConfig:
+    enabled: bool = False
+    listen_address: str = "127.0.0.1"
+    port: int = 2055
+    allowed_exporters: list[str] = field(default_factory=list)
+    sampling_rate: int = 1
+    template_ttl_seconds: int = 3600
+    retention_days: int = 30
+    max_datagrams_per_run: int = 1000
+
+
+@dataclass(slots=True)
 class ResponseConfig:
     mode: str = "observe"
     ai_full_decision_mode: bool = False
@@ -282,6 +303,7 @@ class PondSecConfig:
     threat_intel: ThreatIntelConfig = field(default_factory=ThreatIntelConfig)
     zeek: ZeekConfig = field(default_factory=ZeekConfig)
     zenarmor: ZenarmorConfig = field(default_factory=ZenarmorConfig)
+    netflow: NetFlowConfig = field(default_factory=NetFlowConfig)
     response: ResponseConfig = field(default_factory=ResponseConfig)
     data_dir: Path = DATA_DIR
     log_dir: Path = LOG_DIR
@@ -331,6 +353,18 @@ class PondSecConfig:
             errors.append("Zenarmor provider requires a syslog/export path")
         if self.zenarmor.api_enabled and not self.zenarmor.api_base_url:
             errors.append("Zenarmor API integration requires an API base URL")
+        if not _valid_listen_address(self.netflow.listen_address):
+            errors.append(f"invalid NetFlow listen address: {self.netflow.listen_address}")
+        if not 1 <= self.netflow.port <= 65535:
+            errors.append("NetFlow port must be between 1 and 65535")
+        if self.netflow.sampling_rate < 1:
+            errors.append("NetFlow sampling_rate must be positive")
+        if self.netflow.template_ttl_seconds < 60:
+            errors.append("NetFlow template_ttl_seconds must be at least 60")
+        if self.netflow.retention_days < 1:
+            errors.append("NetFlow retention_days must be positive")
+        if self.netflow.max_datagrams_per_run < 1:
+            errors.append("NetFlow max_datagrams_per_run must be positive")
         if self.response.max_internal_isolations_per_hour < 0:
             errors.append("max_internal_isolations_per_hour must not be negative")
         if self.response.internal_isolation_cooldown_seconds < 0:
@@ -356,6 +390,7 @@ def load_config(path: Path | None = None) -> PondSecConfig:
     zeek = raw.get("zeek") or {}
     zeek_logs = zeek.get("logs") or {}
     zenarmor = raw.get("zenarmor") or {}
+    netflow = raw.get("netflow") or {}
     response = raw.get("response") or {}
     mode = str(raw.get("mode", "monitor")).strip().lower()
     if mode not in MODES:
@@ -462,6 +497,16 @@ def load_config(path: Path | None = None) -> PondSecConfig:
             api_enabled=_bool(zenarmor.get("api_enabled"), False),
             api_base_url=str(zenarmor.get("api_base_url") or ""),
             api_key_ref=str(zenarmor.get("api_key_ref") or ""),
+        ),
+        netflow=NetFlowConfig(
+            enabled=_bool(netflow.get("enabled"), False),
+            listen_address=str(netflow.get("listen_address") or "127.0.0.1"),
+            port=_int(netflow.get("port"), 2055, 1, 65535),
+            allowed_exporters=_csv(netflow.get("allowed_exporters")),
+            sampling_rate=_int(netflow.get("sampling_rate"), 1, 1, 1000000),
+            template_ttl_seconds=_int(netflow.get("template_ttl_seconds"), 3600, 60, 86400),
+            retention_days=_int(netflow.get("retention_days"), 30, 1, 3650),
+            max_datagrams_per_run=_int(netflow.get("max_datagrams_per_run"), 1000, 1, 100000),
         ),
         response=ResponseConfig(
             mode=str(response.get("mode") or "observe").strip().lower() if str(response.get("mode") or "observe").strip().lower() in RESPONSE_MODES else "observe",

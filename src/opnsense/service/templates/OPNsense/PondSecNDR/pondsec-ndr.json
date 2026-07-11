@@ -93,6 +93,16 @@
     "api_base_url": "{{ OPNsense.pondsecndr.zenarmor.api_base_url|default("") }}",
     "api_key_ref": "{{ OPNsense.pondsecndr.zenarmor.api_key_ref|default("") }}"
   },
+  "netflow": {
+    "enabled": "{{ OPNsense.pondsecndr.netflow.enabled|default("0") }}",
+    "listen_address": "{{ OPNsense.pondsecndr.netflow.listen_address|default("127.0.0.1") }}",
+    "port": "{{ OPNsense.pondsecndr.netflow.port|default("2055") }}",
+    "allowed_exporters": "{{ OPNsense.pondsecndr.netflow.allowed_exporters|default("") }}",
+    "sampling_rate": "{{ OPNsense.pondsecndr.netflow.sampling_rate|default("1") }}",
+    "template_ttl_seconds": "{{ OPNsense.pondsecndr.netflow.template_ttl_seconds|default("3600") }}",
+    "retention_days": "{{ OPNsense.pondsecndr.netflow.retention_days|default("30") }}",
+    "max_datagrams_per_run": "{{ OPNsense.pondsecndr.netflow.max_datagrams_per_run|default("1000") }}"
+  },
   "response": {
     "mode": "{{ OPNsense.pondsecndr.response.mode|default("observe") }}",
     "ai_full_decision_mode": "{{ OPNsense.pondsecndr.response.ai_full_decision_mode|default("0") }}",

@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import pwd
 import sqlite3
+import struct
 import subprocess
 import tempfile
 import unittest
@@ -14,6 +15,7 @@ import pondsec_ndr.diagnostics as diagnostics_mod
 from pondsec_ndr.cli import _incident_analysis, main as cli_main, reset_runtime_state
 from pondsec_ndr.collectors.eve import EveCollector
 from pondsec_ndr.collectors.filterlog import FilterLogCollector, FilterLogStats, normalize_filterlog_line
+from pondsec_ndr.collectors.netflow import NETFLOW_V5_HEADER, NETFLOW_V5_RECORD, NetFlowCollector
 from pondsec_ndr.collectors.zeek import ZeekLogCollector, normalize_zeek_row
 from pondsec_ndr.collectors.zenarmor import ZenarmorCollector, normalize_zenarmor_event, parse_zenarmor_line
 from pondsec_ndr.config import DetectionConfig, InterfaceConfig, PondSecConfig, ResponseConfig
@@ -52,6 +54,38 @@ def flow_event(timestamp: str, src: str, dst: str, port: int, reason: str = "tim
             "bytes_toclient": 200,
         },
     }
+
+
+def ipv4_int(value: str) -> int:
+    parts = [int(part) for part in value.split(".")]
+    return (parts[0] << 24) + (parts[1] << 16) + (parts[2] << 8) + parts[3]
+
+
+def netflow_v5_datagram(sequence: int = 100) -> bytes:
+    header = NETFLOW_V5_HEADER.pack(5, 1, 123456, 1783260000, 0, sequence, 0, 0, 1)
+    record = NETFLOW_V5_RECORD.pack(
+        ipv4_int("10.10.10.20"),
+        ipv4_int("8.8.8.8"),
+        0,
+        10,
+        20,
+        12,
+        2400,
+        1000,
+        2000,
+        51515,
+        443,
+        0,
+        0x12,
+        6,
+        0,
+        64512,
+        15169,
+        24,
+        24,
+        0,
+    )
+    return header + record
 
 
 def seed_host_baseline(store: EventStore, host_ip: str, observations: int = 100) -> None:
@@ -484,6 +518,42 @@ class BackendTests(unittest.TestCase):
             events2, stats2 = collector.read_once(max_lines=10)
             self.assertEqual(events2, [])
             self.assertEqual(stats2.read_lines, 0)
+
+    def test_netflow_v5_datagram_normalizes_to_flow_event(self) -> None:
+        collector = NetFlowCollector("127.0.0.1", 2055, allowed_exporters=["192.0.2.10"])
+        events, stats = collector.parse_datagram(netflow_v5_datagram(), "192.0.2.10")
+        self.assertEqual(stats.parser_errors, 0)
+        self.assertEqual(stats.accepted_events, 1)
+        self.assertEqual(len(events), 1)
+        event = events[0]
+        self.assertEqual(event["raw_source"], "netflow")
+        self.assertEqual(event["event_type"], "flow")
+        self.assertEqual(event["source"]["ip"], "10.10.10.20")
+        self.assertEqual(event["destination"]["ip"], "8.8.8.8")
+        self.assertEqual(event["destination"]["port"], 443)
+        self.assertEqual(event["protocol"], "TCP")
+        self.assertEqual(event["metadata"]["byte_count"], 2400)
+        self.assertEqual(event["metadata"]["packet_count"], 12)
+
+    def test_netflow_tracks_exporter_and_template_health(self) -> None:
+        collector = NetFlowCollector("127.0.0.1", 2055, allowed_exporters=["192.0.2.10"])
+        _, denied = collector.parse_datagram(netflow_v5_datagram(), "192.0.2.11")
+        self.assertEqual(denied.bad_exporters, 1)
+
+        collector.parse_datagram(netflow_v5_datagram(sequence=100), "192.0.2.10")
+        _, gap_stats = collector.parse_datagram(netflow_v5_datagram(sequence=104), "192.0.2.10")
+        self.assertEqual(gap_stats.sequence_gaps, 3)
+
+        template_set = struct.pack("!HHHHHH", 0, 12, 256, 1, 8, 4)
+        v9 = struct.pack("!HHIIII", 9, 1, 1234, 1783260000, 10, 7) + template_set
+        _, template_stats = collector.parse_datagram(v9, "192.0.2.10")
+        self.assertEqual(template_stats.templates_seen, 1)
+        self.assertEqual(template_stats.template_errors, 0)
+
+        data_without_template = struct.pack("!HH", 300, 4)
+        v9_missing = struct.pack("!HHIIII", 9, 1, 1234, 1783260001, 11, 7) + data_without_template
+        _, missing_stats = collector.parse_datagram(v9_missing, "192.0.2.10")
+        self.assertEqual(missing_stats.template_errors, 1)
 
     def test_service_run_once_tolerates_unreadable_filterlog(self) -> None:
         class DeniedFilterLogCollector:

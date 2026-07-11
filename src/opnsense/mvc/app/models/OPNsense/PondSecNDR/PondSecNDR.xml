@@ -379,6 +379,50 @@
                 <Required>N</Required>
             </api_key_ref>
         </zenarmor>
+        <netflow>
+            <enabled type="BooleanField">
+                <default>0</default>
+                <Required>Y</Required>
+            </enabled>
+            <listen_address type="TextField">
+                <default>127.0.0.1</default>
+                <Required>Y</Required>
+            </listen_address>
+            <port type="IntegerField">
+                <default>2055</default>
+                <MinimumValue>1</MinimumValue>
+                <MaximumValue>65535</MaximumValue>
+                <Required>Y</Required>
+            </port>
+            <allowed_exporters type="TextField">
+                <default></default>
+                <Required>N</Required>
+            </allowed_exporters>
+            <sampling_rate type="IntegerField">
+                <default>1</default>
+                <MinimumValue>1</MinimumValue>
+                <MaximumValue>1000000</MaximumValue>
+                <Required>Y</Required>
+            </sampling_rate>
+            <template_ttl_seconds type="IntegerField">
+                <default>3600</default>
+                <MinimumValue>60</MinimumValue>
+                <MaximumValue>86400</MaximumValue>
+                <Required>Y</Required>
+            </template_ttl_seconds>
+            <retention_days type="IntegerField">
+                <default>30</default>
+                <MinimumValue>1</MinimumValue>
+                <MaximumValue>3650</MaximumValue>
+                <Required>Y</Required>
+            </retention_days>
+            <max_datagrams_per_run type="IntegerField">
+                <default>1000</default>
+                <MinimumValue>1</MinimumValue>
+                <MaximumValue>100000</MaximumValue>
+                <Required>Y</Required>
+            </max_datagrams_per_run>
+        </netflow>
         <response>
             <mode type="OptionField">
                 <default>observe</default>

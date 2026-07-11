@@ -9,7 +9,7 @@ $(function() {
 
     function enhanceFormSections() {
         var headers = $('#frm_GeneralSettings').find('.control-label, h1, h2, h3, h4, legend, label').filter(function() {
-            return ['Engine', 'Interfaces', 'Detection', 'Threat intelligence enrichment', 'Zeek telemetry', 'Zenarmor telemetry', 'Response'].indexOf($.trim($(this).text())) !== -1;
+            return ['Engine', 'Interfaces', 'Detection', 'Threat intelligence enrichment', 'Zeek telemetry', 'Zenarmor telemetry', 'NetFlow and IPFIX', 'Response'].indexOf($.trim($(this).text())) !== -1;
         });
         headers.each(function() {
             var text = $.trim($(this).text());

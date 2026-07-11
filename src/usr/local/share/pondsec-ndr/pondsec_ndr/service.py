@@ -15,6 +15,7 @@ from typing import Any
 
 from pondsec_ndr.collectors.eve import EveCollector
 from pondsec_ndr.collectors.filterlog import FilterLogCollector
+from pondsec_ndr.collectors.netflow import NetFlowCollector
 from pondsec_ndr.collectors.zeek import ZeekLogCollector
 from pondsec_ndr.collectors.zenarmor import ZenarmorCollector
 from pondsec_ndr.config import PondSecConfig, ensure_directories, load_config
@@ -34,6 +35,7 @@ class PondSecService:
         self.store = EventStore(self.config.data_dir / "pondsec-ndr.db")
         self.store.migrate()
         self._ensure_learning_started_at()
+        self.netflow_collector: NetFlowCollector | None = None
         self.stop_requested = False
         self.started_at = time.time()
         self.counters: dict[str, Any] = {
@@ -153,6 +155,24 @@ class PondSecService:
             )
             zenarmor_events, zenarmor_stats = zenarmor_collector.read_once(max_lines=max_lines)
             events.extend(zenarmor_events)
+        netflow_stats = None
+        if self.config.netflow.enabled:
+            if self.netflow_collector is None:
+                self.netflow_collector = NetFlowCollector(
+                    self.config.netflow.listen_address,
+                    self.config.netflow.port,
+                    allowed_exporters=self.config.netflow.allowed_exporters,
+                    sampling_rate=self.config.netflow.sampling_rate,
+                    queue_limit=collector_queue_limit,
+                    max_datagrams_per_run=self.config.netflow.max_datagrams_per_run,
+                )
+            netflow_events, netflow_stats = self.netflow_collector.read_once(
+                max_datagrams=self.config.netflow.max_datagrams_per_run
+            )
+            events.extend(netflow_events)
+        elif self.netflow_collector is not None:
+            self.netflow_collector.close()
+            self.netflow_collector = None
         events = self._filter_events(events)
         events, backpressure_drops = self._apply_queue_backpressure(events)
         parser_errors = (
@@ -160,6 +180,7 @@ class PondSecService:
             + (filter_stats.parser_errors if filter_stats else 0)
             + (zeek_stats.parser_errors if zeek_stats else 0)
             + (zenarmor_stats.parser_errors if zenarmor_stats else 0)
+            + (netflow_stats.parser_errors if netflow_stats else 0)
         )
         normalization_errors = (
             stats.normalization_errors
@@ -172,6 +193,7 @@ class PondSecService:
             + (filter_stats.queue_drops if filter_stats else 0)
             + (zeek_stats.queue_drops if zeek_stats else 0)
             + (zenarmor_stats.queue_drops if zenarmor_stats else 0)
+            + (netflow_stats.queue_drops if netflow_stats else 0)
             + backpressure_drops
         )
         self.counters["parser_errors"] += parser_errors
@@ -189,6 +211,10 @@ class PondSecService:
         if zenarmor_stats and zenarmor_stats.last_error:
             self.counters["last_optional_collector_errors"] = (
                 [zenarmor_stats.last_error] + self.counters["last_optional_collector_errors"]
+            )[:5]
+        if netflow_stats and netflow_stats.last_error:
+            self.counters["last_optional_collector_errors"] = (
+                [netflow_stats.last_error] + self.counters["last_optional_collector_errors"]
             )[:5]
 
         if self._database_over_limit():
@@ -263,6 +289,7 @@ class PondSecService:
                 + (filter_stats.accepted_events if filter_stats else 0)
                 + (zeek_stats.accepted_events if zeek_stats else 0)
                 + (zenarmor_stats.accepted_events if zenarmor_stats else 0)
+                + (netflow_stats.accepted_events if netflow_stats else 0)
             ),
             "inserted_events": inserted_events,
             "inserted_detections": inserted_detections,
@@ -300,6 +327,7 @@ class PondSecService:
                 "opnsense_filterlog": asdict(filter_stats) if filter_stats else None,
                 "zeek": asdict(zeek_stats) if zeek_stats else None,
                 "zenarmor": asdict(zenarmor_stats) if zenarmor_stats else None,
+                "netflow": asdict(netflow_stats) if netflow_stats else None,
             },
         })
         return {
@@ -309,6 +337,7 @@ class PondSecService:
                 "opnsense_filterlog": asdict(filter_stats) if filter_stats else None,
                 "zeek": asdict(zeek_stats) if zeek_stats else None,
                 "zenarmor": asdict(zenarmor_stats) if zenarmor_stats else None,
+                "netflow": asdict(netflow_stats) if netflow_stats else None,
             },
             "inserted_events": inserted_events,
             "detections": inserted_detections,

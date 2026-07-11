@@ -428,6 +428,52 @@
     </field>
     <field>
         <type>header</type>
+        <label>NetFlow and IPFIX</label>
+    </field>
+    <field>
+        <id>pondsecndr.netflow.enabled</id>
+        <label>Enable NetFlow/IPFIX collector</label>
+        <type>checkbox</type>
+    </field>
+    <field>
+        <id>pondsecndr.netflow.listen_address</id>
+        <label>Collector listen address</label>
+        <type>text</type>
+        <help>Use 127.0.0.1 for local testing or a firewall interface address for trusted exporters.</help>
+    </field>
+    <field>
+        <id>pondsecndr.netflow.port</id>
+        <label>Collector UDP port</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.netflow.allowed_exporters</id>
+        <label>Allowed exporters</label>
+        <type>text</type>
+        <help>Comma-separated IP addresses or CIDRs. Leave empty only in an isolated test network.</help>
+    </field>
+    <field>
+        <id>pondsecndr.netflow.sampling_rate</id>
+        <label>Sampling rate</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.netflow.template_ttl_seconds</id>
+        <label>Template TTL seconds</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.netflow.retention_days</id>
+        <label>Flow retention days</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.netflow.max_datagrams_per_run</id>
+        <label>Max datagrams per run</label>
+        <type>text</type>
+    </field>
+    <field>
+        <type>header</type>
         <label>Response</label>
     </field>
     <field>
