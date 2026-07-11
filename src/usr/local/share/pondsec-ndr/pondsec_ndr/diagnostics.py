@@ -530,6 +530,8 @@ def _response_policy_readiness(config: PondSecConfig, learning_status: dict[str,
             blockers.append("automatic blocking is disabled")
         if learning_status.get("active"):
             blockers.append("learning phase is active")
+        elif response.isolate_internal and not _learning_complete_for_internal_response(learning_status):
+            blockers.append("learning phase is not complete for internal auto-isolation")
         if not response.ai_full_decision_mode:
             blockers.append("AI full decision mode is disabled")
         if response.kill_switch:
@@ -553,9 +555,20 @@ def _response_policy_readiness(config: PondSecConfig, learning_status: dict[str,
         "mode": response.mode,
         "automatic_blocking": response.automatic_blocking,
         "ai_full_decision_mode": response.ai_full_decision_mode,
+        "isolate_internal": response.isolate_internal,
+        "internal_isolation_cooldown_seconds": response.internal_isolation_cooldown_seconds,
+        "max_internal_isolations_per_hour": response.max_internal_isolations_per_hour,
         "kill_switch": response.kill_switch,
         "maintenance_mode": response.maintenance_mode,
     }
+
+
+def _learning_complete_for_internal_response(learning_status: dict[str, Any]) -> bool:
+    return (
+        learning_status.get("status") == "armed"
+        and bool(learning_status.get("started_at"))
+        and int(learning_status.get("remaining_days") or 0) == 0
+    )
 
 
 def _pf_tables_status() -> dict[str, Any]:

@@ -550,6 +550,31 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(response_check["status"], "ok")
             self.assertIn("will not change PF", response_check["detail"])
 
+    def test_diagnostics_warns_when_enforce_lacks_completed_learning(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = EventStore(root / "pondsec-ndr.db")
+            store.migrate()
+            store.set_health("healthy", 123, {})
+            payload = diagnostics_payload(
+                PondSecConfig(
+                    enabled=True,
+                    data_dir=root,
+                    response=ResponseConfig(
+                        mode="enforce",
+                        automatic_blocking=True,
+                        isolate_internal=True,
+                        ai_full_decision_mode=True,
+                    ),
+                    detection=DetectionConfig(machine_learning=True, learning_mode=False),
+                ),
+                store,
+            )
+            response_check = next(item for item in payload["readiness"]["checks"] if item["id"] == "response_policy")
+            self.assertEqual(response_check["status"], "warning")
+            self.assertIn("learning phase is not complete", response_check["detail"])
+            self.assertEqual(response_check["internal_isolation_cooldown_seconds"], 900)
+
     def test_correlation_creates_explainable_incident(self) -> None:
         events = [
             normalize_eve(flow_event(f"2026-07-05T10:00:{i:02d}+00:00", "192.168.10.90", "192.168.20.90", 20 + i))
