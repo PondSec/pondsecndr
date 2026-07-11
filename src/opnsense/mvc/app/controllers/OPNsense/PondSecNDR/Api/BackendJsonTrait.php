@@ -8,15 +8,22 @@ trait BackendJsonTrait
 {
     private function runBackendJson($action)
     {
-        $result = trim((new Backend())->configdRun('pondsecndr ' . $action));
+        $result = trim((string)(new Backend())->configdRun('pondsecndr ' . $action));
         $decoded = json_decode($result, true);
-        if ($decoded !== null) {
+        if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
             return $decoded;
         }
+        $excerpt = trim(preg_replace('/\s+/', ' ', strip_tags($result)));
+        if (strlen($excerpt) > 500) {
+            $excerpt = substr($excerpt, 0, 500) . '...';
+        }
+        $this->response->setStatusCode(502, 'Bad Gateway');
         return [
             'status' => 'error',
             'message' => 'backend returned invalid json',
-            'action' => $action
+            'action' => $action,
+            'json_error' => json_last_error_msg(),
+            'raw_excerpt' => $excerpt
         ];
     }
 

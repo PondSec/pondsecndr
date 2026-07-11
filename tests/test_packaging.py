@@ -138,6 +138,30 @@ class PackagingTests(unittest.TestCase):
         self.assertIn("signature_type: \"PUBKEY\"", doc)
         self.assertIn("must not download unsigned code, model artifacts, or package data", doc)
 
+    def test_incident_view_exposes_manual_and_dns_response_actions(self) -> None:
+        view = (ROOT / "src" / "opnsense" / "mvc" / "app" / "views" / "OPNsense" / "PondSecNDR" / "list.volt").read_text(encoding="utf-8")
+        self.assertIn('data-action="manual-block"', view)
+        self.assertIn('data-action="propose-sinkhole"', view)
+        self.assertIn("/api/pondsecndr/sinkhole/propose/", view)
+        self.assertIn("top: 70px;", view)
+        self.assertNotIn("padding-top: 48px;", view)
+
+    def test_blocklist_view_exposes_dns_sinkhole_lifecycle(self) -> None:
+        view = (ROOT / "src" / "opnsense" / "mvc" / "app" / "views" / "OPNsense" / "PondSecNDR" / "blocklist.volt").read_text(encoding="utf-8")
+        self.assertIn("/api/pondsecndr/sinkhole/list", view)
+        self.assertIn("/api/pondsecndr/sinkhole/add", view)
+        self.assertIn("/api/pondsecndr/sinkhole/edit/", view)
+        self.assertIn("/api/pondsecndr/sinkhole/activate/", view)
+        self.assertIn("/api/pondsecndr/sinkhole/remove/", view)
+        self.assertIn("pondsec_sinkhole_edit_form", view)
+        self.assertIn("Ablauf leer lassen fuer einen unbegrenzten DNS-Sinkhole", view)
+
+    def test_backend_json_trait_reports_invalid_backend_payloads(self) -> None:
+        trait = (ROOT / "src" / "opnsense" / "mvc" / "app" / "controllers" / "OPNsense" / "PondSecNDR" / "Api" / "BackendJsonTrait.php").read_text(encoding="utf-8")
+        self.assertIn("json_last_error_msg()", trait)
+        self.assertIn("'raw_excerpt'", trait)
+        self.assertIn("Bad Gateway", trait)
+
 
 if __name__ == "__main__":
     unittest.main()

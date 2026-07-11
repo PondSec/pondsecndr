@@ -40,8 +40,8 @@ $(function() {
         'Updated': 'Aktualisiert',
         'Action': 'Aktion',
         'Detector': 'Detektor',
-        'Severity': 'Severity',
-        'Confidence': 'Confidence',
+        'Severity': 'Schweregrad',
+        'Confidence': 'Vertrauen',
         'Time': 'Zeit',
         'Host': 'Host',
         'Peer group': 'Peer-Gruppe',
@@ -69,6 +69,8 @@ $(function() {
         'Reopen': 'Wieder oeffnen',
         'Propose block': 'Block vorschlagen',
         'Manual block': 'Manuell blocken',
+        'Propose DNS sinkhole': 'DNS-Sinkhole vorschlagen',
+        'DNS sinkhole': 'DNS-Sinkhole',
         'Release block/isolation': 'Block/Isolation freigeben',
         'Delete': 'Loeschen',
         'Activate': 'Aktivieren',
@@ -83,7 +85,7 @@ $(function() {
         'Overview': 'Ueberblick',
         'Attack graph': 'Angriffsgraph',
         'Timeline': 'Timeline',
-        'Evidence': 'Evidence',
+        'Evidence': 'Evidenz',
         'CVE context': 'CVE-Kontext',
         'Related cases': 'Verwandte Cases',
         'Case narrative': 'Case-Narrativ',
@@ -168,6 +170,7 @@ $(function() {
         'Action completed': 'Aktion abgeschlossen',
         'Delete this incident? Active responses must be released first.': 'Diesen Incident loeschen? Aktive Responses muessen zuerst freigegeben werden.',
         'Manually block this incident response target now?': 'Response-Ziel dieses Incidents jetzt manuell blocken?',
+        'Create a DNS sinkhole proposal from this incident evidence?': 'DNS-Sinkhole-Vorschlag aus der Evidenz dieses Incidents erstellen?',
         'IP, category, detector, message': 'IP, Kategorie, Detektor, Meldung',
         'IP': 'IP',
         'Baseline': 'Baseline',
@@ -186,7 +189,7 @@ $(function() {
         'Peer group source': 'Peer-Gruppen-Quelle',
         'Peer': 'Peer',
         'Window': 'Fenster',
-        'Detections': 'Detections',
+        'Detections': 'Detektionen',
         'Events': 'Events',
         'Suppressed duplicates': 'Unterdrueckte Duplikate',
         'Response decision': 'Response-Entscheidung',
@@ -194,6 +197,9 @@ $(function() {
         'recorded': 'aufgezeichnet',
         'allowed': 'erlaubt',
         'denied': 'abgelehnt',
+        'would_execute': 'wuerde ausgefuehrt',
+        'not_found': 'nicht gefunden',
+        'sinkhole': 'Sinkhole',
         'not allowed': 'nicht erlaubt',
         'unrecorded': 'nicht aufgezeichnet',
         'audited': 'auditiert',
@@ -636,6 +642,7 @@ $(function() {
             buttons.push('<button class="btn btn-sm btn-default pondsec-row-action" data-action="reopen-incident" data-id="' + id + '"><i class="fa fa-undo"></i> Reopen</button>');
         }
         buttons.push('<button class="btn btn-sm btn-primary pondsec-row-action" data-action="propose-block" data-id="' + id + '"><i class="fa fa-shield"></i> Propose block</button>');
+        buttons.push('<button class="btn btn-sm btn-default pondsec-row-action" data-action="propose-sinkhole" data-id="' + id + '"><i class="fa fa-filter"></i> Propose DNS sinkhole</button>');
         buttons.push('<button class="btn btn-sm btn-danger pondsec-row-action" data-action="manual-block" data-id="' + id + '"><i class="fa fa-lock"></i> Manual block</button>');
         if (response.release_available) {
             buttons.push('<button class="btn btn-sm btn-danger pondsec-row-action" data-action="release-case" data-id="' + id + '"><i class="fa fa-unlock"></i> Release block/isolation</button>');
@@ -941,6 +948,7 @@ $(function() {
         if (row.status === 'open') {
             buttons += '<button class="btn btn-xs btn-default pondsec-row-action" data-action="close-incident" data-id="' + id + '">Close</button>';
             buttons += '<button class="btn btn-xs btn-primary pondsec-row-action" data-action="propose-block" data-id="' + id + '">Propose block</button>';
+            buttons += '<button class="btn btn-xs btn-default pondsec-row-action" data-action="propose-sinkhole" data-id="' + id + '">DNS sinkhole</button>';
             buttons += '<button class="btn btn-xs btn-default pondsec-row-action" data-action="archive-incident" data-id="' + id + '">Archive</button>';
         } else {
             buttons += '<button class="btn btn-xs btn-default pondsec-row-action" data-action="reopen-incident" data-id="' + id + '">Reopen</button>';
@@ -983,6 +991,9 @@ $(function() {
         if (action === 'manual-block') {
             return '/api/pondsecndr/blocklist/manualIncident/' + id;
         }
+        if (action === 'propose-sinkhole') {
+            return '/api/pondsecndr/sinkhole/propose/' + id;
+        }
         if (action === 'activate-block') {
             return '/api/pondsecndr/blocklist/activate/' + id;
         }
@@ -1015,6 +1026,9 @@ $(function() {
         if (action === 'manual-block' && !window.confirm(t('Manually block this incident response target now?'))) {
             return;
         }
+        if (action === 'propose-sinkhole' && !window.confirm(t('Create a DNS sinkhole proposal from this incident evidence?'))) {
+            return;
+        }
         var url = actionEndpoint(action, id);
         if (!url) {
             return;
@@ -1039,7 +1053,10 @@ $(function() {
             return '';
         }
         var state = data.status || (data.item && data.item.status) || 'ok';
-        var message = data.message || data.reason || data.block_id || (data.item && (data.item.block_id || data.item.source_ip)) || t('Action completed');
+        var message = data.message || data.reason || data.block_id || data.sinkhole_id || data.domain || (data.item && (data.item.block_id || data.item.sinkhole_id || data.item.source_ip || data.item.domain)) || t('Action completed');
+        if (data.raw_excerpt) {
+            message += ': ' + data.raw_excerpt;
+        }
         return '<div class="pondsec-notice ' + statusClass(state) + '">' + badge(state) + '<span>' + escapeHtml(message) + '</span></div>';
     }
 
@@ -1632,10 +1649,10 @@ $(function() {
     max-width: none;
     overscroll-behavior: contain;
     overflow-y: auto;
-    padding: 22px 34px 34px;
+    padding: 20px 34px 34px;
     position: fixed;
     right: 0;
-    top: 0;
+    top: 70px;
     transform: translateX(105%);
     transition: transform 0.22s ease;
     width: 100vw;
@@ -1651,7 +1668,7 @@ $(function() {
     gap: 16px;
     justify-content: space-between;
     margin-bottom: 14px;
-    padding: 0 0 12px;
+    padding: 4px 0 12px;
     position: sticky;
     top: 0;
     z-index: 20;
@@ -1666,7 +1683,7 @@ $(function() {
     flex: 0 0 auto;
     gap: 10px;
     justify-content: flex-end;
-    padding-top: 48px;
+    padding-top: 0;
 }
 .pondsec-panel-back,
 .pondsec-panel-close {
@@ -2261,7 +2278,7 @@ $(function() {
     .pondsec-case-panel {
         bottom: 0;
         left: 0;
-        top: 0;
+        top: 58px;
         padding: 16px;
         width: 100vw;
     }
