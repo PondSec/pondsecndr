@@ -1,5 +1,192 @@
 <script>
 $(function() {
+    var uiLanguage = initialLanguage();
+    var lastSummaryData = null;
+    var lastTimelineData = null;
+    var lastDiagnosticsData = null;
+    var de = {
+        'Network Detection & Response': 'Network Detection & Response',
+        'Loading current protection posture...': 'Aktuelle Schutzlage wird geladen...',
+        'Protection posture': 'Schutzlage',
+        'Engine': 'Engine',
+        'Mode': 'Modus',
+        'Response mode': 'Response-Modus',
+        'PF blocking': 'PF-Blocking',
+        'EVE telemetry': 'EVE-Telemetrie',
+        'Database': 'Datenbank',
+        'Events 24h': 'Events 24h',
+        'Suspicious detections': 'Verdaechtige Detections',
+        'Open incidents': 'Offene Incidents',
+        'Critical incidents': 'Kritische Incidents',
+        'Blocked sources': 'Blockierte Quellen',
+        'Isolated clients': 'Isolierte Clients',
+        'Event rate': 'Eventrate',
+        'Telemetry delay': 'Telemetrieverzug',
+        'Top threat categories': 'Top-Bedrohungskategorien',
+        'Event activity': 'Event-Aktivitaet',
+        '24h total': '24h gesamt',
+        'Peak hour': 'Peak-Stunde',
+        'Highest-risk hosts': 'Hosts mit hoechstem Risiko',
+        'IP address': 'IP-Adresse',
+        'Protection': 'Schutz',
+        'Risk': 'Risiko',
+        'Detections by category': 'Detections nach Kategorie',
+        'Category': 'Kategorie',
+        'Volume': 'Volumen',
+        'Count': 'Anzahl',
+        'Operational details': 'Betriebsdetails',
+        'Active model': 'Aktives Modell',
+        'Monitored interfaces': 'Ueberwachte Schnittstellen',
+        'PF block table': 'PF-Blocktabelle',
+        'Queue': 'Queue',
+        'Collector errors': 'Collector-Fehler',
+        'Response errors': 'Response-Fehler',
+        'Loading': 'Laedt',
+        'No data': 'Keine Daten',
+        'No active model': 'Kein aktives Modell',
+        'Not selected': 'Nicht ausgewaehlt',
+        'None': 'Keine',
+        'Top threat': 'Top-Bedrohung',
+        'detections': 'Detections',
+        'events': 'Events',
+        'No detections recorded.': 'Keine Detections aufgezeichnet.',
+        'No hosts observed.': 'Keine Hosts beobachtet.',
+        'No event timeline yet.': 'Noch keine Event-Timeline vorhanden.',
+        'source': 'Quelle',
+        'sources': 'Quellen',
+        'unknown': 'unbekannt',
+        'monitor': 'Monitor',
+        'observe': 'Observe',
+        'prevent': 'Prevent',
+        'healthy': 'gesund',
+        'ok': 'ok',
+        'running': 'laeuft',
+        'active': 'aktiv',
+        'missing': 'fehlt',
+        'failed': 'fehlgeschlagen',
+        'error': 'Fehler',
+        'critical': 'kritisch',
+        'stopped': 'gestoppt',
+        'isolated': 'isoliert',
+        'blocked': 'blockiert',
+        'normal': 'normal',
+        'allowlisted': 'allowlisted'
+    };
+
+    function normalizeText(value) {
+        return $.trim(String(value || '').replace(/\s+/g, ' '));
+    }
+
+    function initialLanguage() {
+        var value = (
+            $('html').attr('lang') ||
+            document.documentElement.getAttribute('lang') ||
+            navigator.language ||
+            navigator.userLanguage ||
+            ''
+        ).toLowerCase();
+        return value.indexOf('de') === 0 ? 'de' : 'en';
+    }
+
+    function extractLanguage(data) {
+        if (!data || typeof data !== 'object') {
+            return '';
+        }
+        if (data.language) {
+            return data.language;
+        }
+        if (data.general && data.general.language) {
+            return data.general.language;
+        }
+        if (data.pondsecndr && data.pondsecndr.general && data.pondsecndr.general.language) {
+            return data.pondsecndr.general.language;
+        }
+        var found = '';
+        $.each(data, function(key, value) {
+            if (!found && key === 'language') {
+                found = value;
+                return false;
+            }
+            if (!found && value && typeof value === 'object') {
+                found = extractLanguage(value);
+            }
+        });
+        return found;
+    }
+
+    function t(key) {
+        return uiLanguage === 'de' && de[key] ? de[key] : key;
+    }
+
+    function translateTextNode(node) {
+        if (node._pondsecOriginalText === undefined) {
+            node._pondsecOriginalText = node.nodeValue || '';
+        }
+        var original = node._pondsecOriginalText;
+        if (uiLanguage !== 'de') {
+            if (node.nodeValue !== original) {
+                node.nodeValue = original;
+            }
+            return;
+        }
+        var key = normalizeText(original);
+        if (!key || !de[key]) {
+            return;
+        }
+        var prefix = (original.match(/^\s*/) || [''])[0];
+        var suffix = (original.match(/\s*$/) || [''])[0];
+        node.nodeValue = prefix + de[key] + suffix;
+    }
+
+    function translateElement(root) {
+        $(root).find('*').addBack().each(function() {
+            var $item = $(this);
+            if ($item.is('script, style, pre, code, textarea, input')) {
+                return;
+            }
+            ['placeholder', 'aria-label', 'title'].forEach(function(attr) {
+                var value = $item.attr(attr);
+                if (value === undefined) {
+                    return;
+                }
+                var dataKey = 'pondsecOriginal' + attr.replace(/[^a-z]/gi, '');
+                if ($item.data(dataKey) === undefined) {
+                    $item.data(dataKey, value);
+                }
+                var original = $item.data(dataKey);
+                var key = normalizeText(original);
+                if (uiLanguage === 'de' && key && de[key]) {
+                    $item.attr(attr, de[key]);
+                } else if (uiLanguage !== 'de') {
+                    $item.attr(attr, original);
+                }
+            });
+            $item.contents().filter(function() {
+                return this.nodeType === 3;
+            }).each(function() {
+                translateTextNode(this);
+            });
+        });
+    }
+
+    function applyLanguage() {
+        if (lastSummaryData) {
+            renderSummary(lastSummaryData);
+        }
+        if (lastTimelineData) {
+            renderTimeline(lastTimelineData);
+        }
+        if (lastDiagnosticsData) {
+            renderDiagnostics(lastDiagnosticsData);
+        }
+        translateElement($('.pondsec-dashboard'));
+    }
+
+    function setLanguage(language) {
+        uiLanguage = language === 'de' ? 'de' : 'en';
+        applyLanguage();
+    }
+
     function escapeHtml(value) {
         return $('<div/>').text(value === null || value === undefined ? '' : String(value)).html();
     }
@@ -9,7 +196,7 @@ $(function() {
     }
 
     function display(value, fallback) {
-        return hasValue(value) ? value : (fallback || 'No data');
+        return hasValue(value) ? value : (fallback || t('No data'));
     }
 
     function numberValue(value) {
@@ -19,7 +206,7 @@ $(function() {
 
     function formatNumber(value) {
         if (!hasValue(value)) {
-            return 'No data';
+            return t('No data');
         }
         return Number(value).toLocaleString();
     }
@@ -49,7 +236,7 @@ $(function() {
     function formatDuration(value) {
         var seconds = Number(value);
         if (!Number.isFinite(seconds)) {
-            return 'No data';
+            return t('No data');
         }
         if (seconds < 60) {
             return Math.max(0, seconds) + 's';
@@ -79,10 +266,11 @@ $(function() {
 
     function badge(value, extraClass) {
         var text = display(value);
-        return '<span class="pondsec-badge ' + statusClass(value) + (extraClass ? ' ' + extraClass : '') + '">' + escapeHtml(text) + '</span>';
+        return '<span class="pondsec-badge ' + statusClass(value) + (extraClass ? ' ' + extraClass : '') + '">' + escapeHtml(t(text)) + '</span>';
     }
 
     function renderSummary(data) {
+        lastSummaryData = data;
         var metrics = data.metrics || {};
         var categories = data.detections_by_category || [];
         var topHosts = data.top_hosts || [];
@@ -95,17 +283,26 @@ $(function() {
         var openIncidents = numberValue(metrics.open_incidents);
         var critical = numberValue(metrics.critical_incidents);
 
-        $('#hero_sentence').html(
-            'Today, <strong>PondSec NDR</strong> analyzed <span>' + formatNumber(events24h) +
-            '</span> network events, detected <span>' + formatNumber(detectionsTotal) +
-            '</span> suspicious activities and is actively blocking <span>' + formatNumber(blocked) +
-            '</span> source' + (blocked === 1 ? '' : 's') + '.'
-        );
+        if (uiLanguage === 'de') {
+            $('#hero_sentence').html(
+                'Heute hat <strong>PondSec NDR</strong> <span>' + formatNumber(events24h) +
+                '</span> Netzwerk-Events analysiert, <span>' + formatNumber(detectionsTotal) +
+                '</span> verdaechtige Aktivitaeten erkannt und blockiert aktiv <span>' + formatNumber(blocked) +
+                '</span> ' + (blocked === 1 ? t('source') : t('sources')) + '.'
+            );
+        } else {
+            $('#hero_sentence').html(
+                'Today, <strong>PondSec NDR</strong> analyzed <span>' + formatNumber(events24h) +
+                '</span> network events, detected <span>' + formatNumber(detectionsTotal) +
+                '</span> suspicious activities and is actively blocking <span>' + formatNumber(blocked) +
+                '</span> source' + (blocked === 1 ? '' : 's') + '.'
+            );
+        }
         $('#service_status_badge').html(badge(metrics.service_status || 'unknown'));
         $('#mode_badge').html(badge(metrics.operating_mode || 'monitor'));
         $('#response_mode_badge').html(badge(metrics.response_mode || 'observe'));
-        $('#model_value').text(display(metrics.active_model_version, 'No active model'));
-        $('#interfaces_value').text((metrics.interfaces || []).length ? metrics.interfaces.join(', ') : 'Not selected');
+        $('#model_value').text(display(metrics.active_model_version, t('No active model')));
+        $('#interfaces_value').text((metrics.interfaces || []).length ? metrics.interfaces.join(', ') : t('Not selected'));
 
         $('#events_24h').text(formatNumber(events24h));
         $('#detections_total').text(formatNumber(detectionsTotal));
@@ -117,15 +314,17 @@ $(function() {
         $('#event_rate').text(formatRate(metrics.event_rate_per_second));
         $('#database_size').text(formatBytes(metrics.database_size_bytes));
         $('#queue').text(formatNumber(metrics.queue_utilization || 0));
-        $('#collector_errors').text((metrics.last_collector_errors || []).length ? metrics.last_collector_errors.join('; ') : 'None');
-        $('#response_errors').text((metrics.last_response_errors || []).length ? metrics.last_response_errors.join('; ') : 'None');
+        $('#collector_errors').text((metrics.last_collector_errors || []).length ? metrics.last_collector_errors.join('; ') : t('None'));
+        $('#response_errors').text((metrics.last_response_errors || []).length ? metrics.last_response_errors.join('; ') : t('None'));
 
         renderThreatCards(categories);
         renderHostRows(topHosts);
         renderCategoryRows(categories);
+        translateElement($('.pondsec-dashboard'));
     }
 
     function renderDiagnostics(data) {
+        lastDiagnosticsData = data;
         var pf = data.pf_blocking || {};
         var eve = data.eve_access || {};
         var pfState = pf.rule_present ? 'active' : 'missing';
@@ -133,6 +332,7 @@ $(function() {
         $('#pf_table').text(display(pf.table, 'virusprot'));
         $('#eve_status_badge').html(badge(eve.status || 'unknown'));
         $('#db_status_badge').html(badge(data.status || 'unknown'));
+        translateElement($('.pondsec-dashboard'));
     }
 
     function renderThreatCards(categories) {
@@ -145,12 +345,12 @@ $(function() {
             var percent = total > 0 ? Math.round((count / total) * 100) : 0;
             cards += '<div class="pondsec-mini-card">' +
                 '<div class="pondsec-donut tone-' + (index + 1) + '" style="--value:' + percent + '"><span>' + percent + '%</span></div>' +
-                '<div><div class="pondsec-muted">Top threat</div><div class="pondsec-card-title">' + escapeHtml(item.category || 'unknown') + '</div>' +
-                '<div class="pondsec-small">' + formatNumber(count) + ' detections</div></div>' +
+                '<div><div class="pondsec-muted">' + escapeHtml(t('Top threat')) + '</div><div class="pondsec-card-title">' + escapeHtml(item.category || t('unknown')) + '</div>' +
+                '<div class="pondsec-small">' + formatNumber(count) + ' ' + escapeHtml(t('detections')) + '</div></div>' +
                 '</div>';
         });
         if (!cards) {
-            cards = '<div class="pondsec-empty">No detections recorded.</div>';
+            cards = '<div class="pondsec-empty">' + escapeHtml(t('No detections recorded.')) + '</div>';
         }
         $('#threat_cards').html(cards);
     }
@@ -165,7 +365,7 @@ $(function() {
                 '<td><div class="pondsec-risk"><span style="width:' + Math.min(100, risk) + '%"></span></div><strong>' + formatNumber(risk) + '</strong></td>' +
                 '<td>' + formatNumber(host.open_incidents || 0) + '</td></tr>';
         });
-        $('#top_hosts tbody').html(rows || '<tr><td colspan="4" class="pondsec-empty">No hosts observed.</td></tr>');
+        $('#top_hosts tbody').html(rows || '<tr><td colspan="4" class="pondsec-empty">' + escapeHtml(t('No hosts observed.')) + '</td></tr>');
     }
 
     function renderCategoryRows(categories) {
@@ -179,10 +379,11 @@ $(function() {
                 '<td><div class="pondsec-bar"><span style="width:' + Math.round((count / max) * 100) + '%"></span></div></td>' +
                 '<td>' + formatNumber(count) + '</td></tr>';
         });
-        $('#detections_by_category tbody').html(rows || '<tr><td colspan="3" class="pondsec-empty">No detections recorded.</td></tr>');
+        $('#detections_by_category tbody').html(rows || '<tr><td colspan="3" class="pondsec-empty">' + escapeHtml(t('No detections recorded.')) + '</td></tr>');
     }
 
     function renderTimeline(data) {
+        lastTimelineData = data;
         var items = data.items || [];
         var max = items.reduce(function(value, item) {
             return Math.max(value, numberValue(item.events));
@@ -200,14 +401,22 @@ $(function() {
             var height = Math.max(events > 0 ? 8 : 2, Math.round((events / max) * 100));
             var label = String(item.hour || '').slice(-2) + ':00';
             var showLabel = index === 0 || index === recent.length - 1 || index % 4 === 0;
-            bars += '<div class="pondsec-timeline-bar" title="' + escapeHtml(label + ' - ' + events + ' events') + '">' +
+            bars += '<div class="pondsec-timeline-bar" title="' + escapeHtml(label + ' - ' + events + ' ' + t('events')) + '">' +
                 '<span style="height:' + height + '%"><i>' + (events ? escapeHtml(events) : '') + '</i></span><em>' + (showLabel ? escapeHtml(label) : '') + '</em></div>';
         });
         $('#event_timeline_total').text(formatNumber(total));
         $('#event_timeline_peak').text(formatNumber(peak));
-        $('#event_timeline').html(bars || '<div class="pondsec-empty">No event timeline yet.</div>');
+        $('#event_timeline').html(bars || '<div class="pondsec-empty">' + escapeHtml(t('No event timeline yet.')) + '</div>');
+        translateElement($('.pondsec-dashboard'));
     }
 
+    translateElement($('.pondsec-dashboard'));
+    ajaxGet('/api/pondsecndr/settings/get', {}, function(data) {
+        var selected = extractLanguage(data);
+        if (selected) {
+            setLanguage(selected);
+        }
+    });
     ajaxGet('/api/pondsecndr/dashboard/summary', {}, renderSummary);
     ajaxGet('/api/pondsecndr/dashboard/timeline', {}, renderTimeline);
     ajaxGet('/api/pondsecndr/diagnostics/get', {}, renderDiagnostics);

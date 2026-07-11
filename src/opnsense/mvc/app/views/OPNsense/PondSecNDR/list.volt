@@ -7,6 +7,347 @@ $(function() {
     var summary = {};
     var caseDetailLookup = {};
     var currentIncidentId = null;
+    var uiLanguage = initialLanguage();
+    var translationTimer = null;
+    var translationObserver = null;
+    var de = {
+        'PondSec NDR: Incidents': 'PondSec NDR: Incidents',
+        'PondSec NDR: Detections': 'PondSec NDR: Detections',
+        'PondSec NDR: Hosts': 'PondSec NDR: Hosts',
+        'PondSec NDR: Interfaces': 'PondSec NDR: Schnittstellen',
+        'PondSec NDR: Logs': 'PondSec NDR: Logs',
+        'PondSec NDR: Models': 'PondSec NDR: Modelle',
+        'Search': 'Suche',
+        'Status': 'Status',
+        'All statuses': 'Alle Status',
+        'Category': 'Kategorie',
+        'All categories': 'Alle Kategorien',
+        'Reset': 'Zuruecksetzen',
+        'Loading': 'Laedt',
+        'No records available.': 'Keine Eintraege verfuegbar.',
+        'Records': 'Eintraege',
+        'Shown': 'Angezeigt',
+        'Open': 'Offen',
+        'Active': 'Aktiv',
+        'High risk': 'Hohes Risiko',
+        'Interfaces': 'Schnittstellen',
+        'Selected': 'Ausgewaehlt',
+        'Status': 'Status',
+        'Risk': 'Risiko',
+        'Source': 'Quelle',
+        'Destination': 'Ziel',
+        'Incident': 'Incident',
+        'Updated': 'Aktualisiert',
+        'Action': 'Aktion',
+        'Detector': 'Detektor',
+        'Severity': 'Severity',
+        'Confidence': 'Confidence',
+        'Time': 'Zeit',
+        'Host': 'Host',
+        'Peer group': 'Peer-Gruppe',
+        'Protection': 'Schutz',
+        'Open incidents': 'Offene Incidents',
+        'Interface': 'Schnittstelle',
+        'Last seen': 'Zuletzt gesehen',
+        'Trusted value': 'Vertrauenswuerdiger Wert',
+        'Reason': 'Grund',
+        'Expires': 'Laeuft ab',
+        'Created by': 'Erstellt von',
+        'Created': 'Erstellt',
+        'Model': 'Modell',
+        'Provider': 'Provider',
+        'Type': 'Typ',
+        'Trained on': 'Trainiert mit',
+        'License': 'Lizenz',
+        'Configured': 'Konfiguriert',
+        'Level': 'Level',
+        'Component': 'Komponente',
+        'Message': 'Meldung',
+        'Close': 'Schliessen',
+        'False positive': 'False Positive',
+        'Archive': 'Archivieren',
+        'Reopen': 'Wieder oeffnen',
+        'Propose block': 'Block vorschlagen',
+        'Release block/isolation': 'Block/Isolation freigeben',
+        'Delete': 'Loeschen',
+        'Activate': 'Aktivieren',
+        'Remove': 'Entfernen',
+        'Merge': 'Zusammenfuehren',
+        'Link': 'Verknuepfen',
+        'Keep separate': 'Getrennt lassen',
+        'Open case view': 'Case-Ansicht oeffnen',
+        'Open entity resolution': 'Entity-Aufloesung oeffnen',
+        'Overview': 'Ueberblick',
+        'Attack graph': 'Angriffsgraph',
+        'Timeline': 'Timeline',
+        'Evidence': 'Evidence',
+        'CVE context': 'CVE-Kontext',
+        'Related cases': 'Verwandte Cases',
+        'Case narrative': 'Case-Narrativ',
+        'Case summary': 'Case-Zusammenfassung',
+        'Host story': 'Host-Verlauf',
+        'Attack stages': 'Angriffsphasen',
+        'What to check next': 'Als Naechstes pruefen',
+        'Selected evidence': 'Ausgewaehlte Evidence',
+        'Case overview': 'Case-Ueberblick',
+        'Visual timeline': 'Visuelle Timeline',
+        'Affected targets': 'Betroffene Ziele',
+        'Confidence boundaries': 'Confidence-Grenzen',
+        'Notable features': 'Auffaellige Merkmale',
+        'Risk factors': 'Risikofaktoren',
+        'Response policy decisions': 'Response-Policy-Entscheidungen',
+        'Entity resolution': 'Entity-Aufloesung',
+        'IP identity': 'IP-Identitaet',
+        'Roles and context': 'Rollen und Kontext',
+        'Linked host records': 'Verknuepfte Host-Eintraege',
+        'Resolution history': 'Aufloesungsverlauf',
+        'Close case detail': 'Case-Detail schliessen',
+        'Close host detail': 'Host-Detail schliessen',
+        'Case analysis tabs': 'Case-Analyse-Tabs',
+        'Incident attack graph': 'Incident-Angriffsgraph',
+        'Case': 'Case',
+        'Relationship': 'Beziehung',
+        'Node': 'Knoten',
+        'Attack stage': 'Angriffsphase',
+        'Timeline event': 'Timeline-Event',
+        'Selected evidence': 'Ausgewaehlte Evidence',
+        'Type': 'Typ',
+        'Stage': 'Phase',
+        'Kind': 'Art',
+        'Protocol': 'Protokoll',
+        'Ports': 'Ports',
+        'Risk contribution': 'Risiko-Beitrag',
+        'Detection IDs': 'Detection-IDs',
+        'Summary': 'Zusammenfassung',
+        'Affected host': 'Betroffener Host',
+        'Possible entry source': 'Moegliche Eintrittsquelle',
+        'Primary destination': 'Primaeres Ziel',
+        'First seen': 'Zuerst gesehen',
+        'Risk score': 'Risiko-Score',
+        'Block status': 'Block-Status',
+        'Isolation': 'Isolation',
+        'Response action': 'Response-Aktion',
+        'Target': 'Ziel',
+        'Proposal': 'Vorschlag',
+        'Activation': 'Aktivierung',
+        'Compromise': 'Kompromittierung',
+        'Confirmed': 'Bestaetigt',
+        'Not confirmed': 'Nicht bestaetigt',
+        'No narrative generated for this case yet.': 'Fuer diesen Case wurde noch kein Narrativ erzeugt.',
+        'No response policy decision recorded for this case.': 'Fuer diesen Case ist keine Response-Policy-Entscheidung aufgezeichnet.',
+        'No related cases found in the current window.': 'Im aktuellen Fenster wurden keine verwandten Cases gefunden.',
+        'CVE enrichment is disabled.': 'CVE-Anreicherung ist deaktiviert.',
+        'No CVE references found in local evidence for this case.': 'In der lokalen Evidence wurden keine CVE-Referenzen fuer diesen Case gefunden.',
+        'No graph data recorded for this incident.': 'Fuer diesen Incident sind keine Graphdaten aufgezeichnet.',
+        'No attack stage analysis recorded.': 'Keine Angriffsphasenanalyse aufgezeichnet.',
+        'No detection timeline recorded.': 'Keine Detection-Timeline aufgezeichnet.',
+        'Select a graph node, relationship, phase, or timeline item.': 'Graph-Knoten, Beziehung, Phase oder Timeline-Eintrag auswaehlen.',
+        'No target list recorded.': 'Keine Zielliste aufgezeichnet.',
+        'No guidance recorded.': 'Keine Hinweise aufgezeichnet.',
+        'No notable feature list recorded.': 'Keine auffaelligen Merkmale aufgezeichnet.',
+        'No risk factors recorded.': 'Keine Risikofaktoren aufgezeichnet.',
+        'No IP-oriented host records are linked to this entity.': 'Mit dieser Entity sind keine IP-basierten Host-Eintraege verknuepft.',
+        'No entity history recorded yet.': 'Noch kein Entity-Verlauf aufgezeichnet.',
+        'No current IPs recorded.': 'Keine aktuellen IPs aufgezeichnet.',
+        'No previous IPs recorded.': 'Keine frueheren IPs aufgezeichnet.',
+        'No roles recorded.': 'Keine Rollen aufgezeichnet.',
+        'No services recorded.': 'Keine Dienste aufgezeichnet.',
+        'No tags recorded.': 'Keine Tags aufgezeichnet.',
+        'None recorded.': 'Keine aufgezeichnet.',
+        'Details available': 'Details verfuegbar',
+        'Action completed': 'Aktion abgeschlossen',
+        'Delete this incident? Active responses must be released first.': 'Diesen Incident loeschen? Aktive Responses muessen zuerst freigegeben werden.',
+        'IP, category, detector, message': 'IP, Kategorie, Detektor, Meldung',
+        'IP': 'IP',
+        'Baseline': 'Baseline',
+        'Current IPs': 'Aktuelle IPs',
+        'Previous IPs': 'Fruehere IPs',
+        'Entity ID': 'Entity-ID',
+        'Primary IP': 'Primaere IP',
+        'Hostname': 'Hostname',
+        'MAC': 'MAC',
+        'OS': 'OS',
+        'VLAN': 'VLAN',
+        'Zone': 'Zone',
+        'Roles': 'Rollen',
+        'Known services': 'Bekannte Dienste',
+        'Tags': 'Tags',
+        'Peer group source': 'Peer-Gruppen-Quelle',
+        'Peer': 'Peer',
+        'Window': 'Fenster',
+        'Detections': 'Detections',
+        'Events': 'Events',
+        'Suppressed duplicates': 'Unterdrueckte Duplikate',
+        'Response decision': 'Response-Entscheidung',
+        'response decision': 'Response-Entscheidung',
+        'recorded': 'aufgezeichnet',
+        'allowed': 'erlaubt',
+        'denied': 'abgelehnt',
+        'not allowed': 'nicht erlaubt',
+        'unrecorded': 'nicht aufgezeichnet',
+        'audited': 'auditiert',
+        'observed': 'beobachtet',
+        'inferred': 'abgeleitet',
+        'confirmed': 'bestaetigt',
+        'not_claimed': 'nicht beansprucht',
+        'Not Claimed': 'Nicht beansprucht',
+        'unknown': 'unbekannt',
+        'none': 'keine',
+        'normal': 'normal',
+        'open': 'offen',
+        'closed': 'geschlossen',
+        'active': 'aktiv',
+        'proposed': 'vorgeschlagen',
+        'monitor': 'Monitor',
+        'catalog': 'Katalog',
+        'warning': 'Warnung',
+        'healthy': 'gesund',
+        'ok': 'ok',
+        'running': 'laeuft',
+        'installed': 'installiert',
+        'failed': 'fehlgeschlagen',
+        'error': 'Fehler',
+        'blocked': 'blockiert',
+        'isolated': 'isoliert',
+        'critical': 'kritisch',
+        'removed': 'entfernt',
+        'stopped': 'gestoppt',
+        'allowlisted': 'allowlisted',
+        'selected': 'ausgewaehlt',
+        'available': 'verfuegbar',
+        'Initial Access': 'Initial Access',
+        'Execution': 'Execution',
+        'Persistence': 'Persistence',
+        'Privilege Escalation': 'Privilege Escalation',
+        'Defense Evasion': 'Defense Evasion',
+        'Credential Access': 'Credential Access',
+        'Discovery': 'Discovery',
+        'Lateral Movement': 'Lateral Movement',
+        'Collection': 'Collection',
+        'Command And Control': 'Command and Control',
+        'Exfiltration': 'Exfiltration',
+        'Impact': 'Impact'
+    };
+
+    function normalizeText(value) {
+        return $.trim(String(value || '').replace(/\s+/g, ' '));
+    }
+
+    function initialLanguage() {
+        var value = (
+            $('html').attr('lang') ||
+            document.documentElement.getAttribute('lang') ||
+            navigator.language ||
+            navigator.userLanguage ||
+            ''
+        ).toLowerCase();
+        return value.indexOf('de') === 0 ? 'de' : 'en';
+    }
+
+    function extractLanguage(data) {
+        if (!data || typeof data !== 'object') {
+            return '';
+        }
+        if (data.language) {
+            return data.language;
+        }
+        if (data.general && data.general.language) {
+            return data.general.language;
+        }
+        if (data.pondsecndr && data.pondsecndr.general && data.pondsecndr.general.language) {
+            return data.pondsecndr.general.language;
+        }
+        var found = '';
+        $.each(data, function(key, value) {
+            if (!found && key === 'language') {
+                found = value;
+                return false;
+            }
+            if (!found && value && typeof value === 'object') {
+                found = extractLanguage(value);
+            }
+        });
+        return found;
+    }
+
+    function t(key) {
+        return uiLanguage === 'de' && de[key] ? de[key] : key;
+    }
+
+    function translateTextNode(node) {
+        if (node._pondsecOriginalText === undefined) {
+            node._pondsecOriginalText = node.nodeValue || '';
+        }
+        var original = node._pondsecOriginalText;
+        if (uiLanguage !== 'de') {
+            if (node.nodeValue !== original) {
+                node.nodeValue = original;
+            }
+            return;
+        }
+        var key = normalizeText(original);
+        if (!key || !de[key]) {
+            return;
+        }
+        var prefix = (original.match(/^\s*/) || [''])[0];
+        var suffix = (original.match(/\s*$/) || [''])[0];
+        node.nodeValue = prefix + de[key] + suffix;
+    }
+
+    function translateElement(root) {
+        $(root).find('*').addBack().each(function() {
+            var $item = $(this);
+            if ($item.is('script, style, pre, code, textarea, input')) {
+                return;
+            }
+            ['placeholder', 'aria-label', 'title'].forEach(function(attr) {
+                var value = $item.attr(attr);
+                if (value === undefined) {
+                    return;
+                }
+                var dataKey = 'pondsecOriginal' + attr.replace(/[^a-z]/gi, '');
+                if ($item.data(dataKey) === undefined) {
+                    $item.data(dataKey, value);
+                }
+                var original = $item.data(dataKey);
+                var key = normalizeText(original);
+                if (uiLanguage === 'de' && key && de[key]) {
+                    $item.attr(attr, de[key]);
+                } else if (uiLanguage !== 'de') {
+                    $item.attr(attr, original);
+                }
+            });
+            $item.contents().filter(function() {
+                return this.nodeType === 3;
+            }).each(function() {
+                translateTextNode(this);
+            });
+        });
+    }
+
+    function translateVisibleUi() {
+        translateElement($('.pondsec-list-page, #incident_detail_panel, #host_detail_panel'));
+    }
+
+    function scheduleTranslation() {
+        clearTimeout(translationTimer);
+        translationTimer = setTimeout(translateVisibleUi, 0);
+    }
+
+    function setLanguage(language) {
+        uiLanguage = language === 'de' ? 'de' : 'en';
+        scheduleTranslation();
+    }
+
+    function observeTranslations() {
+        if (!window.MutationObserver || translationObserver) {
+            return;
+        }
+        translationObserver = new MutationObserver(scheduleTranslation);
+        $('.pondsec-list-page, #incident_detail_panel, #host_detail_panel').each(function() {
+            translationObserver.observe(this, {childList: true, subtree: true, characterData: true, attributes: true});
+        });
+    }
 
     function escapeHtml(value) {
         return $('<div/>').text(value === null || value === undefined ? '' : String(value)).html();
@@ -76,9 +417,9 @@ $(function() {
 
     function badge(value) {
         if (!hasValue(value)) {
-            return '<span class="pondsec-badge neutral">unknown</span>';
+            return '<span class="pondsec-badge neutral">' + escapeHtml(t('unknown')) + '</span>';
         }
-        return '<span class="pondsec-badge ' + statusClass(value) + '">' + escapeHtml(value) + '</span>';
+        return '<span class="pondsec-badge ' + statusClass(value) + '">' + escapeHtml(t(value)) + '</span>';
     }
 
     function riskCell(value) {
@@ -622,7 +963,7 @@ $(function() {
     }
 
     function runAction(action, id) {
-        if (action === 'delete-incident' && !window.confirm('Delete this incident? Active responses must be released first.')) {
+        if (action === 'delete-incident' && !window.confirm(t('Delete this incident? Active responses must be released first.'))) {
             return;
         }
         var url = actionEndpoint(action, id);
@@ -649,7 +990,7 @@ $(function() {
             return '';
         }
         var state = data.status || (data.item && data.item.status) || 'ok';
-        var message = data.message || data.reason || data.block_id || (data.item && (data.item.block_id || data.item.source_ip)) || 'Action completed';
+        var message = data.message || data.reason || data.block_id || (data.item && (data.item.block_id || data.item.source_ip)) || t('Action completed');
         return '<div class="pondsec-notice ' + statusClass(state) + '">' + badge(state) + '<span>' + escapeHtml(message) + '</span></div>';
     }
 
@@ -998,6 +1339,14 @@ $(function() {
         activateCaseTab($(this).data('case-tab'));
     });
 
+    observeTranslations();
+    translateVisibleUi();
+    ajaxGet('/api/pondsecndr/settings/get', {}, function(data) {
+        var selected = extractLanguage(data);
+        if (selected) {
+            setLanguage(selected);
+        }
+    });
     loadRows();
 });
 </script>
