@@ -10,6 +10,7 @@ from pondsec_ndr.detection.base import Detector, make_detection
 from pondsec_ndr.features.aggregator import shannon_entropy
 from pondsec_ndr.models.runtime import MODEL_ID, ModelRuntimeUnavailable, SaidimnIdsCnnRuntime
 from pondsec_ndr.schema import is_private_ip
+from pondsec_ndr.traffic import is_infrastructure_response_event
 
 
 def _normalised_indicator_text(*values: Any) -> str:
@@ -77,6 +78,8 @@ class VerticalScanDetector(Detector):
     def detect(self, events: list[dict[str, Any]], features: list[dict[str, Any]]) -> list[dict[str, Any]]:
         by_pair: dict[tuple[str, str], set[int]] = defaultdict(set)
         for event in events:
+            if is_infrastructure_response_event(event):
+                continue
             src = event.get("source", {}).get("ip")
             dst = event.get("destination", {}).get("ip")
             port = event.get("destination", {}).get("port")
@@ -112,6 +115,8 @@ class HorizontalScanDetector(Detector):
     def detect(self, events: list[dict[str, Any]], features: list[dict[str, Any]]) -> list[dict[str, Any]]:
         by_source_port: dict[tuple[str, int], set[str]] = defaultdict(set)
         for event in events:
+            if is_infrastructure_response_event(event):
+                continue
             src = event.get("source", {}).get("ip")
             dst = event.get("destination", {}).get("ip")
             port = event.get("destination", {}).get("port")
@@ -186,6 +191,8 @@ class DNSTunnelingDetector(Detector):
     def _detect_from_query_events(self, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         by_source: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for event in events:
+            if is_infrastructure_response_event(event):
+                continue
             if event.get("event_type") != "dns":
                 continue
             src = event.get("source", {}).get("ip")
@@ -266,6 +273,8 @@ class BeaconingDetector(Detector):
     def detect(self, events: list[dict[str, Any]], features: list[dict[str, Any]]) -> list[dict[str, Any]]:
         by_tuple: dict[tuple[str, str, int | None], list[float]] = defaultdict(list)
         for event in events:
+            if is_infrastructure_response_event(event):
+                continue
             src = event.get("source", {}).get("ip")
             dst = event.get("destination", {}).get("ip")
             port = event.get("destination", {}).get("port")

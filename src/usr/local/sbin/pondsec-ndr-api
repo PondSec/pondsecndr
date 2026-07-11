@@ -1,0 +1,38 @@
+#!/usr/local/bin/python3
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+
+
+def main() -> int:
+    command = ["/usr/local/sbin/pondsec-ndrctl", *sys.argv[1:], "--json"]
+    completed = subprocess.run(command, capture_output=True, text=True)
+    stdout = (completed.stdout or "").strip()
+    stderr = (completed.stderr or "").strip()
+
+    if stdout:
+        try:
+            json.loads(stdout)
+        except json.JSONDecodeError:
+            pass
+        else:
+            print(stdout)
+            return 0
+
+    payload: dict[str, object] = {
+        "status": "error",
+        "message": "backend command returned invalid json",
+        "returncode": completed.returncode,
+    }
+    if stdout:
+        payload["stdout"] = stdout[-4000:]
+    if stderr:
+        payload["stderr"] = stderr[-4000:]
+    print(json.dumps(payload, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -9,6 +9,7 @@ from statistics import mean, pstdev
 from typing import Any
 
 from pondsec_ndr.schema import FEATURE_SCHEMA_VERSION, is_private_ip
+from pondsec_ndr.traffic import is_infrastructure_response_event
 
 
 def _parse_time(value: str) -> float:
@@ -74,6 +75,8 @@ def _base_feature(source_ip: str) -> dict[str, Any]:
 def aggregate_features(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for event in events:
+        if is_infrastructure_response_event(event):
+            continue
         src = event.get("source", {}).get("ip")
         if src:
             grouped[src].append(event)

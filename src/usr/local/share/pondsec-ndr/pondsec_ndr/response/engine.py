@@ -248,6 +248,46 @@ def propose_manual_block(
     }, actor=actor)
 
 
+def propose_manual_block_for_incident(
+    store: EventStore,
+    config: PondSecConfig,
+    incident_id: str,
+    actor: str = "system",
+    duration_seconds: int | None = None,
+) -> dict[str, Any]:
+    incident = store.get_incident(incident_id)
+    if incident is None:
+        raise ResponseDenied("incident not found")
+    source_ip = _response_target_for_incident(incident)
+    if not source_ip:
+        raise ResponseDenied("incident has no response target")
+    source_ip = validate_ip_or_network(source_ip)
+    if is_protected_target(source_ip, config):
+        raise ResponseDenied("source IP is protected")
+    if config.response.enforce_allowlist and is_allowlisted(source_ip, store.allowlist_values() + config.response.break_glass_values):
+        raise ResponseDenied("source IP is allowlisted")
+    existing = store.existing_response_block(incident_id, source_ip) or store.existing_response_block(None, source_ip)
+    if existing:
+        return dict(existing)
+
+    duration = duration_seconds or config.response.default_block_seconds
+    duration = min(duration, config.response.max_block_seconds)
+    expires_at = (datetime.now(timezone.utc) + timedelta(seconds=duration)).isoformat()
+    return store.add_block_entry({
+        "incident_id": incident_id,
+        "source_ip": source_ip,
+        "destination": incident.get("destination_ip"),
+        "reason": f"Manual block for incident {incident_id}",
+        "risk_score": int(incident.get("risk_score") or 0),
+        "confidence": float(incident.get("confidence") or 0),
+        "policy_id": "manual-incident",
+        "expires_at": expires_at,
+        "created_by": actor,
+        "automatic": False,
+        "status": "proposed",
+    }, actor=actor)
+
+
 def activate_block(
     store: EventStore,
     config: PondSecConfig,

@@ -32,6 +32,7 @@ for path in \
     /usr/local/opnsense/service/templates/OPNsense/PondSecNDR \
     /usr/local/share/pondsec-ndr \
     /usr/local/sbin/pondsec-ndr \
+    /usr/local/sbin/pondsec-ndr-api \
     /usr/local/sbin/pondsec-ndrctl \
     /usr/local/etc/rc.d/pondsec_ndr \
     /usr/local/etc/inc/plugins.inc.d/pondsecndr.inc; do
@@ -56,7 +57,7 @@ sudo cp -p "$STAGE/src/opnsense/service/conf/actions.d/actions_pondsecndr.conf" 
 sudo cp -Rp "$STAGE/src/opnsense/service/templates/OPNsense/PondSecNDR" /usr/local/opnsense/service/templates/OPNsense/
 sudo rm -rf /usr/local/share/pondsec-ndr
 sudo cp -Rp "$STAGE/src/usr/local/share/pondsec-ndr" /usr/local/share/pondsec-ndr
-sudo cp -p "$STAGE/src/usr/local/sbin/pondsec-ndr" "$STAGE/src/usr/local/sbin/pondsec-ndrctl" /usr/local/sbin/
+sudo cp -p "$STAGE/src/usr/local/sbin/pondsec-ndr" "$STAGE/src/usr/local/sbin/pondsec-ndr-api" "$STAGE/src/usr/local/sbin/pondsec-ndrctl" /usr/local/sbin/
 sudo cp -p "$STAGE/src/usr/local/etc/rc.d/pondsec_ndr" /usr/local/etc/rc.d/pondsec_ndr
 sudo cp -p "$STAGE/src/usr/local/etc/inc/plugins.inc.d/pondsecndr.inc" /usr/local/etc/inc/plugins.inc.d/pondsecndr.inc
 
@@ -95,10 +96,11 @@ sudo chown -R root:wheel \
     /usr/local/opnsense/service/templates/OPNsense/PondSecNDR \
     /usr/local/share/pondsec-ndr \
     /usr/local/sbin/pondsec-ndr \
+    /usr/local/sbin/pondsec-ndr-api \
     /usr/local/sbin/pondsec-ndrctl \
     /usr/local/etc/rc.d/pondsec_ndr \
     /usr/local/etc/inc/plugins.inc.d/pondsecndr.inc
-sudo chmod 755 /usr/local/sbin/pondsec-ndr /usr/local/sbin/pondsec-ndrctl /usr/local/etc/rc.d/pondsec_ndr
+sudo chmod 755 /usr/local/sbin/pondsec-ndr /usr/local/sbin/pondsec-ndr-api /usr/local/sbin/pondsec-ndrctl /usr/local/etc/rc.d/pondsec_ndr
 sudo find /usr/local/share/pondsec-ndr -type f -name "*.py" -exec chmod 644 {} +
 sudo chown -R pondsecndr:pondsecndr /var/db/pondsec-ndr /var/log/pondsec-ndr /var/run/pondsec-ndr
 

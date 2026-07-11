@@ -37,6 +37,14 @@ class BlocklistController extends ApiControllerBase
         return $this->runBackendJson('blocklist_propose ' . escapeshellarg($incidentId));
     }
 
+    public function manualIncidentAction($incidentId = null)
+    {
+        if ($incidentId === null) {
+            return array('status' => 'error', 'message' => 'missing incident id');
+        }
+        return $this->runBackendJson('blocklist_manual_incident ' . escapeshellarg($incidentId));
+    }
+
     public function activateAction($id = null)
     {
         if ($id === null) {

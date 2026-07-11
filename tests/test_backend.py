@@ -35,6 +35,7 @@ from pondsec_ndr.detection.detectors import (
     SupplyChainCallbackDetector,
     SuricataAlertAdapter,
     UnusualDestinationDetector,
+    VerticalScanDetector,
 )
 from pondsec_ndr.diagnostics import diagnostic_archive, diagnostics as diagnostics_payload, eve_access_status
 from pondsec_ndr.features.aggregator import aggregate_features, shannon_entropy
@@ -43,7 +44,7 @@ from pondsec_ndr.models.manager import model_inventory
 from pondsec_ndr.models.runtime import SaidimnIdsCnnRuntime
 from pondsec_ndr.normalizers.suricata import normalize_eve
 from pondsec_ndr.privacy import export_privacy_bundle, purge_telemetry_before
-from pondsec_ndr.response.engine import ResponseDenied, activate_block, is_protected_target, propose_block_for_incident, propose_manual_block, remove_block
+from pondsec_ndr.response.engine import ResponseDenied, activate_block, is_protected_target, propose_block_for_incident, propose_manual_block, propose_manual_block_for_incident, remove_block
 from pondsec_ndr.response.pf import PFTableEnforcer
 from pondsec_ndr.sensor import eve_types_from_suricata_yaml, patch_suricata_yaml_text, required_eve_types
 from pondsec_ndr.service import PondSecService
@@ -281,6 +282,53 @@ class BackendTests(unittest.TestCase):
         detections = PortScanDetector().detect(events, features)
         self.assertTrue(any(item["detector_id"] == "pondsec.portscan" for item in detections))
         self.assertGreaterEqual(detections[0]["confidence"], 0.8)
+
+    def test_dns_responses_do_not_create_scan_or_beacon_detections(self) -> None:
+        events = [
+            normalize_eve({
+                "timestamp": f"2026-07-05T10:{i:02d}:00+00:00",
+                "event_type": "dns",
+                "src_ip": "192.168.20.5",
+                "src_port": 53,
+                "dest_ip": "192.168.20.115",
+                "dest_port": 49152 + i,
+                "proto": "UDP",
+                "dns": {
+                    "type": "response",
+                    "rrname": "clientconfig.akamai.steamstatic.com",
+                    "rrtype": "A",
+                    "rcode": "NOERROR",
+                    "answers": [{"rrname": "clientconfig.akamai.steamstatic.com", "rrtype": "A"}],
+                },
+            })
+            for i in range(12)
+        ]
+        features = aggregate_features(events)
+        self.assertEqual(features, [])
+        self.assertEqual(PortScanDetector().detect(events, features), [])
+        self.assertEqual(VerticalScanDetector().detect(events, features), [])
+        self.assertEqual(BeaconingDetector().detect(events, features), [])
+
+    def test_high_entropy_dns_responses_do_not_look_like_tunneling(self) -> None:
+        events = [
+            normalize_eve({
+                "timestamp": f"2026-07-05T10:00:{i:02d}+00:00",
+                "event_type": "dns",
+                "src_ip": "192.168.20.5",
+                "src_port": 53,
+                "dest_ip": "192.168.20.115",
+                "dest_port": 50000 + i,
+                "proto": "UDP",
+                "dns": {
+                    "type": "response",
+                    "rrname": f"q9w8e7r6t5y4u3i2o1p0asdfghjklzxcvbnm{i:02d}.validation.pondsec.test",
+                    "rrtype": "TXT",
+                    "rcode": "NXDOMAIN",
+                },
+            })
+            for i in range(10)
+        ]
+        self.assertEqual(DNSTunnelingDetector().detect(events, aggregate_features(events)), [])
 
     def test_event_store_recent_events_returns_detector_shape(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -3445,6 +3493,48 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(proposal["source_ip"], "203.0.113.44")
             self.assertEqual(proposal["policy_id"], "manual")
             self.assertEqual(store.list_rows("block_entries")[0]["status"], "proposed")
+
+    def test_response_engine_manual_incident_block_bypasses_score_threshold_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            incident = {
+                "incident_id": "incident-manual-low-risk",
+                "title": "Manual low risk block",
+                "status": "open",
+                "risk_score": 60,
+                "severity": 7,
+                "confidence": 0.72,
+                "source_ip": "203.0.113.88",
+                "destination_ip": "192.168.30.3",
+                "category": "reconnaissance",
+                "created_at": "2026-07-05T10:00:00+00:00",
+                "updated_at": "2026-07-05T10:00:00+00:00",
+                "evidence": {},
+                "risk_factors": [],
+                "detection_ids": [],
+            }
+            store.insert_incidents([incident])
+            config = PondSecConfig(response=ResponseConfig(minimum_risk_score=95, minimum_confidence=95))
+            with self.assertRaisesRegex(ResponseDenied, "risk score"):
+                propose_block_for_incident(store, config, "incident-manual-low-risk", actor="test")
+
+            proposal = propose_manual_block_for_incident(store, config, "incident-manual-low-risk", actor="test", duration_seconds=300)
+            self.assertEqual(proposal["status"], "proposed")
+            self.assertEqual(proposal["incident_id"], "incident-manual-low-risk")
+            self.assertEqual(proposal["source_ip"], "203.0.113.88")
+            self.assertEqual(proposal["risk_score"], 60)
+            self.assertEqual(proposal["policy_id"], "manual-incident")
+            commands: list[list[str]] = []
+
+            def fake_runner(command: list[str]) -> subprocess.CompletedProcess[str]:
+                commands.append(command)
+                return subprocess.CompletedProcess(command, 0, "ok", "")
+
+            activation = activate_block(store, config, proposal["block_id"], actor="test", enforcer=PFTableEnforcer(runner=fake_runner))
+            self.assertEqual(activation["status"], "ok")
+            self.assertEqual(store.get_block_entry(proposal["block_id"])["status"], "active")
+            self.assertIn(["/sbin/pfctl", "-t", "virusprot", "-T", "add", "203.0.113.88"], commands)
 
     def test_response_engine_reuses_existing_active_source_block(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
