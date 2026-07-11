@@ -250,6 +250,18 @@ class BackendTests(unittest.TestCase):
         self.assertTrue(any(item["detector_id"] == "pondsec.portscan" for item in detections))
         self.assertGreaterEqual(detections[0]["confidence"], 0.8)
 
+    def test_event_store_recent_events_returns_detector_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            event = normalize_eve(flow_event("2026-07-05T10:00:00+00:00", "192.168.10.52", "192.168.20.52", 22))
+            store.insert_events([event])
+            recent = store.recent_events("2026-07-05T09:59:00+00:00")
+            self.assertEqual(len(recent), 1)
+            self.assertEqual(recent[0]["source"]["ip"], "192.168.10.52")
+            self.assertEqual(recent[0]["destination"]["port"], 22)
+            self.assertEqual(recent[0]["metadata"]["flow_reason"], "timeout")
+
     def test_filterlog_block_lines_feed_portscan_detection(self) -> None:
         def filterlog_line(port: int) -> str:
             return (
@@ -1959,6 +1971,39 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(result["status"], "healthy")
             self.assertGreaterEqual(result["inserted_events"], 15)
             self.assertGreaterEqual(result["detections"], 1)
+
+    def test_service_run_once_detects_split_scan_with_recent_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            eve = root / "eve.json"
+            first_batch = [
+                json.dumps(flow_event(f"2026-07-05T10:00:{i:02d}+00:00", "192.168.10.93", "192.168.20.93", 20 + i))
+                for i in range(6)
+            ]
+            eve.write_text("\n".join(first_batch) + "\n", encoding="utf-8")
+            config = PondSecConfig(
+                enabled=True,
+                suricata_eve_path=str(eve),
+                data_dir=root / "db",
+                log_dir=root / "log",
+                run_dir=root / "run",
+                detection=DetectionConfig(machine_learning=False, learning_mode=False),
+            )
+            service = PondSecService(config)
+            first = service.run_once(max_lines=100)
+            self.assertEqual(first["status"], "healthy")
+            self.assertEqual(first["detections"], 0)
+
+            second_batch = [
+                json.dumps(flow_event(f"2026-07-05T10:00:{i:02d}+00:00", "192.168.10.93", "192.168.20.93", 20 + i))
+                for i in range(6, 12)
+            ]
+            with eve.open("a", encoding="utf-8") as handle:
+                handle.write("\n".join(second_batch) + "\n")
+            second = service.run_once(max_lines=100)
+            self.assertEqual(second["status"], "healthy")
+            self.assertGreaterEqual(second["analysis_events"], 12)
+            self.assertGreaterEqual(second["detections"], 1)
 
     def test_service_run_once_applies_queue_backpressure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

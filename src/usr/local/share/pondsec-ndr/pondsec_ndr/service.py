@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from dataclasses import asdict, replace
 import grp
 import os
@@ -92,6 +92,17 @@ class PondSecService:
             os.chown(path, user.pw_uid, group.gr_gid)
         except OSError:
             return
+
+    @staticmethod
+    def _event_timestamp(event: dict[str, Any]) -> datetime:
+        value = str(event.get("timestamp") or "")
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return datetime.now(timezone.utc)
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
 
     def install_signal_handlers(self) -> None:
         signal.signal(signal.SIGTERM, self._request_stop)
@@ -292,8 +303,22 @@ class PondSecService:
                 }
 
         inserted_events = self.store.insert_events(events)
-        features = self.store.score_features_against_baselines(
+        current_features = self.store.score_features_against_baselines(
             aggregate_features(events),
+            minimum_observations=self.config.detection.minimum_observations,
+            minimum_peer_members=self.config.detection.peer_group_minimum_members,
+        )
+        analysis_window_seconds = min(300, max(60, self.config.detection.correlation_window_minutes * 60))
+        analysis_events = events
+        if events:
+            latest_event_time = max(self._event_timestamp(event) for event in events)
+            cutoff = (latest_event_time - timedelta(seconds=analysis_window_seconds)).isoformat()
+            analysis_events = self.store.recent_events(
+                cutoff,
+                limit=min(max(self.config.max_queue_length, len(events)), 50000),
+            )
+        features = self.store.score_features_against_baselines(
+            aggregate_features(analysis_events),
             minimum_observations=self.config.detection.minimum_observations,
             minimum_peer_members=self.config.detection.peer_group_minimum_members,
         )
@@ -317,7 +342,7 @@ class PondSecService:
         inserted_incidents = self.store.insert_incidents(incidents)
         anomalous_sources = self._baseline_skip_sources(detections)
         baseline_updates = self.store.update_host_baselines(
-            features,
+            current_features,
             skip_sources=anomalous_sources,
             minimum_observations=self.config.detection.minimum_observations,
         )
@@ -361,6 +386,8 @@ class PondSecService:
             "normalization_errors": normalization_errors,
             "queue_drops": self.counters["queue_drops"],
             "queue_size": len(events),
+            "analysis_window_seconds": analysis_window_seconds,
+            "analysis_events": len(analysis_events),
             "max_queue_length": self.config.max_queue_length,
             "resource_usage": resource_usage,
             "resource_warnings": resource_warnings,
@@ -382,6 +409,7 @@ class PondSecService:
             "limits": {
                 "max_event_rate": self.config.max_event_rate,
                 "max_queue_length": self.config.max_queue_length,
+                "analysis_window_seconds": analysis_window_seconds,
                 "max_database_mb": self.config.max_database_mb,
                 "incident_rate_limit_per_minute": self.config.incident_rate_limit_per_minute,
                 "pf_action_rate_limit_per_minute": self.config.pf_action_rate_limit_per_minute,
@@ -413,6 +441,8 @@ class PondSecService:
                 "netflow": asdict(netflow_stats) if netflow_stats else None,
             },
             "inserted_events": inserted_events,
+            "analysis_window_seconds": analysis_window_seconds,
+            "analysis_events": len(analysis_events),
             "detections": inserted_detections,
             "incidents": inserted_incidents,
             "suppressed_incidents": suppressed_incidents,

@@ -969,6 +969,53 @@ class EventStore:
             self._upsert_hosts(conn, events)
             return inserted_events
 
+    def recent_events(self, since: str, limit: int = 5000) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit or 5000), 50000))
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM (
+                    SELECT event_id, schema_version, event_type, timestamp,
+                           source_ip, source_port, source_interface,
+                           destination_ip, destination_port, protocol, direction,
+                           metadata_json, raw_source
+                    FROM events
+                    WHERE timestamp >= ?
+                    ORDER BY timestamp DESC
+                    LIMIT ?
+                )
+                ORDER BY timestamp ASC
+                """,
+                (since, limit),
+            ).fetchall()
+        events: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                metadata = json.loads(row["metadata_json"] or "{}")
+            except json.JSONDecodeError:
+                metadata = {}
+            events.append({
+                "event_id": row["event_id"],
+                "schema_version": row["schema_version"],
+                "event_type": row["event_type"],
+                "timestamp": row["timestamp"],
+                "source": {
+                    "ip": row["source_ip"],
+                    "port": row["source_port"],
+                    "interface": row["source_interface"],
+                },
+                "destination": {
+                    "ip": row["destination_ip"],
+                    "port": row["destination_port"],
+                },
+                "protocol": row["protocol"],
+                "direction": row["direction"],
+                "metadata": metadata,
+                "raw_source": row["raw_source"],
+            })
+        return events
+
     def _upsert_hosts(self, conn: sqlite3.Connection, events: list[dict[str, Any]]) -> None:
         by_host: dict[str, dict[str, Any]] = {}
         for event in events:
