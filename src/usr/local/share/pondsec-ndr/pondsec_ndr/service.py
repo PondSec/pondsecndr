@@ -313,9 +313,10 @@ class PondSecService:
         if events:
             latest_event_time = max(self._event_timestamp(event) for event in events)
             cutoff = (latest_event_time - timedelta(seconds=analysis_window_seconds)).isoformat()
+            analysis_limit = min(max(self.config.max_event_rate, self.config.max_queue_length, len(events), 10000), 50000)
             analysis_events = self.store.recent_events(
                 cutoff,
-                limit=min(max(self.config.max_queue_length, len(events)), 50000),
+                limit=analysis_limit,
             )
         features = self.store.score_features_against_baselines(
             aggregate_features(analysis_events),
