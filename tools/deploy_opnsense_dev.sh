@@ -60,6 +60,10 @@ sudo cp -p "$STAGE/src/usr/local/sbin/pondsec-ndr" "$STAGE/src/usr/local/sbin/po
 sudo cp -p "$STAGE/src/usr/local/etc/rc.d/pondsec_ndr" /usr/local/etc/rc.d/pondsec_ndr
 sudo cp -p "$STAGE/src/usr/local/etc/inc/plugins.inc.d/pondsecndr.inc" /usr/local/etc/inc/plugins.inc.d/pondsecndr.inc
 
+if [ -f /conf/config.xml ]; then
+    sudo perl -0pi -e "s{(<pondsecndr\\b.*?</pondsecndr>)}{my \$b=\$1; \$b =~ s#(<general>.*?<mode>)\\w+(</mode>.*?</general>)#\${1}monitor\$2#s; \$b =~ s#(<learning_mode>)\\d+(</learning_mode>)#\${1}1\$2#g; \$b =~ s#(<learning_days>)\\d+(</learning_days>)#\${1}14\$2#g; \$b =~ s#(<early_ai_activation_override>)\\d+(</early_ai_activation_override>)#\${1}0\$2#g; \$b =~ s#(<response>.*?<mode>)\\w+(</mode>.*?</response>)#\${1}observe\$2#s; \$b =~ s#(<ai_full_decision_mode>)\\d+(</ai_full_decision_mode>)#\${1}0\$2#g; \$b =~ s#(<automatic_blocking>)\\d+(</automatic_blocking>)#\${1}0\$2#g; \$b =~ s#(<minimum_confidence>)\\d+(</minimum_confidence>)#\${1}95\$2#g; \$b =~ s#(<minimum_risk_score>)\\d+(</minimum_risk_score>)#\${1}95\$2#g; \$b =~ s#(<block_external>)\\d+(</block_external>)#\${1}0\$2#g; \$b =~ s#(<isolate_internal>)\\d+(</isolate_internal>)#\${1}0\$2#g; \$b =~ s#(<manual_confirmation>)\\d+(</manual_confirmation>)#\${1}1\$2#g; \$b}seg" /conf/config.xml
+fi
+
 if [ -d /var/log/suricata ]; then
     sudo sh -c "getfacl /var/log/suricata /var/log/suricata/eve.json > \"$BACKUP/suricata-acl-before.txt\" 2>/dev/null || true"
     sudo setfacl -m u:pondsecndr:xaRcs::allow /var/log/suricata || true
@@ -99,6 +103,8 @@ sudo find /usr/local/share/pondsec-ndr -type f -name "*.py" -exec chmod 644 {} +
 sudo chown -R pondsecndr:pondsecndr /var/db/pondsec-ndr /var/log/pondsec-ndr /var/run/pondsec-ndr
 
 sudo service configd restart
+sudo configctl template reload OPNsense/PondSecNDR >/dev/null 2>&1 || true
+sudo /sbin/pfctl -t virusprot -T flush >/dev/null 2>&1 || true
 sudo service pondsec_ndr onestart >/dev/null
 sudo service pondsec_ndr onestatus || true
 echo "backup=$BACKUP"
