@@ -23,6 +23,7 @@ from pondsec_ndr.config import PondSecConfig, ensure_directories, load_config
 from pondsec_ndr.correlation import correlate_detections
 from pondsec_ndr.detection.detectors import default_detectors
 from pondsec_ndr.features.aggregator import aggregate_features
+from pondsec_ndr.intel.ioc import enrich_events_with_local_iocs
 from pondsec_ndr.logging_json import configure_logging
 from pondsec_ndr.response.engine import ResponseDenied, activate_block, propose_block_for_incident
 from pondsec_ndr.storage.database import EventStore
@@ -232,6 +233,7 @@ class PondSecService:
             self.netflow_collector.close()
             self.netflow_collector = None
         events = self._filter_events(events)
+        events = enrich_events_with_local_iocs(events, self.config.data_dir)
         events, backpressure_drops = self._apply_queue_backpressure(events)
         parser_errors = (
             stats.parser_errors

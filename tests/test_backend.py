@@ -46,6 +46,7 @@ from pondsec_ndr.detection.detectors import (
 )
 from pondsec_ndr.diagnostics import diagnostic_archive, diagnostics as diagnostics_payload, eve_access_status
 from pondsec_ndr.features.aggregator import aggregate_features, shannon_entropy
+from pondsec_ndr.intel.ioc import enrich_events_with_local_iocs, load_local_indicators
 from pondsec_ndr.models.cicids_features import CICIDS2017_FEATURES, cicids_vector_from_feature
 from pondsec_ndr.models.manager import model_inventory
 from pondsec_ndr.models.runtime import SaidimnIdsCnnRuntime
@@ -1509,6 +1510,90 @@ class BackendTests(unittest.TestCase):
         incidents = correlate_detections(detections)
         self.assertEqual(len(incidents), 1)
         self.assertEqual(incidents[0]["evidence"]["correlation"]["promotion"]["reason"], "strong_detector")
+
+    def test_local_ioc_text_feed_enriches_domain_event(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            intel_dir = data_dir / "intel"
+            intel_dir.mkdir()
+            (intel_dir / "local_iocs.txt").write_text(
+                "domain:c2.validation.pondsec.test # local validation IOC\n",
+                encoding="utf-8",
+            )
+            event = normalize_eve({
+                "timestamp": "2026-07-05T12:35:00+00:00",
+                "event_type": "tls",
+                "src_ip": "192.168.10.33",
+                "src_port": 52033,
+                "dest_ip": "203.0.113.33",
+                "dest_port": 443,
+                "proto": "TCP",
+                "tls": {"sni": "sub.c2.validation.pondsec.test", "version": "TLSv1.3"},
+            })
+
+            enriched = enrich_events_with_local_iocs([event], data_dir)
+
+            self.assertEqual(enriched[0]["metadata"]["ioc_match"], "c2.validation.pondsec.test")
+            self.assertEqual(enriched[0]["metadata"]["ioc_type"], "domain")
+            detections = ThreatIntelIndicatorDetector().detect(enriched, [])
+            self.assertEqual(len(detections), 1)
+            self.assertEqual(detections[0]["evidence"]["threat_intel_source"], "local_iocs.txt")
+
+    def test_local_ioc_json_feed_supports_file_hashes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            intel_dir = data_dir / "intel"
+            intel_dir.mkdir()
+            (intel_dir / "local_iocs.json").write_text(json.dumps({
+                "hashes": [{
+                    "value": "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f",
+                    "confidence": 99,
+                    "label": "validation file hash",
+                }]
+            }), encoding="utf-8")
+            event = normalize_eve({
+                "timestamp": "2026-07-05T12:35:30+00:00",
+                "event_type": "fileinfo",
+                "src_ip": "198.51.100.56",
+                "src_port": 443,
+                "dest_ip": "192.168.10.34",
+                "dest_port": 52034,
+                "proto": "TCP",
+                "fileinfo": {
+                    "filename": "sample.bin",
+                    "sha256": "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f",
+                },
+            })
+
+            indicators = load_local_indicators(data_dir)
+            enriched = enrich_events_with_local_iocs([event], data_dir)
+
+            self.assertEqual(len(indicators), 1)
+            self.assertEqual(indicators[0].kind, "hash")
+            self.assertEqual(enriched[0]["metadata"]["ioc_type"], "hash")
+            self.assertEqual(enriched[0]["metadata"]["threat_intel_confidence"], 0.99)
+
+    def test_local_ioc_feed_does_not_mark_unmatched_benign_event(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            intel_dir = data_dir / "intel"
+            intel_dir.mkdir()
+            (intel_dir / "local_iocs.txt").write_text("domain:bad.validation.pondsec.test\n", encoding="utf-8")
+            event = normalize_eve({
+                "timestamp": "2026-07-05T12:36:00+00:00",
+                "event_type": "tls",
+                "src_ip": "192.168.10.35",
+                "src_port": 52035,
+                "dest_ip": "198.51.100.35",
+                "dest_port": 443,
+                "proto": "TCP",
+                "tls": {"sni": "updates.example.test", "version": "TLSv1.3"},
+            })
+
+            enriched = enrich_events_with_local_iocs([event], data_dir)
+
+            self.assertNotIn("ioc_match", enriched[0]["metadata"])
+            self.assertEqual(ThreatIntelIndicatorDetector().detect(enriched, []), [])
 
     def test_store_migration_inserts_events_and_dashboard_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
