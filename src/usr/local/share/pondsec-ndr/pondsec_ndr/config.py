@@ -16,6 +16,7 @@ LOG_DIR = Path(os.environ.get("PONDSEC_NDR_LOG_DIR", "/var/log/pondsec-ndr"))
 RUN_DIR = Path(os.environ.get("PONDSEC_NDR_RUN_DIR", "/var/run/pondsec-ndr"))
 
 MODES = {"monitor", "alert", "interactive", "prevent"}
+RESPONSE_MODES = {"observe", "recommend", "enforce"}
 DIRECTIONS = {"ingress", "egress", "both"}
 
 
@@ -167,18 +168,35 @@ class ThreatIntelConfig:
 
 @dataclass(slots=True)
 class ResponseConfig:
+    mode: str = "observe"
+    ai_full_decision_mode: bool = False
+    kill_switch: bool = False
+    maintenance_mode: bool = False
     automatic_blocking: bool = False
     minimum_confidence: int = 95
-    minimum_risk_score: int = 90
+    minimum_risk_score: int = 95
+    minimum_severity: int = 9
+    min_internal_event_count: int = 3
+    min_internal_detection_count: int = 3
+    min_internal_categories: int = 3
+    min_supporting_indicators: int = 2
+    min_independent_engines: int = 2
+    baseline_stable_observations: int = 50
     default_block_seconds: int = 3600
+    auto_isolation_seconds: int = 900
     max_block_seconds: int = 86400
     max_concurrent_blocks: int = 100
+    max_internal_isolations_per_hour: int = 1
+    max_auto_isolation_candidates_per_run: int = 3
     block_external: bool = False
     isolate_internal: bool = False
     manual_confirmation: bool = True
     protect_management_networks: bool = True
     forbid_block_on_service_error: bool = True
     enforce_allowlist: bool = True
+    protected_networks: list[str] = field(default_factory=list)
+    protected_hosts: list[str] = field(default_factory=list)
+    break_glass_values: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -213,14 +231,16 @@ class PondSecConfig:
         errors: list[str] = []
         if self.mode not in MODES:
             errors.append(f"invalid mode: {self.mode}")
+        if self.response.mode not in RESPONSE_MODES:
+            errors.append(f"invalid response mode: {self.response.mode}")
         if self.interfaces.direction not in DIRECTIONS:
             errors.append(f"invalid direction: {self.interfaces.direction}")
         if not self.fail_open:
             errors.append("fail_open must remain enabled in the foundation release")
         if self.mode == "prevent" and not self.response.manual_confirmation and self.response.minimum_confidence < 75:
             errors.append("prevent mode without manual confirmation requires at least 75 percent confidence")
-        if self.response.automatic_blocking and self.mode not in {"interactive", "prevent"}:
-            errors.append("automatic blocking can only be enabled in interactive or prevent mode")
+        if self.response.mode == "enforce" and not self.response.automatic_blocking:
+            errors.append("response enforce mode requires automatic blocking to be enabled")
         if self.retention_days < 1:
             errors.append("retention_days must be positive")
         if self.max_database_mb < 64:
@@ -235,6 +255,8 @@ class PondSecConfig:
             errors.append("correlation_window_minutes must be positive")
         if self.threat_intel.cache_ttl_hours < 1:
             errors.append("threat_intel cache_ttl_hours must be positive")
+        if self.response.max_internal_isolations_per_hour < 0:
+            errors.append("max_internal_isolations_per_hour must not be negative")
         return errors
 
 
@@ -322,18 +344,35 @@ def load_config(path: Path | None = None) -> PondSecConfig:
             api_timeout_seconds=_int(threat_intel.get("api_timeout_seconds"), 5, 1, 30),
         ),
         response=ResponseConfig(
+            mode=str(response.get("mode") or "observe").strip().lower() if str(response.get("mode") or "observe").strip().lower() in RESPONSE_MODES else "observe",
+            ai_full_decision_mode=_bool(response.get("ai_full_decision_mode"), False),
+            kill_switch=_bool(response.get("kill_switch"), False),
+            maintenance_mode=_bool(response.get("maintenance_mode"), False),
             automatic_blocking=_bool(response.get("automatic_blocking"), False),
             minimum_confidence=_int(response.get("minimum_confidence"), 95, 1, 100),
-            minimum_risk_score=_int(response.get("minimum_risk_score"), 90, 1, 100),
+            minimum_risk_score=_int(response.get("minimum_risk_score"), 95, 1, 100),
+            minimum_severity=_int(response.get("minimum_severity"), 9, 1, 10),
+            min_internal_event_count=_int(response.get("min_internal_event_count"), 3, 1, 100000),
+            min_internal_detection_count=_int(response.get("min_internal_detection_count"), 3, 1, 100000),
+            min_internal_categories=_int(response.get("min_internal_categories"), 3, 1, 100),
+            min_supporting_indicators=_int(response.get("min_supporting_indicators"), 2, 0, 100),
+            min_independent_engines=_int(response.get("min_independent_engines"), 2, 1, 100),
+            baseline_stable_observations=_int(response.get("baseline_stable_observations"), 50, 1, 10000000),
             default_block_seconds=_int(response.get("default_block_seconds"), 3600, 60, 604800),
+            auto_isolation_seconds=_int(response.get("auto_isolation_seconds"), 900, 60, 604800),
             max_block_seconds=_int(response.get("max_block_seconds"), 86400, 60, 2592000),
             max_concurrent_blocks=_int(response.get("max_concurrent_blocks"), 100, 0, 100000),
+            max_internal_isolations_per_hour=_int(response.get("max_internal_isolations_per_hour"), 1, 0, 100000),
+            max_auto_isolation_candidates_per_run=_int(response.get("max_auto_isolation_candidates_per_run"), 3, 1, 100000),
             block_external=_bool(response.get("block_external"), False),
             isolate_internal=_bool(response.get("isolate_internal"), False),
             manual_confirmation=_bool(response.get("manual_confirmation"), True),
             protect_management_networks=_bool(response.get("protect_management_networks"), True),
             forbid_block_on_service_error=_bool(response.get("forbid_block_on_service_error"), True),
             enforce_allowlist=_bool(response.get("enforce_allowlist"), True),
+            protected_networks=_csv(response.get("protected_networks")),
+            protected_hosts=_csv(response.get("protected_hosts")),
+            break_glass_values=_csv(response.get("break_glass_values")),
         ),
         data_dir=data_dir,
         log_dir=log_dir,

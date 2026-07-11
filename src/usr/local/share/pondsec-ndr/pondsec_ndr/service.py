@@ -333,9 +333,28 @@ class PondSecService:
         return filtered
 
     def _auto_response(self, incidents: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        if not incidents or not self.config.response.automatic_blocking or self.config.mode not in {"interactive", "prevent"}:
+        if not incidents or not self.config.response.automatic_blocking:
             return []
+        if self.config.response.mode == "observe":
+            actions = []
+            for incident in incidents:
+                decision = {
+                    "status": "observe",
+                    "reason": "response policy is in observe mode",
+                    "response_mode": self.config.response.mode,
+                    "automatic": True,
+                }
+                self.store.audit_response_decision(incident.get("incident_id"), "observe", decision, actor="auto-response")
+                actions.append({
+                    "incident_id": incident.get("incident_id"),
+                    "source_ip": incident.get("source_ip"),
+                    "status": "observed",
+                    "reason": decision["reason"],
+                    "mode": self.config.response.mode,
+                })
+            return actions
         actions: list[dict[str, Any]] = []
+        mass_isolation_safety = len(incidents) > self.config.response.max_auto_isolation_candidates_per_run
         for incident in incidents:
             incident_id = incident.get("incident_id")
             if not incident_id:
@@ -346,7 +365,7 @@ class PondSecService:
                     "source_ip": incident.get("source_ip"),
                     "status": "skipped",
                     "reason": "pf_action_rate_limit_exceeded",
-                    "mode": self.config.mode,
+                    "mode": self.config.response.mode,
                 })
                 continue
             if self._requires_manual_response(incident):
@@ -355,7 +374,7 @@ class PondSecService:
                     "source_ip": incident.get("source_ip"),
                     "status": "skipped",
                     "reason": "baseline-only anomaly requires manual confirmation",
-                    "mode": self.config.mode,
+                    "mode": self.config.response.mode,
                 })
                 continue
             try:
@@ -370,11 +389,15 @@ class PondSecService:
                     "incident_id": incident_id,
                     "source_ip": proposal.get("source_ip"),
                     "block_id": proposal.get("block_id"),
-                    "mode": self.config.mode,
+                    "mode": self.config.response.mode,
                     "status": proposal.get("status"),
                     "automatic": True,
                 }
-                if self.config.mode == "prevent" and proposal.get("status") != "active":
+                if mass_isolation_safety:
+                    action["status"] = "recommended"
+                    action["reason"] = "too many automatic response candidates; falling back to recommend"
+                    self.store.audit_response_decision(incident_id, "mass_isolation_safety", action, actor="auto-response")
+                elif self.config.response.mode == "enforce" and proposal.get("status") != "active":
                     activation = activate_block(self.store, self.config, proposal["block_id"], actor="auto-prevent")
                     action["status"] = activation["status"]
                     action["activation"] = {
@@ -382,6 +405,9 @@ class PondSecService:
                         "pf_rule_present": activation.get("pf_rule_present"),
                         "pf_verify": activation.get("pf_verify"),
                     }
+                elif self.config.response.mode == "recommend":
+                    action["status"] = "recommended"
+                    action["reason"] = "response policy is in recommend mode"
                 actions.append(action)
             except ResponseDenied as exc:
                 message = f"{incident_id}: {exc}"
@@ -403,6 +429,8 @@ class PondSecService:
 
     @staticmethod
     def _is_expected_response_denial(reason: str) -> bool:
+        if reason.startswith("response policy denied:"):
+            return True
         return reason in {
             "source IP is protected",
             "source IP is allowlisted",

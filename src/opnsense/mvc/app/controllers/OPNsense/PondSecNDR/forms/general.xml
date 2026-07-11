@@ -282,6 +282,28 @@
         <label>Response</label>
     </field>
     <field>
+        <id>pondsecndr.response.mode</id>
+        <label>Response mode</label>
+        <type>dropdown</type>
+        <help>Observe never changes PF, Recommend creates proposals, Enforce can automatically execute eligible response policies.</help>
+    </field>
+    <field>
+        <id>pondsecndr.response.ai_full_decision_mode</id>
+        <label>AI full decision mode</label>
+        <type>checkbox</type>
+        <help>Allows verified AI evidence to contribute to automatic decisions after learning, but never bypasses safety checks.</help>
+    </field>
+    <field>
+        <id>pondsecndr.response.kill_switch</id>
+        <label>Response kill switch</label>
+        <type>checkbox</type>
+    </field>
+    <field>
+        <id>pondsecndr.response.maintenance_mode</id>
+        <label>Maintenance mode</label>
+        <type>checkbox</type>
+    </field>
+    <field>
         <id>pondsecndr.response.automatic_blocking</id>
         <label>Automatic blocking</label>
         <type>checkbox</type>
@@ -297,6 +319,41 @@
         <type>text</type>
     </field>
     <field>
+        <id>pondsecndr.response.minimum_severity</id>
+        <label>Minimum response severity</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.response.min_internal_event_count</id>
+        <label>Minimum internal evidence events</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.response.min_internal_detection_count</id>
+        <label>Minimum internal detections</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.response.min_internal_categories</id>
+        <label>Minimum internal categories</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.response.min_supporting_indicators</id>
+        <label>Minimum supporting indicators</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.response.min_independent_engines</id>
+        <label>Minimum independent engines</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.response.baseline_stable_observations</id>
+        <label>Baseline stable observations</label>
+        <type>text</type>
+    </field>
+    <field>
         <id>pondsecndr.response.default_block_seconds</id>
         <label>Default block seconds</label>
         <type>text</type>
@@ -307,8 +364,23 @@
         <type>text</type>
     </field>
     <field>
+        <id>pondsecndr.response.auto_isolation_seconds</id>
+        <label>Automatic isolation seconds</label>
+        <type>text</type>
+    </field>
+    <field>
         <id>pondsecndr.response.max_concurrent_blocks</id>
         <label>Maximum concurrent blocks</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.response.max_internal_isolations_per_hour</id>
+        <label>Maximum internal isolations per hour</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.response.max_auto_isolation_candidates_per_run</id>
+        <label>Maximum auto-isolation candidates per run</label>
         <type>text</type>
     </field>
     <field>
@@ -340,5 +412,23 @@
         <id>pondsecndr.response.enforce_allowlist</id>
         <label>Enforce allowlist</label>
         <type>checkbox</type>
+    </field>
+    <field>
+        <id>pondsecndr.response.protected_networks</id>
+        <label>Protected networks</label>
+        <type>text</type>
+        <help>Comma-separated CIDRs that must never be automatically isolated.</help>
+    </field>
+    <field>
+        <id>pondsecndr.response.protected_hosts</id>
+        <label>Protected hosts</label>
+        <type>text</type>
+        <help>Comma-separated host IPs that must never be automatically isolated.</help>
+    </field>
+    <field>
+        <id>pondsecndr.response.break_glass_values</id>
+        <label>Break-glass exceptions</label>
+        <type>text</type>
+        <help>Emergency IPs or CIDRs that bypass automatic response decisions.</help>
     </field>
 </form>

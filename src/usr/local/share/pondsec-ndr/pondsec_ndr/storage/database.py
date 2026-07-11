@@ -1254,6 +1254,21 @@ class EventStore:
         with self.connect() as conn:
             return int(conn.execute("SELECT count(*) FROM block_entries WHERE status = 'active' AND expires_at > ?", (now,)).fetchone()[0])
 
+    def recent_automatic_internal_block_count(self, since_seconds: int = 3600) -> int:
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=since_seconds)).isoformat()
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT source_ip
+                FROM block_entries
+                WHERE automatic = 1
+                  AND created_at >= ?
+                  AND status IN ('proposed', 'active', 'removed', 'expired')
+                """,
+                (cutoff,),
+            ).fetchall()
+        return sum(1 for row in rows if _is_private_address(row["source_ip"]))
+
     def active_block_sources(self) -> list[str]:
         now = now_iso()
         with self.connect() as conn:
@@ -1507,6 +1522,13 @@ class EventStore:
             "learning_hosts": learning,
             "max_observations": max_observations,
         }
+
+    def host_baseline_observations(self, host_ip: str | None) -> int:
+        if not host_ip:
+            return 0
+        with self.connect() as conn:
+            row = conn.execute("SELECT observation_count FROM host_baselines WHERE host_ip = ?", (host_ip,)).fetchone()
+        return int(row["observation_count"]) if row else 0
 
     def dashboard_summary(self) -> dict[str, Any]:
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()

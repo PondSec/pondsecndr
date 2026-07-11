@@ -14,7 +14,7 @@ import pondsec_ndr.diagnostics as diagnostics_mod
 from pondsec_ndr.cli import _incident_analysis, main as cli_main, reset_runtime_state
 from pondsec_ndr.collectors.eve import EveCollector
 from pondsec_ndr.collectors.filterlog import FilterLogCollector, FilterLogStats, normalize_filterlog_line
-from pondsec_ndr.config import DetectionConfig, PondSecConfig, ResponseConfig
+from pondsec_ndr.config import DetectionConfig, InterfaceConfig, PondSecConfig, ResponseConfig
 from pondsec_ndr.correlation import correlate_detections
 from pondsec_ndr.detection.detectors import BeaconingDetector, DNSTunnelingDetector, PortScanDetector, SuricataAlertAdapter
 from pondsec_ndr.diagnostics import diagnostic_archive, eve_access_status
@@ -48,6 +48,96 @@ def flow_event(timestamp: str, src: str, dst: str, port: int, reason: str = "tim
             "bytes_toserver": 2000,
             "bytes_toclient": 200,
         },
+    }
+
+
+def seed_host_baseline(store: EventStore, host_ip: str, observations: int = 100) -> None:
+    with store.connect() as conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO host_baselines(host_ip, observation_count, first_observation, last_observation, baseline_json)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                host_ip,
+                observations,
+                "2026-07-01T00:00:00+00:00",
+                "2026-07-05T10:00:00+00:00",
+                json.dumps({"connections_60s": 5, "bytes_out": 1000}, sort_keys=True),
+            ),
+        )
+
+
+def robust_internal_incident(incident_id: str = "incident-robust-internal", source_ip: str = "192.168.30.3") -> dict:
+    return {
+        "incident_id": incident_id,
+        "title": "Corroborated internal compromise behavior",
+        "status": "open",
+        "risk_score": 97,
+        "severity": 10,
+        "confidence": 0.97,
+        "source_ip": "8.8.4.4",
+        "destination_ip": source_ip,
+        "category": "multi_stage",
+        "created_at": "2026-07-05T10:00:00+00:00",
+        "updated_at": "2026-07-05T10:20:00+00:00",
+        "event_count": 6,
+        "detection_count": 4,
+        "evidence": {
+            "entity_roles": {
+                "external_actor": "8.8.4.4",
+                "victim": source_ip,
+                "affected_host": source_ip,
+                "response_target": "8.8.4.4",
+            },
+            "detections": [
+                {
+                    "detection_id": "d-internal-beacon",
+                    "detector_id": "pondsec.beaconing",
+                    "category": "command_and_control",
+                    "source_ip": source_ip,
+                    "destination_ip": "1.1.1.1",
+                    "severity": 9,
+                    "confidence": 0.96,
+                    "title": "Outbound beaconing",
+                    "evidence": {"periodicity": 0.94, "raw_sources": ["suricata_eve"]},
+                },
+                {
+                    "detection_id": "d-internal-dns",
+                    "detector_id": "pondsec.dns_tunneling",
+                    "category": "command_and_control",
+                    "source_ip": source_ip,
+                    "destination_ip": "9.9.9.9",
+                    "severity": 9,
+                    "confidence": 0.96,
+                    "title": "DNS tunneling",
+                    "evidence": {"dns_entropy": 4.5, "raw_sources": ["suricata_eve"]},
+                },
+                {
+                    "detection_id": "d-internal-exfil",
+                    "detector_id": "pondsec.data_exfiltration",
+                    "category": "exfiltration",
+                    "source_ip": source_ip,
+                    "destination_ip": "1.0.0.1",
+                    "severity": 10,
+                    "confidence": 0.97,
+                    "title": "Large outbound transfer",
+                    "evidence": {"bytes_out": 90000000, "raw_sources": ["suricata_eve"]},
+                },
+                {
+                    "detection_id": "d-internal-baseline",
+                    "detector_id": "pondsec.host_baseline_anomaly",
+                    "category": "anomaly",
+                    "source_ip": source_ip,
+                    "destination_ip": None,
+                    "severity": 9,
+                    "confidence": 0.96,
+                    "title": "Host baseline anomaly",
+                    "evidence": {"baseline_deviation": 0.91, "raw_sources": ["host_baseline"]},
+                },
+            ],
+        },
+        "risk_factors": [],
     }
 
 
@@ -1105,50 +1195,10 @@ class BackendTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             store = EventStore(Path(tmp) / "pondsec-ndr.db")
             store.migrate()
-            store.insert_incidents([{
-                "incident_id": "incident-internal-isolation-target",
-                "title": "Multi-stage internal behavior",
-                "status": "open",
-                "risk_score": 96,
-                "severity": 10,
-                "confidence": 0.97,
-                "source_ip": "8.8.4.4",
-                "destination_ip": "192.168.30.3",
-                "category": "multi_stage",
-                "created_at": "2026-07-05T10:00:00+00:00",
-                "updated_at": "2026-07-05T10:20:00+00:00",
-                "evidence": {
-                    "entity_roles": {
-                        "external_actor": "8.8.4.4",
-                        "victim": "192.168.30.3",
-                        "affected_host": "192.168.30.3",
-                        "response_target": "8.8.4.4",
-                    },
-                    "detections": [
-                        {
-                            "detection_id": "d-internal-c2",
-                            "category": "command_and_control",
-                            "source_ip": "192.168.30.3",
-                            "destination_ip": "1.1.1.1",
-                            "severity": 9,
-                            "confidence": 0.96,
-                            "title": "Outbound beaconing",
-                        },
-                        {
-                            "detection_id": "d-internal-exfil",
-                            "category": "exfiltration",
-                            "source_ip": "192.168.30.3",
-                            "destination_ip": "1.0.0.1",
-                            "severity": 10,
-                            "confidence": 0.97,
-                            "title": "Large outbound transfer",
-                        },
-                    ],
-                },
-                "risk_factors": [],
-            }])
+            store.insert_incidents([robust_internal_incident("incident-internal-isolation-target")])
+            seed_host_baseline(store, "192.168.30.3")
             config = PondSecConfig(
-                response=ResponseConfig(minimum_risk_score=50, minimum_confidence=50, isolate_internal=True),
+                response=ResponseConfig(mode="enforce", automatic_blocking=True, isolate_internal=True),
                 detection=DetectionConfig(machine_learning=True, learning_mode=False),
             )
             proposal = propose_block_for_incident(store, config, "incident-internal-isolation-target", actor="test", automatic=True)
@@ -1166,7 +1216,7 @@ class BackendTests(unittest.TestCase):
                 "risk_score": 92,
                 "severity": 9,
                 "confidence": 0.9,
-                "source_ip": "8.8.4.4",
+                "source_ip": "192.168.30.3",
                 "destination_ip": "192.168.30.3",
                 "category": "multi_stage",
                 "created_at": "2026-07-05T10:00:00+00:00",
@@ -1186,11 +1236,11 @@ class BackendTests(unittest.TestCase):
                 "risk_factors": [],
             }])
             config = PondSecConfig(
-                response=ResponseConfig(minimum_risk_score=50, minimum_confidence=50, isolate_internal=True, block_external=True),
+                response=ResponseConfig(mode="enforce", automatic_blocking=True, minimum_risk_score=50, minimum_confidence=50, isolate_internal=True, block_external=True),
                 detection=DetectionConfig(machine_learning=True, learning_mode=False),
             )
-            proposal = propose_block_for_incident(store, config, "incident-weak-internal-isolation", actor="test", automatic=True)
-            self.assertEqual(proposal["source_ip"], "8.8.4.4")
+            with self.assertRaisesRegex(ResponseDenied, "policy denied"):
+                propose_block_for_incident(store, config, "incident-weak-internal-isolation", actor="test", automatic=True)
 
     def test_response_engine_denies_internal_isolation_during_learning(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1212,11 +1262,209 @@ class BackendTests(unittest.TestCase):
                 "risk_factors": [],
             }])
             config = PondSecConfig(
-                response=ResponseConfig(minimum_risk_score=50, minimum_confidence=50, isolate_internal=True),
+                response=ResponseConfig(mode="enforce", automatic_blocking=True, minimum_risk_score=50, minimum_confidence=50, isolate_internal=True),
                 detection=DetectionConfig(machine_learning=True, learning_mode=True, learning_started_at="2026-07-05T10:00:00+00:00", learning_days=14),
             )
-            with self.assertRaisesRegex(ResponseDenied, "learning mode"):
+            with self.assertRaisesRegex(ResponseDenied, "learning phase"):
                 propose_block_for_incident(store, config, "incident-learning-internal-isolation", actor="test", automatic=True)
+
+    def test_response_policy_denies_single_suricata_alert_for_internal_isolation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            store.insert_incidents([{
+                "incident_id": "incident-single-suricata-alert",
+                "title": "Single Suricata alert",
+                "status": "open",
+                "risk_score": 99,
+                "severity": 10,
+                "confidence": 0.99,
+                "source_ip": "192.168.30.3",
+                "destination_ip": "1.1.1.1",
+                "category": "signature",
+                "created_at": "2026-07-05T10:00:00+00:00",
+                "updated_at": "2026-07-05T10:00:00+00:00",
+                "event_count": 1,
+                "detection_count": 1,
+                "evidence": {"detections": [{
+                    "detection_id": "d-single-alert",
+                    "detector_id": "pondsec.suricata_alert",
+                    "category": "signature",
+                    "source_ip": "192.168.30.3",
+                    "destination_ip": "1.1.1.1",
+                    "severity": 10,
+                    "confidence": 0.99,
+                    "evidence": {"signature_id": 1},
+                }]},
+                "risk_factors": [],
+            }])
+            config = PondSecConfig(
+                response=ResponseConfig(mode="enforce", automatic_blocking=True, isolate_internal=True),
+                detection=DetectionConfig(machine_learning=True, learning_mode=False),
+            )
+            with self.assertRaisesRegex(ResponseDenied, "single-signal|not enough"):
+                propose_block_for_incident(store, config, "incident-single-suricata-alert", actor="test", automatic=True)
+
+    def test_response_policy_denies_portscan_and_threat_intel_alone(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            base = robust_internal_incident("incident-portscan-alone")
+            base.update({
+                "title": "Portscan alone",
+                "source_ip": "192.168.30.3",
+                "category": "reconnaissance",
+                "event_count": 20,
+                "detection_count": 1,
+                "evidence": {"detections": [{
+                    "detection_id": "d-portscan-alone",
+                    "detector_id": "pondsec.portscan",
+                    "category": "reconnaissance",
+                    "source_ip": "192.168.30.3",
+                    "destination_ip": None,
+                    "severity": 10,
+                    "confidence": 0.99,
+                    "evidence": {"unique_ports": 40},
+                }]},
+            })
+            intel = robust_internal_incident("incident-intel-alone", "192.168.30.4")
+            intel.update({
+                "title": "Threat intelligence alone",
+                "source_ip": "192.168.30.4",
+                "destination_ip": "1.1.1.1",
+                "category": "threat_intelligence",
+                "event_count": 20,
+                "detection_count": 1,
+                "evidence": {"detections": [{
+                "detection_id": "d-intel-alone",
+                "detector_id": "pondsec.threat_intel",
+                "category": "threat_intelligence",
+                "source_ip": "192.168.30.4",
+                "destination_ip": "1.1.1.1",
+                "severity": 10,
+                "confidence": 0.99,
+                "evidence": {"indicator": "listed"},
+                }]},
+            })
+            store.insert_incidents([base, intel])
+            config = PondSecConfig(
+                response=ResponseConfig(mode="enforce", automatic_blocking=True, isolate_internal=True),
+                detection=DetectionConfig(machine_learning=True, learning_mode=False),
+            )
+            with self.assertRaisesRegex(ResponseDenied, "single-signal|strong internal"):
+                propose_block_for_incident(store, config, "incident-portscan-alone", actor="test", automatic=True)
+            with self.assertRaisesRegex(ResponseDenied, "strong internal|not enough"):
+                propose_block_for_incident(store, config, "incident-intel-alone", actor="test", automatic=True)
+
+    def test_response_policy_denies_high_severity_without_independent_engines(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            incident = robust_internal_incident("incident-one-engine")
+            for detection in incident["evidence"]["detections"]:
+                if detection["detector_id"] == "pondsec.dns_tunneling":
+                    detection["detector_id"] = "pondsec.beaconing"
+            store.insert_incidents([incident])
+            seed_host_baseline(store, "192.168.30.3")
+            config = PondSecConfig(
+                response=ResponseConfig(mode="enforce", automatic_blocking=True, isolate_internal=True),
+                detection=DetectionConfig(machine_learning=True, learning_mode=False),
+            )
+            with self.assertRaisesRegex(ResponseDenied, "independent engines"):
+                propose_block_for_incident(store, config, "incident-one-engine", actor="test", automatic=True)
+
+    def test_response_policy_denies_protected_and_management_assets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            protected = robust_internal_incident("incident-protected-host", "192.168.30.3")
+            management = robust_internal_incident("incident-management-host", "192.168.99.10")
+            store.insert_incidents([protected, management])
+            seed_host_baseline(store, "192.168.30.3")
+            seed_host_baseline(store, "192.168.99.10")
+            config = PondSecConfig(
+                interfaces=InterfaceConfig(management=["192.168.99.0/24"]),
+                response=ResponseConfig(mode="enforce", automatic_blocking=True, isolate_internal=True, protected_hosts=["192.168.30.3"]),
+                detection=DetectionConfig(machine_learning=True, learning_mode=False),
+            )
+            with self.assertRaisesRegex(ResponseDenied, "protected"):
+                propose_block_for_incident(store, config, "incident-protected-host", actor="test", automatic=True)
+            with self.assertRaisesRegex(ResponseDenied, "protected"):
+                propose_block_for_incident(store, config, "incident-management-host", actor="test", automatic=True)
+
+    def test_response_policy_rate_limit_prevents_mass_internal_isolation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            store.insert_incidents([robust_internal_incident("incident-rate-limited")])
+            seed_host_baseline(store, "192.168.30.3")
+            store.add_block_entry({
+                "incident_id": "older-incident",
+                "source_ip": "192.168.30.44",
+                "destination": None,
+                "reason": "older auto isolation",
+                "risk_score": 99,
+                "confidence": 0.99,
+                "expires_at": "2099-01-01T00:00:00+00:00",
+                "automatic": True,
+                "status": "removed",
+            }, actor="test")
+            config = PondSecConfig(
+                response=ResponseConfig(mode="enforce", automatic_blocking=True, isolate_internal=True, max_internal_isolations_per_hour=1),
+                detection=DetectionConfig(machine_learning=True, learning_mode=False),
+            )
+            with self.assertRaisesRegex(ResponseDenied, "hourly rate limit"):
+                propose_block_for_incident(store, config, "incident-rate-limited", actor="test", automatic=True)
+
+    def test_response_modes_observe_recommend_and_enforce_are_separate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = PondSecConfig(
+                enabled=True,
+                data_dir=root / "db",
+                log_dir=root / "log",
+                run_dir=root / "run",
+                detection=DetectionConfig(machine_learning=True, learning_mode=False),
+                response=ResponseConfig(mode="observe", automatic_blocking=True, isolate_internal=True, max_internal_isolations_per_hour=10),
+            )
+            service = PondSecService(config)
+            observe_case = robust_internal_incident("incident-observe", "192.168.30.3")
+            observe_case["source_ip"] = "8.8.4.3"
+            observe_case["evidence"]["entity_roles"]["external_actor"] = "8.8.4.3"
+            observe_case["evidence"]["entity_roles"]["response_target"] = "8.8.4.3"
+            service.store.insert_incidents([observe_case])
+            seed_host_baseline(service.store, "192.168.30.3")
+            observed = service._auto_response([service.store.get_incident("incident-observe")])
+            self.assertEqual(observed[0]["status"], "observed")
+            self.assertEqual(service.store.list_rows("block_entries"), [])
+
+            service.config.response.mode = "recommend"
+            recommend_case = robust_internal_incident("incident-recommend", "192.168.30.4")
+            recommend_case["source_ip"] = "8.8.4.4"
+            recommend_case["created_at"] = "2026-07-05T11:00:00+00:00"
+            recommend_case["updated_at"] = "2026-07-05T11:20:00+00:00"
+            recommend_case["evidence"]["entity_roles"]["external_actor"] = "8.8.4.4"
+            recommend_case["evidence"]["entity_roles"]["response_target"] = "8.8.4.4"
+            service.store.insert_incidents([recommend_case])
+            seed_host_baseline(service.store, "192.168.30.4")
+            recommended = service._auto_response([service.store.get_incident("incident-recommend")])
+            self.assertEqual(recommended[0]["status"], "recommended")
+            self.assertEqual(service.store.list_rows("block_entries")[0]["status"], "proposed")
+
+            service.config.response.mode = "enforce"
+            enforce_case = robust_internal_incident("incident-enforce", "192.168.30.5")
+            enforce_case["source_ip"] = "8.8.4.5"
+            enforce_case["created_at"] = "2026-07-05T12:00:00+00:00"
+            enforce_case["updated_at"] = "2026-07-05T12:20:00+00:00"
+            enforce_case["evidence"]["entity_roles"]["external_actor"] = "8.8.4.5"
+            enforce_case["evidence"]["entity_roles"]["response_target"] = "8.8.4.5"
+            service.store.insert_incidents([enforce_case])
+            seed_host_baseline(service.store, "192.168.30.5")
+            with patch("pondsec_ndr.service.activate_block", return_value={"status": "ok", "pf_table": "virusprot", "pf_rule_present": True, "pf_verify": {"ok": True}}):
+                enforced = service._auto_response([service.store.get_incident("incident-enforce")])
+            self.assertEqual(enforced[0]["status"], "ok")
+            audit_actions = [row["action"] for row in service.store.list_rows("audit_log", limit=20)]
+            self.assertTrue(any(action.startswith("response.") for action in audit_actions))
 
     def test_response_engine_adds_manual_block_proposal_without_pf_side_effects(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1368,7 +1616,7 @@ class BackendTests(unittest.TestCase):
                 data_dir=root / "db",
                 log_dir=root / "log",
                 run_dir=root / "run",
-                response=ResponseConfig(automatic_blocking=True, manual_confirmation=False, isolate_internal=True),
+                response=ResponseConfig(mode="enforce", automatic_blocking=True, manual_confirmation=False, isolate_internal=True),
             )
             service = PondSecService(config)
             incident = {

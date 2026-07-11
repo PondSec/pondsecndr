@@ -260,6 +260,27 @@
             </api_timeout_seconds>
         </threat_intel>
         <response>
+            <mode type="OptionField">
+                <default>observe</default>
+                <Required>Y</Required>
+                <OptionValues>
+                    <observe>Observe</observe>
+                    <recommend>Recommend</recommend>
+                    <enforce>Enforce</enforce>
+                </OptionValues>
+            </mode>
+            <ai_full_decision_mode type="BooleanField">
+                <default>0</default>
+                <Required>Y</Required>
+            </ai_full_decision_mode>
+            <kill_switch type="BooleanField">
+                <default>0</default>
+                <Required>Y</Required>
+            </kill_switch>
+            <maintenance_mode type="BooleanField">
+                <default>0</default>
+                <Required>Y</Required>
+            </maintenance_mode>
             <automatic_blocking type="BooleanField">
                 <default>0</default>
                 <Required>Y</Required>
@@ -271,17 +292,65 @@
                 <Required>Y</Required>
             </minimum_confidence>
             <minimum_risk_score type="IntegerField">
-                <default>90</default>
+                <default>95</default>
                 <MinimumValue>1</MinimumValue>
                 <MaximumValue>100</MaximumValue>
                 <Required>Y</Required>
             </minimum_risk_score>
+            <minimum_severity type="IntegerField">
+                <default>9</default>
+                <MinimumValue>1</MinimumValue>
+                <MaximumValue>10</MaximumValue>
+                <Required>Y</Required>
+            </minimum_severity>
+            <min_internal_event_count type="IntegerField">
+                <default>3</default>
+                <MinimumValue>1</MinimumValue>
+                <MaximumValue>100000</MaximumValue>
+                <Required>Y</Required>
+            </min_internal_event_count>
+            <min_internal_detection_count type="IntegerField">
+                <default>3</default>
+                <MinimumValue>1</MinimumValue>
+                <MaximumValue>100000</MaximumValue>
+                <Required>Y</Required>
+            </min_internal_detection_count>
+            <min_internal_categories type="IntegerField">
+                <default>3</default>
+                <MinimumValue>1</MinimumValue>
+                <MaximumValue>100</MaximumValue>
+                <Required>Y</Required>
+            </min_internal_categories>
+            <min_supporting_indicators type="IntegerField">
+                <default>2</default>
+                <MinimumValue>0</MinimumValue>
+                <MaximumValue>100</MaximumValue>
+                <Required>Y</Required>
+            </min_supporting_indicators>
+            <min_independent_engines type="IntegerField">
+                <default>2</default>
+                <MinimumValue>1</MinimumValue>
+                <MaximumValue>100</MaximumValue>
+                <Required>Y</Required>
+            </min_independent_engines>
+            <baseline_stable_observations type="IntegerField">
+                <default>50</default>
+                <MinimumValue>1</MinimumValue>
+                <MaximumValue>10000000</MaximumValue>
+                <Required>Y</Required>
+            </baseline_stable_observations>
             <default_block_seconds type="IntegerField">
                 <default>3600</default>
                 <MinimumValue>60</MinimumValue>
                 <MaximumValue>604800</MaximumValue>
                 <Required>Y</Required>
             </default_block_seconds>
+            <auto_isolation_seconds type="IntegerField">
+                <default>900</default>
+                <MinimumValue>60</MinimumValue>
+                <MaximumValue>604800</MaximumValue>
+                <Required>Y</Required>
+            </auto_isolation_seconds>
             <max_block_seconds type="IntegerField">
                 <default>86400</default>
                 <MinimumValue>60</MinimumValue>
@@ -294,6 +363,18 @@
                 <MaximumValue>100000</MaximumValue>
                 <Required>Y</Required>
             </max_concurrent_blocks>
+            <max_internal_isolations_per_hour type="IntegerField">
+                <default>1</default>
+                <MinimumValue>0</MinimumValue>
+                <MaximumValue>100000</MaximumValue>
+                <Required>Y</Required>
+            </max_internal_isolations_per_hour>
+            <max_auto_isolation_candidates_per_run type="IntegerField">
+                <default>3</default>
+                <MinimumValue>1</MinimumValue>
+                <MaximumValue>100000</MaximumValue>
+                <Required>Y</Required>
+            </max_auto_isolation_candidates_per_run>
             <block_external type="BooleanField">
                 <default>0</default>
                 <Required>Y</Required>
@@ -318,6 +399,15 @@
                 <default>1</default>
                 <Required>Y</Required>
             </enforce_allowlist>
+            <protected_networks type="TextField">
+                <Required>N</Required>
+            </protected_networks>
+            <protected_hosts type="TextField">
+                <Required>N</Required>
+            </protected_hosts>
+            <break_glass_values type="TextField">
+                <Required>N</Required>
+            </break_glass_values>
         </response>
     </items>
 </model>

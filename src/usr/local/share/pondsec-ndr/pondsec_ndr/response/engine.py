@@ -7,6 +7,7 @@ import ipaddress
 from typing import Any
 
 from pondsec_ndr.config import PondSecConfig
+from pondsec_ndr.response.policy import evaluate_automatic_response_policy
 from pondsec_ndr.response.pf import PFTableEnforcer
 from pondsec_ndr.schema import is_private_ip
 from pondsec_ndr.storage.database import EventStore
@@ -47,7 +48,7 @@ def validate_ip_or_network(value: str) -> str:
 def is_protected_target(value: str, config: PondSecConfig) -> bool:
     target = validate_ip_or_network(value)
     networks = list(PROTECTED_NETWORKS)
-    for configured in config.interfaces.management + config.interfaces.excluded_networks:
+    for configured in config.interfaces.management + config.interfaces.excluded_networks + config.response.protected_networks + config.response.break_glass_values:
         try:
             networks.append(ipaddress.ip_network(configured, strict=False))
         except ValueError:
@@ -56,7 +57,8 @@ def is_protected_target(value: str, config: PondSecConfig) -> bool:
     for candidate in addresses:
         if any((candidate.version == network.version) and (candidate.subnet_of(network) or candidate.overlaps(network)) for network in networks):
             return True
-    return target in config.interfaces.excluded_hosts
+    protected_hosts = set(config.interfaces.excluded_hosts + config.response.protected_hosts + config.response.break_glass_values)
+    return target in protected_hosts
 
 
 def is_allowlisted(value: str, allowlist_values: list[str]) -> bool:
@@ -85,12 +87,17 @@ def propose_block_for_incident(
     source_ip = _response_target_for_incident(incident)
     if not source_ip:
         raise ResponseDenied("incident has no response target")
-    if is_protected_target(source_ip, config):
+    protected = is_protected_target(source_ip, config)
+    allowlisted = config.response.enforce_allowlist and is_allowlisted(source_ip, store.allowlist_values() + config.response.break_glass_values)
+    if automatic:
+        decision = evaluate_automatic_response_policy(store, config, incident, source_ip, protected, allowlisted)
+        store.audit_response_decision(incident_id, "policy_decision", decision, actor=actor)
+        if not decision["proposal_allowed"]:
+            raise ResponseDenied("response policy denied: " + "; ".join(decision["reasons"]))
+    if protected:
         raise ResponseDenied("source IP is protected")
-    if config.response.enforce_allowlist and is_allowlisted(source_ip, store.allowlist_values()):
+    if allowlisted:
         raise ResponseDenied("source IP is allowlisted")
-    if automatic and is_private_ip(source_ip) and config.detection.learning_status().get("active"):
-        raise ResponseDenied("automatic internal isolation is disabled during learning mode")
     if automatic and is_private_ip(source_ip) and not config.response.isolate_internal:
         raise ResponseDenied("automatic internal isolation is disabled")
     if automatic and not is_private_ip(source_ip) and not config.response.block_external:
@@ -106,7 +113,7 @@ def propose_block_for_incident(
     if existing_for_source:
         return existing_for_source
 
-    duration = duration_seconds or config.response.default_block_seconds
+    duration = duration_seconds or (config.response.auto_isolation_seconds if automatic else config.response.default_block_seconds)
     duration = min(duration, config.response.max_block_seconds)
     expires_at = (datetime.now(timezone.utc) + timedelta(seconds=duration)).isoformat()
     return store.add_block_entry({
