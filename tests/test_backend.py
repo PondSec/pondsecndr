@@ -1480,6 +1480,7 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(service.store.list_rows("block_entries")[0]["status"], "proposed")
 
             service.config.response.mode = "enforce"
+            service.config.response.ai_full_decision_mode = True
             enforce_case = robust_internal_incident("incident-enforce", "192.168.30.5")
             enforce_case["source_ip"] = "8.8.4.5"
             enforce_case["created_at"] = "2026-07-05T12:00:00+00:00"
@@ -1493,6 +1494,39 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(enforced[0]["status"], "ok")
             audit_actions = [row["action"] for row in service.store.list_rows("audit_log", limit=20)]
             self.assertTrue(any(action.startswith("response.") for action in audit_actions))
+
+    def test_enforce_without_ai_full_decision_falls_back_to_recommend(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = PondSecConfig(
+                enabled=True,
+                data_dir=root / "db",
+                log_dir=root / "log",
+                run_dir=root / "run",
+                detection=DetectionConfig(machine_learning=True, learning_mode=False),
+                response=ResponseConfig(
+                    mode="enforce",
+                    ai_full_decision_mode=False,
+                    automatic_blocking=True,
+                    isolate_internal=True,
+                    max_internal_isolations_per_hour=10,
+                ),
+            )
+            service = PondSecService(config)
+            incident = robust_internal_incident("incident-enforce-without-ai-full", "192.168.30.8")
+            incident["source_ip"] = "8.8.4.8"
+            incident["evidence"]["entity_roles"]["external_actor"] = "8.8.4.8"
+            incident["evidence"]["entity_roles"]["response_target"] = "8.8.4.8"
+            service.store.insert_incidents([incident])
+            seed_host_baseline(service.store, "192.168.30.8")
+
+            with patch("pondsec_ndr.service.activate_block") as activate_mock:
+                actions = service._auto_response([service.store.get_incident("incident-enforce-without-ai-full")])
+
+            self.assertEqual(actions[0]["status"], "recommended")
+            self.assertIn("AI full decision mode", actions[0]["reason"])
+            self.assertEqual(service.store.list_rows("block_entries")[0]["status"], "proposed")
+            activate_mock.assert_not_called()
 
     def test_response_engine_adds_manual_block_proposal_without_pf_side_effects(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -35,6 +35,7 @@ def evaluate_automatic_response_policy(
     """Evaluate whether an automatic response may be proposed or enforced."""
     summary = _evidence_summary(incident, config)
     reasons: list[str] = []
+    activation_reasons: list[str] = []
     mode = config.response.mode
     target_is_internal = is_private_ip(target_ip)
     learning_status = config.detection.learning_status()
@@ -58,6 +59,8 @@ def evaluate_automatic_response_policy(
 
     if target_is_internal:
         reasons.extend(_internal_isolation_reasons(store, config, incident, target_ip, summary))
+        if not config.response.ai_full_decision_mode:
+            activation_reasons.append("AI full decision mode is not enabled for internal auto-isolation")
     elif not config.response.block_external:
         reasons.append("automatic external blocking is disabled")
 
@@ -67,18 +70,26 @@ def evaluate_automatic_response_policy(
     elif mode == "recommend":
         policy_status = "recommend" if not reasons else "denied"
     elif mode == "enforce":
-        policy_status = "enforce" if not reasons else "denied"
+        if reasons:
+            policy_status = "denied"
+        elif activation_reasons:
+            policy_status = "recommend"
+        else:
+            policy_status = "enforce"
     else:
         policy_status = "denied"
         reasons.append(f"invalid response policy mode: {mode}")
 
+    all_reasons = reasons + activation_reasons
     return {
         "status": policy_status,
         "target_ip": target_ip,
         "target_internal": target_is_internal,
         "proposal_allowed": policy_status in {"recommend", "enforce"},
         "activation_allowed": policy_status == "enforce",
-        "reasons": reasons,
+        "reasons": all_reasons,
+        "blocking_reasons": reasons,
+        "activation_reasons": activation_reasons,
         "learning_status": learning_status,
         "evidence": summary,
         "thresholds": {

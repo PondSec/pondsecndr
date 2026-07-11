@@ -89,6 +89,7 @@ def propose_block_for_incident(
         raise ResponseDenied("incident has no response target")
     protected = is_protected_target(source_ip, config)
     allowlisted = config.response.enforce_allowlist and is_allowlisted(source_ip, store.allowlist_values() + config.response.break_glass_values)
+    decision: dict[str, Any] | None = None
     if automatic:
         decision = evaluate_automatic_response_policy(store, config, incident, source_ip, protected, allowlisted)
         store.audit_response_decision(incident_id, "policy_decision", decision, actor=actor)
@@ -108,15 +109,21 @@ def propose_block_for_incident(
         raise ResponseDenied("incident confidence is below response threshold")
     existing = store.existing_response_block(incident_id, source_ip)
     if existing:
-        return existing
+        result = dict(existing)
+        if decision is not None:
+            result["policy_decision"] = decision
+        return result
     existing_for_source = store.existing_response_block(None, source_ip)
     if existing_for_source:
-        return existing_for_source
+        result = dict(existing_for_source)
+        if decision is not None:
+            result["policy_decision"] = decision
+        return result
 
     duration = duration_seconds or (config.response.auto_isolation_seconds if automatic else config.response.default_block_seconds)
     duration = min(duration, config.response.max_block_seconds)
     expires_at = (datetime.now(timezone.utc) + timedelta(seconds=duration)).isoformat()
-    return store.add_block_entry({
+    result = store.add_block_entry({
         "incident_id": incident_id,
         "source_ip": source_ip,
         "destination": incident.get("destination_ip"),
@@ -129,6 +136,9 @@ def propose_block_for_incident(
         "automatic": automatic,
         "status": "proposed",
     }, actor=actor)
+    if decision is not None:
+        result["policy_decision"] = decision
+    return result
 
 
 def _response_target_for_incident(incident: dict[str, Any]) -> str | None:

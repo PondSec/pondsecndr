@@ -393,10 +393,16 @@ class PondSecService:
                     "status": proposal.get("status"),
                     "automatic": True,
                 }
+                policy_decision = proposal.get("policy_decision") if isinstance(proposal.get("policy_decision"), dict) else {}
+                activation_allowed = bool(policy_decision.get("activation_allowed", self.config.response.mode == "enforce"))
                 if mass_isolation_safety:
                     action["status"] = "recommended"
                     action["reason"] = "too many automatic response candidates; falling back to recommend"
                     self.store.audit_response_decision(incident_id, "mass_isolation_safety", action, actor="auto-response")
+                elif self.config.response.mode == "enforce" and not activation_allowed:
+                    action["status"] = "recommended"
+                    action["reason"] = "; ".join(policy_decision.get("activation_reasons") or policy_decision.get("reasons") or ["response policy requires recommendation before activation"])
+                    self.store.audit_response_decision(incident_id, "activation_fallback", action, actor="auto-response")
                 elif self.config.response.mode == "enforce" and proposal.get("status") != "active":
                     activation = activate_block(self.store, self.config, proposal["block_id"], actor="auto-prevent")
                     action["status"] = activation["status"]
