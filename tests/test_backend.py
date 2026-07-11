@@ -36,6 +36,7 @@ from pondsec_ndr.detection.detectors import (
     SuricataAlertAdapter,
     UnusualDestinationDetector,
     VerticalScanDetector,
+    WormLikePropagationDetector,
 )
 from pondsec_ndr.diagnostics import diagnostic_archive, diagnostics as diagnostics_payload, eve_access_status
 from pondsec_ndr.features.aggregator import aggregate_features, shannon_entropy
@@ -916,7 +917,7 @@ class BackendTests(unittest.TestCase):
         )
         self.assertIsNone(normalize_filterlog_line(line))
 
-    def test_filterlog_pass_lines_are_not_ingested(self) -> None:
+    def test_filterlog_benign_pass_lines_are_not_ingested(self) -> None:
         line = (
             "<134>1 2026-07-05T23:48:21+02:00 HWFirewall01.internal filterlog 92957 - "
             "[meta sequenceId=\"130536\"] "
@@ -924,6 +925,73 @@ class BackendTests(unittest.TestCase):
             "192.168.10.128,17.248.213.70,53202,443,1208"
         )
         self.assertIsNone(normalize_filterlog_line(line))
+
+    def test_filterlog_suspicious_pass_private_egress_is_ingested(self) -> None:
+        line = (
+            "<134>1 2026-07-11T23:40:12+02:00 HWFirewall01.internal filterlog 46079 - "
+            "[meta sequenceId=\"247856\"] "
+            "104,,,tracker,pppoe0,match,pass,out,4,0x0,,63,0,0,DF,6,tcp,64,"
+            "80.153.171.185,10.255.255.20,19239,445,0,SEC"
+        )
+        event = normalize_filterlog_line(line)
+        self.assertIsNotNone(event)
+        assert event is not None
+        self.assertEqual(event["metadata"]["filter_action"], "pass")
+        self.assertTrue(event["metadata"]["filter_suspicious_pass"])
+        self.assertEqual(event["metadata"]["filter_suspicious_reason"], "nat_private_destination_admin_service")
+        self.assertEqual(event["metadata"]["flow_reason"], "attempt")
+
+    def test_worm_like_propagation_detector_finds_private_admin_fanout(self) -> None:
+        def filterlog_line(index: int, target: str, port: int) -> str:
+            return (
+                f"<134>1 2026-07-11T23:40:{index:02d}+02:00 HWFirewall01.internal filterlog 46079 - "
+                f"[meta sequenceId=\"{247000 + index}\"] "
+                "104,,,tracker,pppoe0,match,pass,out,4,0x0,,63,0,0,DF,6,tcp,64,"
+                f"80.153.171.185,{target},{20000 + index},{port},0,SEC"
+            )
+
+        events = []
+        index = 0
+        for target in ("10.255.255.10", "10.255.255.11", "10.255.255.12", "10.255.255.13"):
+            for port in (445, 135, 139):
+                index += 1
+                event = normalize_filterlog_line(filterlog_line(index, target, port))
+                self.assertIsNotNone(event)
+                events.append(event)
+        detections = WormLikePropagationDetector().detect(events, aggregate_features(events))
+        self.assertEqual(len(detections), 1)
+        self.assertEqual(detections[0]["detector_id"], "pondsec.worm_like_propagation")
+        self.assertEqual(detections[0]["category"], "lateral_movement")
+        self.assertTrue(detections[0]["evidence"]["nat_mapping_required"])
+        incidents = correlate_detections(detections)
+        self.assertEqual(len(incidents), 1)
+        roles = incidents[0]["evidence"]["entity_roles"]
+        self.assertEqual(roles["affected_host"], "unresolved_internal_host_behind_nat")
+        self.assertNotIn("response_target", roles)
+
+    def test_beaconing_detector_marks_post_nat_filterlog_context_low_confidence(self) -> None:
+        events = []
+        for index, timestamp in enumerate((
+            "2026-07-11T23:40:00+02:00",
+            "2026-07-11T23:40:16+02:00",
+            "2026-07-11T23:40:32+02:00",
+            "2026-07-11T23:40:48+02:00",
+            "2026-07-11T23:41:04+02:00",
+        ), start=1):
+            line = (
+                f"<134>1 {timestamp} HWFirewall01.internal filterlog 46079 - "
+                f"[meta sequenceId=\"{248000 + index}\"] "
+                "104,,,tracker,pppoe0,match,pass,out,4,0x0,,63,0,0,DF,6,tcp,64,"
+                f"80.153.171.185,10.255.255.20,{21000 + index},445,0,SEC"
+            )
+            event = normalize_filterlog_line(line)
+            self.assertIsNotNone(event)
+            events.append(event)
+        detections = BeaconingDetector().detect(events, aggregate_features(events))
+        self.assertEqual(len(detections), 1)
+        self.assertEqual(detections[0]["detector_id"], "pondsec.beaconing")
+        self.assertTrue(detections[0]["evidence"]["nat_mapping_required"])
+        self.assertEqual(detections[0]["evidence"]["response_target_confidence"], "low_without_pre_nat_session_context")
 
     def test_beaconing_detector_finds_periodic_connections(self) -> None:
         events = [
@@ -2439,6 +2507,156 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(merged["event_count"], 18)
             self.assertEqual(merged["suppressed_count"], 1)
 
+    def test_insert_incidents_is_idempotent_for_same_incident_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            incident = {
+                "incident_id": "incident-stable-id",
+                "title": "Stable recalculated case",
+                "status": "open",
+                "risk_score": 86,
+                "severity": 8,
+                "confidence": 0.91,
+                "source_ip": "192.168.10.77",
+                "destination_ip": "auth_services",
+                "category": "credential_abuse",
+                "created_at": "2026-07-05T10:00:00+00:00",
+                "updated_at": "2026-07-05T10:00:00+00:00",
+                "first_seen": "2026-07-05T10:00:00+00:00",
+                "last_seen": "2026-07-05T10:00:20+00:00",
+                "event_count": 18,
+                "detection_count": 1,
+                "affected_targets": ["auth_services"],
+                "attack_stage": "initial_access",
+                "evidence": {"detections": [{"detection_id": "d-stable", "source_ip": "192.168.10.77", "destination_ip": "auth_services"}]},
+                "risk_factors": [{"name": "credential", "value": 82}],
+                "detection_ids": ["d-stable"],
+            }
+            self.assertEqual(store.insert_incidents([incident]), 1)
+            self.assertEqual(store.insert_incidents([dict(incident)]), 0)
+            rows = store.list_rows("incidents")
+            self.assertEqual(len(rows), 1)
+            merged = store.get_incident("incident-stable-id")
+            self.assertIsNotNone(merged)
+            assert merged is not None
+            self.assertEqual(merged["detection_count"], 1)
+            self.assertEqual(merged["event_count"], 18)
+            self.assertEqual(merged["suppressed_count"], 1)
+
+    def test_insert_incidents_does_not_reopen_closed_same_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            incident = {
+                "incident_id": "incident-closed-stable-id",
+                "title": "Closed recalculated case",
+                "status": "open",
+                "risk_score": 86,
+                "severity": 8,
+                "confidence": 0.91,
+                "source_ip": "192.168.10.77",
+                "destination_ip": "auth_services",
+                "category": "credential_abuse",
+                "created_at": "2026-07-05T10:00:00+00:00",
+                "updated_at": "2026-07-05T10:00:00+00:00",
+                "first_seen": "2026-07-05T10:00:00+00:00",
+                "last_seen": "2026-07-05T10:00:20+00:00",
+                "event_count": 18,
+                "detection_count": 1,
+                "affected_targets": ["auth_services"],
+                "attack_stage": "initial_access",
+                "evidence": {"detections": [{"detection_id": "d-closed-stable", "source_ip": "192.168.10.77", "destination_ip": "auth_services"}]},
+                "risk_factors": [{"name": "credential", "value": 82}],
+                "detection_ids": ["d-closed-stable"],
+            }
+            self.assertEqual(store.insert_incidents([incident]), 1)
+            with store.connect() as conn:
+                conn.execute("UPDATE incidents SET status = 'closed' WHERE incident_id = ?", ("incident-closed-stable-id",))
+            self.assertEqual(store.insert_incidents([dict(incident)]), 0)
+            stored = store.get_incident("incident-closed-stable-id")
+            self.assertIsNotNone(stored)
+            assert stored is not None
+            self.assertEqual(stored["status"], "closed")
+            self.assertEqual(stored["suppressed_count"], 0)
+
+    def test_incident_dedup_keeps_external_recon_and_nat_private_egress_separate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            external_recon = {
+                "incident_id": "incident-external-recon",
+                "title": "External scan",
+                "status": "open",
+                "risk_score": 91,
+                "severity": 9,
+                "confidence": 0.98,
+                "source_ip": "107.180.212.85",
+                "destination_ip": "80.153.171.185",
+                "category": "reconnaissance",
+                "created_at": "2026-07-11T21:46:29+00:00",
+                "updated_at": "2026-07-11T21:46:29+00:00",
+                "first_seen": "2026-07-11T21:46:29+00:00",
+                "last_seen": "2026-07-11T21:47:29+00:00",
+                "event_count": 80,
+                "detection_count": 2,
+                "affected_targets": ["80.153.171.185"],
+                "attack_stage": "reconnaissance",
+                "evidence": {
+                    "entity_roles": {
+                        "external_actor": "107.180.212.85",
+                        "victim": "80.153.171.185",
+                        "response_target": "107.180.212.85",
+                    },
+                    "detections": [{"detection_id": "d-ext-recon", "source_ip": "107.180.212.85", "destination_ip": "80.153.171.185"}],
+                },
+                "risk_factors": [],
+                "detection_ids": ["d-ext-recon"],
+            }
+            nat_egress = {
+                "incident_id": "incident-nat-private-egress",
+                "title": "Worm-like propagation pattern",
+                "status": "open",
+                "risk_score": 97,
+                "severity": 9,
+                "confidence": 0.96,
+                "source_ip": "80.153.171.185",
+                "destination_ip": "private_egress",
+                "category": "lateral_movement",
+                "created_at": "2026-07-11T21:52:14+00:00",
+                "updated_at": "2026-07-11T21:52:14+00:00",
+                "first_seen": "2026-07-11T21:51:28+00:00",
+                "last_seen": "2026-07-11T21:53:18+00:00",
+                "event_count": 77,
+                "detection_count": 1,
+                "affected_targets": ["private_egress"],
+                "attack_stage": "lateral_movement",
+                "evidence": {
+                    "entity_roles": {
+                        "threat_source": "80.153.171.185",
+                        "affected_host": "80.153.171.185",
+                        "destination": "private_egress",
+                    },
+                    "detections": [{
+                        "detection_id": "d-nat-egress",
+                        "detector_id": "pondsec.worm_like_propagation",
+                        "source_ip": "80.153.171.185",
+                        "destination_ip": "private_egress",
+                        "evidence": {
+                            "nat_mapping_required": True,
+                            "response_target_confidence": "low_without_pre_nat_session_context",
+                        },
+                    }],
+                },
+                "risk_factors": [],
+                "detection_ids": ["d-nat-egress"],
+            }
+            self.assertEqual(store.insert_incidents([external_recon]), 1)
+            self.assertEqual(store.insert_incidents([nat_egress]), 1)
+            rows = store.list_rows("incidents")
+            self.assertEqual(len(rows), 2)
+            self.assertEqual({row["incident_id"] for row in rows}, {"incident-external-recon", "incident-nat-private-egress"})
+
     def test_incident_dedup_keeps_different_internal_sources_on_aggregate_port_separate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = EventStore(Path(tmp) / "pondsec-ndr.db")
@@ -3043,6 +3261,41 @@ class BackendTests(unittest.TestCase):
             config = PondSecConfig(response=ResponseConfig(minimum_risk_score=50, minimum_confidence=50))
             proposal = propose_block_for_incident(store, config, "incident-external-scanner-target", actor="test")
             self.assertEqual(proposal["source_ip"], "8.8.8.8")
+
+    def test_response_engine_denies_post_nat_incident_without_client_mapping(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            store.insert_incidents([{
+                "incident_id": "incident-nat-response-target",
+                "title": "Post-NAT worm-like propagation",
+                "status": "open",
+                "risk_score": 97,
+                "severity": 9,
+                "confidence": 0.96,
+                "source_ip": "80.153.171.185",
+                "destination_ip": "private_egress",
+                "category": "lateral_movement",
+                "created_at": "2026-07-11T21:52:14+00:00",
+                "updated_at": "2026-07-11T21:52:14+00:00",
+                "evidence": {
+                    "entity_roles": {"threat_source": "80.153.171.185", "response_target": "80.153.171.185"},
+                    "detections": [{
+                        "detection_id": "d-nat-response",
+                        "detector_id": "pondsec.worm_like_propagation",
+                        "source_ip": "80.153.171.185",
+                        "destination_ip": "private_egress",
+                        "evidence": {
+                            "nat_mapping_required": True,
+                            "response_target_confidence": "low_without_pre_nat_session_context",
+                        },
+                    }],
+                },
+                "risk_factors": [],
+            }])
+            config = PondSecConfig(response=ResponseConfig(minimum_risk_score=50, minimum_confidence=50))
+            with self.assertRaisesRegex(ResponseDenied, "no response target"):
+                propose_block_for_incident(store, config, "incident-nat-response-target", actor="test")
 
     def test_response_engine_isolates_internal_actor_in_multistage_case(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

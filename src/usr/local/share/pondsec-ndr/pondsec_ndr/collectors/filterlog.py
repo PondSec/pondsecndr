@@ -17,6 +17,9 @@ from typing import Any
 from pondsec_ndr.schema import EVENT_SCHEMA_VERSION, event_id_from, is_private_ip, parse_timestamp, valid_ip, valid_port
 
 
+SUSPICIOUS_PASS_PORTS = {22, 23, 135, 139, 445, 3389, 5900, 5985, 5986}
+
+
 @dataclass(slots=True)
 class FilterLogStats:
     read_lines: int = 0
@@ -128,8 +131,6 @@ def normalize_filterlog_line(line: str) -> dict[str, Any] | None:
     reason = fields[5] or None
     action = fields[6] or None
     direction = fields[7] or "unknown"
-    if str(action).lower() != "block":
-        return None
     ip_version = fields[8] or None
     proto = fields[16].upper() if len(fields) > 16 and fields[16] else None
     length = _safe_int(fields[17]) if len(fields) > 17 else 0
@@ -138,6 +139,9 @@ def normalize_filterlog_line(line: str) -> dict[str, Any] | None:
     src_port = valid_port(fields[20] if len(fields) > 20 else None)
     dst_port = valid_port(fields[21] if len(fields) > 21 else None)
     if not src_ip or not dst_ip:
+        return None
+    suspicious_pass_reason = _suspicious_pass_reason(action, direction, proto, src_ip, dst_ip, dst_port)
+    if str(action).lower() != "block" and not suspicious_pass_reason:
         return None
     event = {
         "schema_version": EVENT_SCHEMA_VERSION,
@@ -163,14 +167,34 @@ def normalize_filterlog_line(line: str) -> dict[str, Any] | None:
             "bytes_out": length or 0,
             "bytes_in": 0,
             "byte_count": length or 0,
-            "flow_state": "closed",
-            "flow_reason": "reject" if str(action).lower() == "block" else "finished",
+            "flow_state": "closed" if str(action).lower() == "block" else "new",
+            "flow_reason": "reject" if str(action).lower() == "block" else "attempt",
+            "filter_suspicious_pass": bool(suspicious_pass_reason),
+            "filter_suspicious_reason": suspicious_pass_reason,
         },
         "raw_source": "opnsense_filterlog",
     }
     event["metadata"] = {key: value for key, value in event["metadata"].items() if value is not None}
     event["event_id"] = event_id_from(event)
     return event
+
+
+def _suspicious_pass_reason(action: str | None, direction: str | None, proto: str | None, src_ip: str, dst_ip: str, dst_port: int | None) -> str | None:
+    if str(action or "").lower() == "block":
+        return "blocked_flow"
+    if str(action or "").lower() != "pass":
+        return None
+    if str(proto or "").upper() != "TCP":
+        return None
+    if dst_port not in SUSPICIOUS_PASS_PORTS:
+        return None
+    src_private = is_private_ip(src_ip)
+    dst_private = is_private_ip(dst_ip)
+    if dst_private and not src_private and str(direction or "").lower() == "out":
+        return "nat_private_destination_admin_service"
+    if src_private and dst_private:
+        return "internal_admin_service"
+    return None
 
 
 def _timestamp_from_syslog(line: str) -> str:

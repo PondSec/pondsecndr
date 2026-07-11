@@ -271,7 +271,7 @@ class BeaconingDetector(Detector):
     detector_id = "pondsec.beaconing"
 
     def detect(self, events: list[dict[str, Any]], features: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        by_tuple: dict[tuple[str, str, int | None], list[float]] = defaultdict(list)
+        by_tuple: dict[tuple[str, str, int | None], list[dict[str, Any]]] = defaultdict(list)
         for event in events:
             if is_infrastructure_response_event(event):
                 continue
@@ -280,14 +280,17 @@ class BeaconingDetector(Detector):
             port = event.get("destination", {}).get("port")
             if not src or not dst:
                 continue
-            timestamp = event.get("timestamp", "").replace("Z", "+00:00")
-            try:
-                from datetime import datetime
-                by_tuple[(src, dst, port)].append(datetime.fromisoformat(timestamp).timestamp())
-            except ValueError:
-                continue
+            by_tuple[(src, dst, port)].append(event)
         detections = []
-        for (src, dst, port), timestamps in by_tuple.items():
+        for (src, dst, port), tuple_events in by_tuple.items():
+            timestamps = []
+            for event in tuple_events:
+                timestamp = event.get("timestamp", "").replace("Z", "+00:00")
+                try:
+                    from datetime import datetime
+                    timestamps.append(datetime.fromisoformat(timestamp).timestamp())
+                except ValueError:
+                    continue
             if len(timestamps) < 5:
                 continue
             timestamps.sort()
@@ -298,6 +301,8 @@ class BeaconingDetector(Detector):
             spread = pstdev(intervals) if len(intervals) > 1 else 0
             periodicity = max(0.0, 1.0 - (spread / avg))
             if periodicity >= 0.85:
+                nat_mapping_required = any(_event_needs_pre_nat_mapping(event) for event in tuple_events)
+                response_target_confidence = "low_without_pre_nat_session_context" if nat_mapping_required else "direct_source"
                 detections.append(make_detection(
                     self.detector_id,
                     "command_and_control",
@@ -314,6 +319,8 @@ class BeaconingDetector(Detector):
                         "interval_stddev": round(spread, 2),
                         "port": port,
                         "periodicity": round(periodicity, 4),
+                        "nat_mapping_required": nat_mapping_required,
+                        "response_target_confidence": response_target_confidence,
                         "thresholds": [
                             {"feature": "connections", "operator": ">=", "threshold": 5, "observed": len(timestamps)},
                             {"feature": "average_interval_seconds", "operator": ">=", "threshold": 15, "observed": round(avg, 2)},
@@ -322,6 +329,13 @@ class BeaconingDetector(Detector):
                     },
                 ))
         return detections
+
+
+def _event_needs_pre_nat_mapping(event: dict[str, Any]) -> bool:
+    metadata = event.get("metadata", {}) if isinstance(event.get("metadata"), dict) else {}
+    src = event.get("source", {}).get("ip")
+    dst = event.get("destination", {}).get("ip")
+    return bool(metadata.get("filter_suspicious_pass") and src and dst and not is_private_ip(str(src)) and is_private_ip(str(dst)))
 
 
 class LateralMovementDetector(Detector):
@@ -357,6 +371,63 @@ class LateralMovementDetector(Detector):
                         ],
                     },
                 ))
+        return detections
+
+
+class WormLikePropagationDetector(Detector):
+    detector_id = "pondsec.worm_like_propagation"
+    watched_ports = {22, 23, 135, 139, 445, 3389, 5900, 5985, 5986}
+
+    def detect(self, events: list[dict[str, Any]], features: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        by_source: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for event in events:
+            metadata = event.get("metadata", {}) if isinstance(event.get("metadata"), dict) else {}
+            dst = event.get("destination", {}).get("ip")
+            port = event.get("destination", {}).get("port")
+            src = event.get("source", {}).get("ip")
+            if not src or not dst or port not in self.watched_ports:
+                continue
+            if metadata.get("filter_suspicious_pass") or (is_private_ip(str(dst)) and str(metadata.get("event_source")) == "opnsense_filterlog"):
+                by_source[str(src)].append(event)
+
+        detections = []
+        for src, source_events in by_source.items():
+            destinations = {str(event.get("destination", {}).get("ip")) for event in source_events if event.get("destination", {}).get("ip")}
+            ports = {int(event.get("destination", {}).get("port")) for event in source_events if event.get("destination", {}).get("port") is not None}
+            reasons = sorted({
+                str((event.get("metadata") or {}).get("filter_suspicious_reason"))
+                for event in source_events
+                if (event.get("metadata") or {}).get("filter_suspicious_reason")
+            })
+            if len(source_events) < 12 or len(destinations) < 4 or len(ports) < 3:
+                continue
+            detections.append(make_detection(
+                self.detector_id,
+                "lateral_movement",
+                "Worm-like propagation pattern",
+                "A host attempted repeated connections to multiple private destinations on administration and file-sharing ports.",
+                src,
+                "private_egress",
+                8,
+                min(0.96, 0.62 + len(destinations) / 25 + len(ports) / 50),
+                min(1.0, len(source_events) / 60),
+                {
+                    "event_count": len(source_events),
+                    "destination_count": len(destinations),
+                    "port_count": len(ports),
+                    "sample_destinations": sorted(destinations)[:10],
+                    "ports": sorted(ports),
+                    "filter_suspicious_reasons": reasons,
+                    "nat_mapping_required": not is_private_ip(str(src)),
+                    "response_target_confidence": "low_without_pre_nat_session_context" if not is_private_ip(str(src)) else "direct_internal_source",
+                    "thresholds": [
+                        {"feature": "worm_like_connection_attempts", "operator": ">=", "threshold": 12, "observed": len(source_events)},
+                        {"feature": "private_destinations", "operator": ">=", "threshold": 4, "observed": len(destinations)},
+                        {"feature": "admin_or_file_sharing_ports", "operator": ">=", "threshold": 3, "observed": len(ports)},
+                    ],
+                },
+                recommended_action="investigate",
+            ))
         return detections
 
 
@@ -1011,6 +1082,7 @@ def default_detectors() -> list[Detector]:
         CredentialBruteforceDetector(),
         AuthServicePressureDetector(),
         LateralMovementDetector(),
+        WormLikePropagationDetector(),
         DataExfiltrationDetector(),
         UnusualTlsFingerprintDetector(),
         SupplyChainCallbackDetector(),

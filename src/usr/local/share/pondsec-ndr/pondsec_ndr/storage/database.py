@@ -133,7 +133,7 @@ def _case_entity_value(value: Any) -> str | None:
     if value is None:
         return None
     text = str(value)
-    if not text or text in {"any", "internal", "external", "auth_services", "host-baseline"}:
+    if not text or text in {"any", "internal", "external", "auth_services", "host-baseline", "unresolved_internal_host_behind_nat"}:
         return None
     if text.startswith("port:"):
         return None
@@ -1755,19 +1755,30 @@ class EventStore:
         with self.connect() as conn:
             for incident in incidents:
                 prepared = self._prepare_incident_record(incident)
-                existing = self._find_merge_incident(conn, prepared)
-                if existing:
+                existing = self._find_incident_by_id(conn, prepared["incident_id"])
+                if existing and existing["status"] in OPEN_INCIDENT_STATUSES:
+                    self._merge_incident(conn, existing, prepared)
+                elif existing:
                     incident["incident_id"] = existing["incident_id"]
                     prepared["incident_id"] = existing["incident_id"]
-                    self._merge_incident(conn, existing, prepared)
                 else:
-                    self._insert_incident(conn, prepared)
-                    created += 1
+                    existing = self._find_merge_incident(conn, prepared)
+                    if existing:
+                        incident["incident_id"] = existing["incident_id"]
+                        prepared["incident_id"] = existing["incident_id"]
+                        self._merge_incident(conn, existing, prepared)
+                    else:
+                        self._insert_incident(conn, prepared)
+                        created += 1
                 for detection_id in prepared["detection_ids"]:
                     conn.execute("INSERT OR IGNORE INTO incident_detections(incident_id, detection_id) VALUES (?, ?)", (prepared["incident_id"], detection_id))
                 if prepared.get("source_ip"):
                     self._refresh_host_incident_count(conn, prepared["source_ip"], prepared["risk_score"])
             return created
+
+    @staticmethod
+    def _find_incident_by_id(conn: sqlite3.Connection, incident_id: str) -> sqlite3.Row | None:
+        return conn.execute("SELECT * FROM incidents WHERE incident_id = ?", (incident_id,)).fetchone()
 
     def _prepare_incident_record(self, incident: dict[str, Any]) -> dict[str, Any]:
         evidence = incident.get("evidence", {}) if isinstance(incident.get("evidence"), dict) else {}
@@ -1861,6 +1872,8 @@ class EventStore:
             existing_evidence = {}
         existing_roles = existing_evidence.get("entity_roles", {}) if isinstance(existing_evidence, dict) else {}
         incoming_roles = (incident.get("evidence") or {}).get("entity_roles", {}) if isinstance(incident.get("evidence"), dict) else {}
+        if EventStore._requires_pre_nat_mapping(existing_evidence) != EventStore._requires_pre_nat_mapping(incident.get("evidence") or {}):
+            return False
         if (
             existing_source
             and incoming_source
@@ -1879,6 +1892,24 @@ class EventStore:
         shared = existing_entities & incoming_entities
         if shared:
             return True
+        return False
+
+    @staticmethod
+    def _requires_pre_nat_mapping(evidence: dict[str, Any]) -> bool:
+        if not isinstance(evidence, dict):
+            return False
+        detections = evidence.get("detections", [])
+        if not isinstance(detections, list):
+            return False
+        for detection in detections:
+            if not isinstance(detection, dict):
+                continue
+            detection_evidence = detection.get("evidence") if isinstance(detection.get("evidence"), dict) else {}
+            if (
+                detection_evidence.get("nat_mapping_required")
+                or detection_evidence.get("response_target_confidence") == "low_without_pre_nat_session_context"
+            ):
+                return True
         return False
 
     @staticmethod

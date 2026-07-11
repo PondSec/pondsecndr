@@ -29,6 +29,7 @@ STRONG_INCIDENT_DETECTORS = {
     "pondsec.lateral_movement",
     "pondsec.malware_callback",
     "pondsec.suricata_drop",
+    "pondsec.worm_like_propagation",
 }
 WEB_FANOUT_PORTS = {80, 443, 853}
 
@@ -555,6 +556,10 @@ def _entity_roles(detections: list[dict[str, Any]]) -> dict[str, Any]:
     sources = [_text_or_none(item.get("source_ip")) for item in ordered]
     destinations = [_text_or_none(item.get("destination_ip")) for item in ordered]
     source_set = {src for src in sources if src}
+    nat_sources = {
+        src for item, src in zip(ordered, sources)
+        if src and _detection_needs_pre_nat_mapping(item)
+    }
     internal_destinations = [
         dst for dst in destinations
         if dst and not dst.startswith("port:") and _is_internal_address(dst)
@@ -563,12 +568,14 @@ def _entity_roles(detections: list[dict[str, Any]]) -> dict[str, Any]:
         item for item in ordered
         if _text_or_none(item.get("source_ip"))
         and _text_or_none(item.get("destination_ip"))
+        and not _detection_needs_pre_nat_mapping(item)
         and not _is_internal_address(str(item.get("source_ip")))
         and _is_internal_address(str(item.get("destination_ip")))
     ]
-    external_actor = _text_or_none(inbound[0].get("source_ip")) if inbound else next((src for src in sources if src and not _is_internal_address(src)), None)
+    external_actor = _text_or_none(inbound[0].get("source_ip")) if inbound else next((src for src in sources if src and src not in nat_sources and not _is_internal_address(src)), None)
     victim = _text_or_none(inbound[0].get("destination_ip")) if inbound else next((dst for dst in internal_destinations if dst not in source_set), None)
-    affected_host = victim or next((src for src in sources if src and _is_internal_address(src)), None) or sources[0]
+    internal_source = next((src for src in sources if src and _is_internal_address(src)), None)
+    affected_host = victim or internal_source or ("unresolved_internal_host_behind_nat" if nat_sources else sources[0])
 
     pivot_host = None
     if victim:
@@ -583,7 +590,7 @@ def _entity_roles(detections: list[dict[str, Any]]) -> dict[str, Any]:
                 break
 
     destination = _most_common([dst for dst in destinations if dst]) or victim
-    response_target = external_actor if external_actor else affected_host
+    response_target = None if nat_sources and not victim and not internal_source else (external_actor if external_actor else affected_host)
     roles = {
         "external_actor": external_actor,
         "threat_source": external_actor or sources[0],
@@ -594,6 +601,14 @@ def _entity_roles(detections: list[dict[str, Any]]) -> dict[str, Any]:
         "response_target": response_target,
     }
     return {key: value for key, value in roles.items() if value}
+
+
+def _detection_needs_pre_nat_mapping(detection: dict[str, Any]) -> bool:
+    evidence = detection.get("evidence") if isinstance(detection.get("evidence"), dict) else {}
+    return bool(
+        evidence.get("nat_mapping_required")
+        or evidence.get("response_target_confidence") == "low_without_pre_nat_session_context"
+    )
 
 
 def _attack_sequence(detections: list[dict[str, Any]]) -> list[dict[str, Any]]:

@@ -179,6 +179,8 @@ def propose_block_for_incident(
 
 def _response_target_for_incident(incident: dict[str, Any]) -> str | None:
     evidence = incident.get("evidence") if isinstance(incident.get("evidence"), dict) else {}
+    if _requires_pre_nat_mapping(evidence):
+        return None
     roles = evidence.get("entity_roles") if isinstance(evidence.get("entity_roles"), dict) else {}
     source_ip = incident.get("source_ip")
     if source_ip and is_private_ip(str(source_ip)):
@@ -190,6 +192,20 @@ def _response_target_for_incident(incident: dict[str, Any]) -> str | None:
     if response_target and is_private_ip(str(response_target)):
         return str(response_target)
     return str(source_ip) if source_ip else None
+
+
+def _requires_pre_nat_mapping(evidence: dict[str, Any]) -> bool:
+    detections = evidence.get("detections") if isinstance(evidence.get("detections"), list) else []
+    for detection in detections:
+        if not isinstance(detection, dict):
+            continue
+        detection_evidence = detection.get("evidence") if isinstance(detection.get("evidence"), dict) else {}
+        if (
+            detection_evidence.get("nat_mapping_required")
+            or detection_evidence.get("response_target_confidence") == "low_without_pre_nat_session_context"
+        ):
+            return True
+    return False
 
 
 def _internal_behavior_actor(evidence: dict[str, Any]) -> str | None:
