@@ -54,6 +54,12 @@ def _csv(value: Any) -> list[str]:
     return [item.strip() for item in str(value).split(",") if item.strip()]
 
 
+def _text(value: Any, default: str = "") -> str:
+    if value is None:
+        return default
+    return str(value)
+
+
 def _parse_datetime(value: Any) -> datetime | None:
     if not value:
         return None
@@ -245,6 +251,16 @@ class NetFlowConfig:
 
 
 @dataclass(slots=True)
+class DnsmasqConfig:
+    enabled: bool = False
+    sensor_name: str = ""
+    dns_log_path: str = "/var/log/resolver/latest.log"
+    dhcp_log_path: str = "/var/log/dhcpd/latest.log"
+    lease_path: str = "/var/db/dnsmasq.leases"
+    start_at_end: bool = True
+
+
+@dataclass(slots=True)
 class ResponseConfig:
     mode: str = "observe"
     ai_full_decision_mode: bool = False
@@ -304,6 +320,7 @@ class PondSecConfig:
     zeek: ZeekConfig = field(default_factory=ZeekConfig)
     zenarmor: ZenarmorConfig = field(default_factory=ZenarmorConfig)
     netflow: NetFlowConfig = field(default_factory=NetFlowConfig)
+    dnsmasq: DnsmasqConfig = field(default_factory=DnsmasqConfig)
     response: ResponseConfig = field(default_factory=ResponseConfig)
     data_dir: Path = DATA_DIR
     log_dir: Path = LOG_DIR
@@ -365,6 +382,12 @@ class PondSecConfig:
             errors.append("NetFlow retention_days must be positive")
         if self.netflow.max_datagrams_per_run < 1:
             errors.append("NetFlow max_datagrams_per_run must be positive")
+        if self.dnsmasq.enabled and not any([
+            self.dnsmasq.dns_log_path,
+            self.dnsmasq.dhcp_log_path,
+            self.dnsmasq.lease_path,
+        ]):
+            errors.append("dnsmasq provider requires at least one DNS, DHCP or lease path")
         if self.response.max_internal_isolations_per_hour < 0:
             errors.append("max_internal_isolations_per_hour must not be negative")
         if self.response.internal_isolation_cooldown_seconds < 0:
@@ -391,6 +414,7 @@ def load_config(path: Path | None = None) -> PondSecConfig:
     zeek_logs = zeek.get("logs") or {}
     zenarmor = raw.get("zenarmor") or {}
     netflow = raw.get("netflow") or {}
+    dnsmasq = raw.get("dnsmasq") or {}
     response = raw.get("response") or {}
     mode = str(raw.get("mode", "monitor")).strip().lower()
     if mode not in MODES:
@@ -507,6 +531,14 @@ def load_config(path: Path | None = None) -> PondSecConfig:
             template_ttl_seconds=_int(netflow.get("template_ttl_seconds"), 3600, 60, 86400),
             retention_days=_int(netflow.get("retention_days"), 30, 1, 3650),
             max_datagrams_per_run=_int(netflow.get("max_datagrams_per_run"), 1000, 1, 100000),
+        ),
+        dnsmasq=DnsmasqConfig(
+            enabled=_bool(dnsmasq.get("enabled"), False),
+            sensor_name=str(dnsmasq.get("sensor_name") or ""),
+            dns_log_path=_text(dnsmasq.get("dns_log_path", "/var/log/resolver/latest.log")),
+            dhcp_log_path=_text(dnsmasq.get("dhcp_log_path", "/var/log/dhcpd/latest.log")),
+            lease_path=_text(dnsmasq.get("lease_path", "/var/db/dnsmasq.leases")),
+            start_at_end=_bool(dnsmasq.get("start_at_end"), True),
         ),
         response=ResponseConfig(
             mode=str(response.get("mode") or "observe").strip().lower() if str(response.get("mode") or "observe").strip().lower() in RESPONSE_MODES else "observe",

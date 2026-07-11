@@ -474,6 +474,42 @@
     </field>
     <field>
         <type>header</type>
+        <label>dnsmasq DNS and DHCP</label>
+    </field>
+    <field>
+        <id>pondsecndr.dnsmasq.enabled</id>
+        <label>Enable dnsmasq provider</label>
+        <type>checkbox</type>
+        <help>Reads dnsmasq DNS, DHCP and lease files only. PondSec does not change resolver or DHCP settings.</help>
+    </field>
+    <field>
+        <id>pondsecndr.dnsmasq.sensor_name</id>
+        <label>dnsmasq sensor name</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.dnsmasq.dns_log_path</id>
+        <label>DNS query log path</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.dnsmasq.dhcp_log_path</id>
+        <label>DHCP event log path</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.dnsmasq.lease_path</id>
+        <label>dnsmasq lease file path</label>
+        <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.dnsmasq.start_at_end</id>
+        <label>Start at end</label>
+        <type>checkbox</type>
+        <help>Recommended for production so existing DNS and DHCP history is not ingested unexpectedly.</help>
+    </field>
+    <field>
+        <type>header</type>
         <label>Response</label>
     </field>
     <field>

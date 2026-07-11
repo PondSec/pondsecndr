@@ -103,6 +103,14 @@
     "retention_days": "{{ OPNsense.pondsecndr.netflow.retention_days|default("30") }}",
     "max_datagrams_per_run": "{{ OPNsense.pondsecndr.netflow.max_datagrams_per_run|default("1000") }}"
   },
+  "dnsmasq": {
+    "enabled": "{{ OPNsense.pondsecndr.dnsmasq.enabled|default("0") }}",
+    "sensor_name": "{{ OPNsense.pondsecndr.dnsmasq.sensor_name|default("") }}",
+    "dns_log_path": "{{ OPNsense.pondsecndr.dnsmasq.dns_log_path|default("/var/log/resolver/latest.log") }}",
+    "dhcp_log_path": "{{ OPNsense.pondsecndr.dnsmasq.dhcp_log_path|default("/var/log/dhcpd/latest.log") }}",
+    "lease_path": "{{ OPNsense.pondsecndr.dnsmasq.lease_path|default("/var/db/dnsmasq.leases") }}",
+    "start_at_end": "{{ OPNsense.pondsecndr.dnsmasq.start_at_end|default("1") }}"
+  },
   "response": {
     "mode": "{{ OPNsense.pondsecndr.response.mode|default("observe") }}",
     "ai_full_decision_mode": "{{ OPNsense.pondsecndr.response.ai_full_decision_mode|default("0") }}",

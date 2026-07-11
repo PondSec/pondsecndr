@@ -13,6 +13,7 @@ import signal
 import time
 from typing import Any
 
+from pondsec_ndr.collectors.dnsmasq import DnsmasqCollector
 from pondsec_ndr.collectors.eve import EveCollector
 from pondsec_ndr.collectors.filterlog import FilterLogCollector
 from pondsec_ndr.collectors.netflow import NetFlowCollector
@@ -130,6 +131,19 @@ class PondSecService:
         )
         filter_events, filter_stats = filter_collector.read_once(max_lines=max_lines)
         events.extend(filter_events)
+        dnsmasq_stats = None
+        if self.config.dnsmasq.enabled:
+            dnsmasq_collector = DnsmasqCollector(
+                Path(self.config.dnsmasq.dns_log_path) if self.config.dnsmasq.dns_log_path else None,
+                Path(self.config.dnsmasq.dhcp_log_path) if self.config.dnsmasq.dhcp_log_path else None,
+                Path(self.config.dnsmasq.lease_path) if self.config.dnsmasq.lease_path else None,
+                self.config.data_dir / "collector_offsets",
+                sensor_name=self.config.dnsmasq.sensor_name,
+                queue_limit=collector_queue_limit,
+                start_at_end=self.config.dnsmasq.start_at_end,
+            )
+            dnsmasq_events, dnsmasq_stats = dnsmasq_collector.read_once(max_lines=max_lines)
+            events.extend(dnsmasq_events)
         zeek_stats = None
         if self.config.zeek.enabled:
             zeek_collector = ZeekLogCollector(
@@ -178,6 +192,7 @@ class PondSecService:
         parser_errors = (
             stats.parser_errors
             + (filter_stats.parser_errors if filter_stats else 0)
+            + (dnsmasq_stats.parser_errors if dnsmasq_stats else 0)
             + (zeek_stats.parser_errors if zeek_stats else 0)
             + (zenarmor_stats.parser_errors if zenarmor_stats else 0)
             + (netflow_stats.parser_errors if netflow_stats else 0)
@@ -185,12 +200,14 @@ class PondSecService:
         normalization_errors = (
             stats.normalization_errors
             + (filter_stats.normalization_errors if filter_stats else 0)
+            + (dnsmasq_stats.normalization_errors if dnsmasq_stats else 0)
             + (zeek_stats.normalization_errors if zeek_stats else 0)
             + (zenarmor_stats.normalization_errors if zenarmor_stats else 0)
         )
         queue_drops = (
             stats.queue_drops
             + (filter_stats.queue_drops if filter_stats else 0)
+            + (dnsmasq_stats.queue_drops if dnsmasq_stats else 0)
             + (zeek_stats.queue_drops if zeek_stats else 0)
             + (zenarmor_stats.queue_drops if zenarmor_stats else 0)
             + (netflow_stats.queue_drops if netflow_stats else 0)
@@ -203,6 +220,10 @@ class PondSecService:
         if filter_stats and filter_stats.last_error:
             self.counters["last_optional_collector_errors"] = (
                 [filter_stats.last_error] + self.counters["last_optional_collector_errors"]
+            )[:5]
+        if dnsmasq_stats and dnsmasq_stats.last_error:
+            self.counters["last_optional_collector_errors"] = (
+                [dnsmasq_stats.last_error] + self.counters["last_optional_collector_errors"]
             )[:5]
         if zeek_stats and zeek_stats.last_error:
             self.counters["last_optional_collector_errors"] = (
@@ -277,12 +298,14 @@ class PondSecService:
             "read_lines": (
                 stats.read_lines
                 + (filter_stats.read_lines if filter_stats else 0)
+                + (dnsmasq_stats.read_lines if dnsmasq_stats else 0)
                 + (zeek_stats.read_lines if zeek_stats else 0)
                 + (zenarmor_stats.read_lines if zenarmor_stats else 0)
             ),
             "accepted_events": (
                 stats.accepted_events
                 + (filter_stats.accepted_events if filter_stats else 0)
+                + (dnsmasq_stats.accepted_events if dnsmasq_stats else 0)
                 + (zeek_stats.accepted_events if zeek_stats else 0)
                 + (zenarmor_stats.accepted_events if zenarmor_stats else 0)
                 + (netflow_stats.accepted_events if netflow_stats else 0)
@@ -316,12 +339,14 @@ class PondSecService:
             "rotation_detected": (
                 stats.rotation_detected
                 or (filter_stats.rotation_detected if filter_stats else False)
+                or (dnsmasq_stats.rotation_detected if dnsmasq_stats else False)
                 or (zeek_stats.rotation_detected if zeek_stats else False)
                 or (zenarmor_stats.rotation_detected if zenarmor_stats else False)
             ),
             "collector_sources": {
                 "suricata_eve": asdict(stats),
                 "opnsense_filterlog": asdict(filter_stats) if filter_stats else None,
+                "dnsmasq": asdict(dnsmasq_stats) if dnsmasq_stats else None,
                 "zeek": asdict(zeek_stats) if zeek_stats else None,
                 "zenarmor": asdict(zenarmor_stats) if zenarmor_stats else None,
                 "netflow": asdict(netflow_stats) if netflow_stats else None,
@@ -332,6 +357,7 @@ class PondSecService:
             "collector": {
                 "suricata_eve": asdict(stats),
                 "opnsense_filterlog": asdict(filter_stats) if filter_stats else None,
+                "dnsmasq": asdict(dnsmasq_stats) if dnsmasq_stats else None,
                 "zeek": asdict(zeek_stats) if zeek_stats else None,
                 "zenarmor": asdict(zenarmor_stats) if zenarmor_stats else None,
                 "netflow": asdict(netflow_stats) if netflow_stats else None,

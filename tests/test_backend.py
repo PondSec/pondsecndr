@@ -13,12 +13,13 @@ from unittest.mock import patch
 
 import pondsec_ndr.diagnostics as diagnostics_mod
 from pondsec_ndr.cli import _incident_analysis, main as cli_main, reset_runtime_state
+from pondsec_ndr.collectors.dnsmasq import DnsmasqCollector, normalize_dnsmasq_lease, normalize_dnsmasq_line
 from pondsec_ndr.collectors.eve import EveCollector
 from pondsec_ndr.collectors.filterlog import FilterLogCollector, FilterLogStats, normalize_filterlog_line
 from pondsec_ndr.collectors.netflow import NETFLOW_V5_HEADER, NETFLOW_V5_RECORD, NetFlowCollector
 from pondsec_ndr.collectors.zeek import ZeekLogCollector, normalize_zeek_row
 from pondsec_ndr.collectors.zenarmor import ZenarmorCollector, normalize_zenarmor_event, parse_zenarmor_line
-from pondsec_ndr.config import DetectionConfig, InterfaceConfig, PondSecConfig, ResponseConfig
+from pondsec_ndr.config import DetectionConfig, DnsmasqConfig, InterfaceConfig, PondSecConfig, ResponseConfig
 from pondsec_ndr.correlation import correlate_detections
 from pondsec_ndr.detection.detectors import BeaconingDetector, DNSTunnelingDetector, PortScanDetector, SuricataAlertAdapter
 from pondsec_ndr.diagnostics import diagnostic_archive, diagnostics as diagnostics_payload, eve_access_status
@@ -285,6 +286,74 @@ class BackendTests(unittest.TestCase):
             events, stats = FilterLogCollector(log, offset).read_once(max_lines=100)
             self.assertEqual(len(events), 1)
             self.assertEqual(stats.accepted_events, 1)
+
+    def test_dnsmasq_normalizer_supports_dns_queries_and_dhcp_events(self) -> None:
+        dns = normalize_dnsmasq_line(
+            "Jul 11 12:00:00 firewall dnsmasq[1234]: query[A] suspicious.example.test from 192.168.10.20",
+            sensor_name="edge-dns",
+            source_log="/var/log/resolver/latest.log",
+        )
+        self.assertIsNotNone(dns)
+        assert dns is not None
+        self.assertEqual(dns["raw_source"], "dnsmasq")
+        self.assertEqual(dns["event_type"], "dns")
+        self.assertEqual(dns["source"]["ip"], "192.168.10.20")
+        self.assertEqual(dns["metadata"]["rrname"], "suspicious.example.test")
+        self.assertEqual(dns["metadata"]["rrtype"], "A")
+        self.assertEqual(dns["metadata"]["sensor_name"], "edge-dns")
+
+        dhcp = normalize_dnsmasq_line(
+            "Jul 11 12:01:00 firewall dnsmasq-dhcp[1234]: DHCPACK(igb1_vlan10) 192.168.10.20 aa:bb:cc:dd:ee:ff laptop-20",
+            sensor_name="edge-dns",
+        )
+        self.assertIsNotNone(dhcp)
+        assert dhcp is not None
+        self.assertEqual(dhcp["event_type"], "dhcp")
+        self.assertEqual(dhcp["source"]["ip"], "192.168.10.20")
+        self.assertEqual(dhcp["source"]["interface"], "igb1_vlan10")
+        self.assertEqual(dhcp["metadata"]["mac"], "aa:bb:cc:dd:ee:ff")
+        self.assertEqual(dhcp["metadata"]["hostname"], "laptop-20")
+
+        lease = normalize_dnsmasq_lease(
+            "1783261000 aa:bb:cc:dd:ee:ff 192.168.10.20 laptop-20 01:aa:bb:cc:dd:ee:ff",
+            "2026-07-05T10:00:00+00:00",
+        )
+        self.assertIsNotNone(lease)
+        assert lease is not None
+        self.assertEqual(lease["event_type"], "dhcp")
+        self.assertEqual(lease["metadata"]["dhcp_action"], "lease")
+        self.assertEqual(lease["metadata"]["entity_confidence"], 0.95)
+
+    def test_dnsmasq_collector_tails_logs_and_snapshots_leases(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dns_log = root / "resolver.log"
+            dhcp_log = root / "dhcp.log"
+            leases = root / "dnsmasq.leases"
+            dns_log.write_text(
+                "Jul 11 12:00:00 firewall dnsmasq[1234]: query[A] example.test from 192.168.10.20\n",
+                encoding="utf-8",
+            )
+            dhcp_log.write_text(
+                "Jul 11 12:01:00 firewall dnsmasq-dhcp[1234]: DHCPACK(igb1_vlan10) 192.168.10.20 aa:bb:cc:dd:ee:ff laptop-20\n",
+                encoding="utf-8",
+            )
+            leases.write_text(
+                "1783261000 aa:bb:cc:dd:ee:ff 192.168.10.20 laptop-20 01:aa:bb:cc:dd:ee:ff\n",
+                encoding="utf-8",
+            )
+            collector = DnsmasqCollector(dns_log, dhcp_log, leases, root / "offsets", start_at_end=False)
+            events, stats = collector.read_once(max_lines=10)
+            self.assertEqual(len(events), 3)
+            self.assertEqual(stats.accepted_events, 3)
+            self.assertIn("dns_log", stats.sources)
+            self.assertIn("dhcp_log", stats.sources)
+            self.assertIn("leases", stats.sources)
+            self.assertEqual({event["event_type"] for event in events}, {"dns", "dhcp"})
+
+            events2, stats2 = collector.read_once(max_lines=10)
+            self.assertEqual(events2, [])
+            self.assertGreaterEqual(stats2.duplicates, 1)
 
     def test_zeek_normalizer_supports_required_log_types(self) -> None:
         conn = normalize_zeek_row("conn", {
@@ -767,6 +836,21 @@ class BackendTests(unittest.TestCase):
             host = store.list_rows("hosts")[0]
             fingerprints = json.loads(host["known_tls_fingerprints_json"])
             self.assertEqual(fingerprints, ['{"hash":"abc123","string":"771,4865-4866"}'])
+
+    def test_event_store_uses_dnsmasq_dhcp_identity_metadata_for_hosts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            event = normalize_dnsmasq_lease(
+                "1783261000 aa:bb:cc:dd:ee:ff 192.168.10.20 laptop-20 01:aa:bb:cc:dd:ee:ff",
+                "2026-07-05T10:00:00+00:00",
+            )
+            assert event is not None
+            self.assertEqual(store.insert_events([event]), 1)
+            host = store.list_rows("hosts")[0]
+            self.assertEqual(host["ip"], "192.168.10.20")
+            self.assertEqual(host["mac"], "aa:bb:cc:dd:ee:ff")
+            self.assertEqual(host["hostname"], "laptop-20")
 
     def test_privacy_export_anonymizes_addresses(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

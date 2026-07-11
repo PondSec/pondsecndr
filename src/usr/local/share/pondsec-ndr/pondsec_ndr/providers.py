@@ -36,6 +36,10 @@ def provider_inventory(config: PondSecConfig, health: dict[str, Any] | None = No
     providers = [
         _suricata_provider(config, sources.get("suricata_eve") or {}, updated_at),
         _filterlog_provider(config, sources.get("opnsense_filterlog") or {}, updated_at),
+        _dnsmasq_provider(config, sources.get("dnsmasq") or {}, updated_at),
+        _zeek_provider(config, sources.get("zeek") or {}, updated_at),
+        _netflow_provider(config, sources.get("netflow") or {}, updated_at),
+        _zenarmor_provider(config, sources.get("zenarmor") or {}, updated_at),
     ]
     providers.extend(_planned_providers())
     return [provider.as_dict() for provider in providers]
@@ -86,17 +90,120 @@ def _filterlog_provider(config: PondSecConfig, stats: dict[str, Any], updated_at
     )
 
 
+def _dnsmasq_provider(config: PondSecConfig, stats: dict[str, Any], updated_at: str | None) -> DataSourceProvider:
+    enabled = bool(config.dnsmasq.enabled)
+    last_error = stats.get("last_error")
+    return DataSourceProvider(
+        provider_id="dnsmasq_dns_dhcp",
+        display_name="dnsmasq DNS and DHCP",
+        description="Reads dnsmasq DNS query, DHCP event and lease telemetry without changing resolver or DHCP settings.",
+        version="1",
+        enabled=enabled,
+        health_status=_health(enabled, last_error, stats, optional=True),
+        input_type="file",
+        event_types=["dns", "dhcp", "asset"],
+        configuration={
+            "dns_log_path": config.dnsmasq.dns_log_path,
+            "dhcp_log_path": config.dnsmasq.dhcp_log_path,
+            "lease_path": config.dnsmasq.lease_path,
+            "sensor_name": config.dnsmasq.sensor_name,
+            "start_at_end": config.dnsmasq.start_at_end,
+        },
+        statistics=_stats(stats),
+        last_successful_processing=updated_at if enabled and not last_error and _accepted(stats) else None,
+        last_error=last_error,
+    )
+
+
+def _zeek_provider(config: PondSecConfig, stats: dict[str, Any], updated_at: str | None) -> DataSourceProvider:
+    enabled = bool(config.zeek.enabled)
+    last_error = stats.get("last_error")
+    return DataSourceProvider(
+        provider_id="zeek_logs",
+        display_name="Zeek Logs",
+        description="Reads configured Zeek TSV logs from a local or external sensor export path.",
+        version="1",
+        enabled=enabled,
+        health_status=_health(enabled, last_error, stats, optional=True),
+        input_type="file",
+        event_types=["flow", "dns", "tls", "http", "file", "notice", "anomaly"],
+        configuration={
+            "mode": config.zeek.mode,
+            "parser": config.zeek.parser,
+            "sensor_name": config.zeek.sensor_name,
+            "interface": config.zeek.interface,
+            "remote_target": config.zeek.remote_target,
+            "log_dir": config.zeek.log_dir,
+            "start_at_end": config.zeek.start_at_end,
+        },
+        statistics=_stats(stats),
+        last_successful_processing=updated_at if enabled and not last_error and _accepted(stats) else None,
+        last_error=last_error,
+    )
+
+
+def _netflow_provider(config: PondSecConfig, stats: dict[str, Any], updated_at: str | None) -> DataSourceProvider:
+    enabled = bool(config.netflow.enabled)
+    last_error = stats.get("last_error")
+    return DataSourceProvider(
+        provider_id="netflow",
+        display_name="NetFlow / IPFIX",
+        description="Receives NetFlow v5, NetFlow v9 template health and IPFIX-ready UDP flow telemetry.",
+        version="1",
+        enabled=enabled,
+        health_status=_health(enabled, last_error, stats, optional=True),
+        input_type="udp",
+        event_types=["flow"],
+        configuration={
+            "listen_address": config.netflow.listen_address,
+            "port": config.netflow.port,
+            "allowed_exporters": config.netflow.allowed_exporters,
+            "sampling_rate": config.netflow.sampling_rate,
+            "template_ttl_seconds": config.netflow.template_ttl_seconds,
+            "retention_days": config.netflow.retention_days,
+        },
+        statistics=_stats(stats),
+        last_successful_processing=updated_at if enabled and not last_error and _accepted(stats) else None,
+        last_error=last_error,
+    )
+
+
+def _zenarmor_provider(config: PondSecConfig, stats: dict[str, Any], updated_at: str | None) -> DataSourceProvider:
+    enabled = bool(config.zenarmor.enabled)
+    last_error = stats.get("last_error")
+    return DataSourceProvider(
+        provider_id="zenarmor",
+        display_name="Zenarmor Reporting",
+        description="Reads documented Zenarmor reporting exports such as Syslog lines; policies, TLS inspection and licensing are left untouched.",
+        version="1",
+        enabled=enabled,
+        health_status=_health(enabled, last_error, stats, optional=True),
+        input_type="file",
+        event_types=["flow", "tls", "http", "dns", "application", "security"],
+        configuration={
+            "source": config.zenarmor.source,
+            "sensor_name": config.zenarmor.sensor_name,
+            "remote_target": config.zenarmor.remote_target,
+            "syslog_path": config.zenarmor.syslog_path,
+            "start_at_end": config.zenarmor.start_at_end,
+            "api_enabled": config.zenarmor.api_enabled,
+            "api_base_url": config.zenarmor.api_base_url,
+            "api_key_ref": config.zenarmor.api_key_ref,
+        },
+        statistics=_stats(stats),
+        last_successful_processing=updated_at if enabled and not last_error and _accepted(stats) else None,
+        last_error=last_error,
+    )
+
+
 def _planned_providers() -> list[DataSourceProvider]:
     planned = [
-        ("zeek_logs", "Zeek Logs", "file", ["flow", "dns", "tls", "http", "file"]),
-        ("netflow", "NetFlow", "udp", ["flow"]),
         ("ipfix", "IPFIX", "udp", ["flow"]),
         ("sflow", "sFlow", "udp", ["flow"]),
         ("unbound_dns", "Unbound DNS Logs", "file", ["dns"]),
-        ("dhcp_leases", "DHCP Lease Events", "file", ["dhcp", "asset"]),
+        ("isc_dhcp_leases", "ISC DHCP Lease Events", "file", ["dhcp", "asset"]),
         ("arp_neighbor", "ARP / Neighbor Tables", "system", ["asset"]),
         ("crowdsec", "CrowdSec Decisions", "local_api", ["threat_intelligence", "response"]),
-        ("zenarmor", "Zenarmor Events", "local_file", ["flow", "tls", "http", "application"]),
         ("syslog", "Syslog", "udp", ["system", "authentication", "firewall"]),
         ("rest_ingest", "REST API Ingest", "api", ["generic_json"]),
         ("file_import", "File Import", "file", ["generic_json"]),
@@ -122,7 +229,7 @@ def _planned_providers() -> list[DataSourceProvider]:
 
 def _health(enabled: bool, last_error: str | None, stats: dict[str, Any], optional: bool = False) -> str:
     if not enabled:
-        return "disabled"
+        return "not_configured" if optional else "disabled"
     if last_error:
         return "warning" if optional else "degraded"
     if stats:

@@ -542,12 +542,29 @@ class EventStore:
             src = event.get("source", {}).get("ip")
             if not src:
                 continue
-            item = by_host.setdefault(src, {"first": event["timestamp"], "last": event["timestamp"], "destinations": set(), "ports": set(), "fingerprints": set(), "interface": event.get("source", {}).get("interface")})
+            metadata = event.get("metadata", {})
+            item = by_host.setdefault(src, {
+                "first": event["timestamp"],
+                "last": event["timestamp"],
+                "destinations": set(),
+                "ports": set(),
+                "fingerprints": set(),
+                "interface": event.get("source", {}).get("interface"),
+                "hostname": metadata.get("hostname"),
+                "mac": metadata.get("mac"),
+                "vlan": metadata.get("vlan"),
+            })
             item["first"] = min(item["first"], event["timestamp"])
             item["last"] = max(item["last"], event["timestamp"])
             dst = event.get("destination", {}).get("ip")
             port = event.get("destination", {}).get("port")
-            fingerprint = event.get("metadata", {}).get("fingerprint")
+            fingerprint = metadata.get("fingerprint")
+            if metadata.get("hostname"):
+                item["hostname"] = metadata.get("hostname")
+            if metadata.get("mac"):
+                item["mac"] = metadata.get("mac")
+            if metadata.get("vlan"):
+                item["vlan"] = metadata.get("vlan")
             if dst:
                 item["destinations"].add(dst)
             if port is not None:
@@ -565,19 +582,42 @@ class EventStore:
                     """
                     UPDATE hosts
                     SET first_seen = ?, last_seen = ?, interface = COALESCE(?, interface),
+                        hostname = COALESCE(?, hostname), mac = COALESCE(?, mac), vlan = COALESCE(?, vlan),
                         known_destinations_json = ?, known_ports_json = ?,
                         known_tls_fingerprints_json = ?
                     WHERE ip = ?
                     """,
-                    (first_seen, item["last"], item["interface"], json.dumps(sorted(destinations)), json.dumps(sorted(ports)), json.dumps(sorted(fingerprints)), ip),
+                    (
+                        first_seen,
+                        item["last"],
+                        item["interface"],
+                        item.get("hostname"),
+                        item.get("mac"),
+                        item.get("vlan"),
+                        json.dumps(sorted(destinations)),
+                        json.dumps(sorted(ports)),
+                        json.dumps(sorted(fingerprints)),
+                        ip,
+                    ),
                 )
             else:
                 conn.execute(
                     """
-                    INSERT INTO hosts(ip, interface, first_seen, last_seen, known_destinations_json, known_ports_json, known_tls_fingerprints_json)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO hosts(ip, hostname, mac, vlan, interface, first_seen, last_seen, known_destinations_json, known_ports_json, known_tls_fingerprints_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (ip, item["interface"], item["first"], item["last"], json.dumps(sorted(item["destinations"])), json.dumps(sorted(str(port) for port in item["ports"])), json.dumps(sorted(item["fingerprints"]))),
+                    (
+                        ip,
+                        item.get("hostname"),
+                        item.get("mac"),
+                        item.get("vlan"),
+                        item["interface"],
+                        item["first"],
+                        item["last"],
+                        json.dumps(sorted(item["destinations"])),
+                        json.dumps(sorted(str(port) for port in item["ports"])),
+                        json.dumps(sorted(item["fingerprints"])),
+                    ),
                 )
 
     def insert_features(self, features: list[dict[str, Any]]) -> int:
