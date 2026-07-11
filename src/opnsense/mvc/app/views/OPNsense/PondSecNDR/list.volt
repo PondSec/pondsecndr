@@ -117,6 +117,16 @@ $(function() {
         return escapeHtml(data);
     }
 
+    function tokens(values, emptyLabel) {
+        values = Array.isArray(values) ? values.filter(hasValue) : (hasValue(values) ? [values] : []);
+        if (!values.length) {
+            return '<span class="pondsec-empty-inline">' + escapeHtml(emptyLabel || 'None recorded.') + '</span>';
+        }
+        return values.map(function(value) {
+            return '<span class="pondsec-token">' + escapeHtml(value) + '</span>';
+        }).join('');
+    }
+
     function escapeAttr(value) {
         return escapeHtml(value).replace(/"/g, '&quot;');
     }
@@ -453,12 +463,12 @@ $(function() {
         }
         if (kind === 'hosts') {
             return [
-                {label: 'Host', render: function(row) { return mono(row.ip); }},
+                {label: 'Host', render: hostSummaryCell},
+                {label: 'Peer group', render: function(row) { return badge(row.peer_group || 'unknown') + '<span class="pondsec-subtle">Confidence ' + escapeHtml(formatPercent(row.peer_group_confidence || 0)) + '</span>'; }},
                 {label: 'Protection', render: function(row) { return hostProtection(row); }},
                 {label: 'Risk', render: function(row) { return riskCell(row.risk_score); }},
                 {label: 'Open incidents', render: function(row) { return formatNumber(row.open_incidents); }},
                 {label: 'Interface', render: function(row) { return compactValue(row.interface); }},
-                {label: 'First seen', render: function(row) { return formatDate(row.first_seen); }},
                 {label: 'Last seen', render: function(row) { return formatDate(row.last_seen); }}
             ];
         }
@@ -513,6 +523,21 @@ $(function() {
 
     function mono(value) {
         return hasValue(value) ? '<span class="pondsec-mono">' + escapeHtml(value) + '</span>' : '-';
+    }
+
+    function hostSummaryCell(row) {
+        var title = hostIdentityTitle(row);
+        var details = [];
+        if (hasValue(row.primary_ip || row.ip) && title !== (row.primary_ip || row.ip)) {
+            details.push(row.primary_ip || row.ip);
+        }
+        if (hasValue(row.mac)) {
+            details.push(row.mac);
+        }
+        if (hasValue(row.os_name)) {
+            details.push(row.os_name);
+        }
+        return '<button class="pondsec-link-button" type="button"><strong>' + escapeHtml(title) + '</strong><span>' + escapeHtml(details.join(' · ') || row.entity_id || 'Open entity resolution') + '</span></button>';
     }
 
     function hostProtection(row) {
@@ -727,12 +752,115 @@ $(function() {
             return '<th>' + escapeHtml(column.label) + '</th>';
         }).join('') + '</tr></thead>';
         var body = '<tbody>' + rows.map(function(row) {
-            var attrs = kind === 'incidents' ? ' class="pondsec-clickable-row" data-id="' + encodeURIComponent(row.incident_id || '') + '"' : '';
+            var attrs = '';
+            if (kind === 'incidents') {
+                attrs = ' class="pondsec-clickable-row" data-id="' + encodeURIComponent(row.incident_id || '') + '"';
+            } else if (kind === 'hosts') {
+                attrs = ' class="pondsec-clickable-row" data-id="' + encodeURIComponent(row.entity_id || row.primary_ip || row.ip || row.mac || row.hostname || '') + '"';
+            }
             return '<tr' + attrs + '>' + columns.map(function(column) {
                 return '<td>' + column.render(row) + '</td>';
             }).join('') + '</tr>';
         }).join('') + '</tbody>';
         $('#pondsec_table').html(header + body);
+    }
+
+    function hostIdentityTitle(host) {
+        return host.hostname || host.primary_ip || host.ip || host.mac || host.entity_id || 'Host';
+    }
+
+    function renderHostRecordRows(records) {
+        records = records || [];
+        if (!records.length) {
+            return '<div class="pondsec-empty">No IP-oriented host records are linked to this entity.</div>';
+        }
+        return '<table class="pondsec-mini-table"><thead><tr><th>IP</th><th>Risk</th><th>Open</th><th>Interface</th><th>Baseline</th><th>Protection</th><th>Last seen</th></tr></thead><tbody>' +
+            records.map(function(record) {
+                return '<tr>' +
+                    '<td>' + mono(record.ip) + '</td>' +
+                    '<td>' + riskCell(record.risk_score) + '</td>' +
+                    '<td>' + formatNumber(record.open_incidents || 0) + '</td>' +
+                    '<td>' + compactValue(record.interface) + '</td>' +
+                    '<td>' + compactValue(record.learning_status || record.baseline_deviation) + '</td>' +
+                    '<td>' + hostProtection(record) + '</td>' +
+                    '<td>' + formatDate(record.last_seen) + '</td>' +
+                '</tr>';
+            }).join('') +
+        '</tbody></table>';
+    }
+
+    function renderEntityHistory(history) {
+        history = history || [];
+        if (!history.length) {
+            return '<div class="pondsec-empty">No entity history recorded yet.</div>';
+        }
+        return history.slice(-12).reverse().map(function(item) {
+            return '<div class="pondsec-history-item">' +
+                '<strong>' + escapeHtml(item.source || item.event_type || 'observation') + '</strong>' +
+                '<span>' + escapeHtml(formatDate(item.timestamp || item.last_seen || item.first_seen)) + '</span>' +
+                '<p>' + compactValue(item.summary || item.hostname || item.ip || item.mac || item) + '</p>' +
+            '</div>';
+        }).join('');
+    }
+
+    function renderHostDetail(host) {
+        host = host || {};
+        $('#host_detail_title').text(hostIdentityTitle(host));
+        $('#host_detail_meta').html(
+            badge(host.peer_group || 'unknown') +
+            badge(host.criticality || 'normal') +
+            '<span class="pondsec-case-meta">Confidence ' + escapeHtml(formatPercent(host.confidence || 0)) + '</span>' +
+            '<span class="pondsec-case-meta">Peer ' + escapeHtml(formatPercent(host.peer_group_confidence || 0)) + '</span>'
+        );
+        $('#host_identity_grid').html([
+            ['Entity ID', mono(host.entity_id)],
+            ['Primary IP', mono(host.primary_ip || host.ip)],
+            ['Hostname', compactValue(host.hostname)],
+            ['MAC', mono(host.mac)],
+            ['OS', compactValue(host.os_name)],
+            ['Interface', compactValue(host.interface)],
+            ['VLAN', compactValue(host.vlan)],
+            ['Zone', compactValue(host.zone)],
+            ['First seen', formatDate(host.first_seen)],
+            ['Last seen', formatDate(host.last_seen)]
+        ].map(function(row) {
+            return '<div class="pondsec-case-kv"><span>' + escapeHtml(row[0]) + '</span><strong>' + row[1] + '</strong></div>';
+        }).join(''));
+        $('#host_ip_sets').html(
+            '<div class="pondsec-case-kv"><span>Current IPs</span><strong>' + tokens(host.current_ips, 'No current IPs recorded.') + '</strong></div>' +
+            '<div class="pondsec-case-kv"><span>Previous IPs</span><strong>' + tokens(host.previous_ips, 'No previous IPs recorded.') + '</strong></div>'
+        );
+        $('#host_entity_traits').html(
+            '<div class="pondsec-case-kv"><span>Roles</span><strong>' + tokens(host.roles, 'No roles recorded.') + '</strong></div>' +
+            '<div class="pondsec-case-kv"><span>Known services</span><strong>' + tokens(host.known_services, 'No services recorded.') + '</strong></div>' +
+            '<div class="pondsec-case-kv"><span>Tags</span><strong>' + tokens(host.tags, 'No tags recorded.') + '</strong></div>' +
+            '<div class="pondsec-case-kv"><span>Peer group source</span><strong>' + compactValue(host.peer_group_source) + '</strong></div>'
+        );
+        $('#host_records').html(renderHostRecordRows(host.host_records || []));
+        $('#host_history').html(renderEntityHistory(host.history || []));
+        $('#host_detail_panel').addClass('open');
+    }
+
+    function openHostDetail(id) {
+        var plainId = decodeId(id);
+        var local = allRows.find(function(row) {
+            var values = [row.entity_id, row.primary_ip, row.ip, row.mac, row.hostname].concat(row.current_ips || [], row.previous_ips || []);
+            return values.some(function(value) { return hasValue(value) && String(value) === plainId; });
+        });
+        if (local) {
+            renderHostDetail(local);
+            return;
+        }
+        if (!plainId) {
+            return;
+        }
+        ajaxGet('/api/pondsecndr/hosts/get/' + encodeURIComponent(plainId), {}, function(data) {
+            if (data.status !== 'ok') {
+                $('#pondsec_action_result').html(renderActionResult(data));
+                return;
+            }
+            renderHostDetail(data.item || {});
+        });
     }
 
     function renderIncidentDetail(data) {
@@ -835,7 +963,11 @@ $(function() {
         if ($(event.target).closest('.pondsec-row-action').length) {
             return;
         }
-        openIncidentDetail($(this).data('id'));
+        if (pageKind() === 'hosts') {
+            openHostDetail($(this).data('id'));
+        } else {
+            openIncidentDetail($(this).data('id'));
+        }
     });
     $(document).on('click', '.pondsec-analysis-click', function(event) {
         event.stopPropagation();
@@ -844,6 +976,16 @@ $(function() {
     $('#incident_detail_close').on('click', function() {
         $('#incident_detail_panel').removeClass('open');
         currentIncidentId = null;
+    });
+    $('#host_detail_close').on('click', function() {
+        $('#host_detail_panel').removeClass('open');
+    });
+    $(document).on('keydown', function(event) {
+        if (event.key === 'Escape') {
+            $('#incident_detail_panel').removeClass('open');
+            $('#host_detail_panel').removeClass('open');
+            currentIncidentId = null;
+        }
     });
     function activateCaseTab(tab) {
         tab = tab || 'overview';
@@ -1044,6 +1186,12 @@ $(function() {
     font-size: 12px;
     margin-top: 3px;
 }
+.pondsec-subtle {
+    color: #8f9dac;
+    display: block;
+    font-size: 12px;
+    margin-top: 5px;
+}
 .pondsec-empty {
     color: #8f9dac;
     padding: 18px;
@@ -1096,6 +1244,32 @@ $(function() {
     position: sticky;
     top: -22px;
     z-index: 2;
+}
+.pondsec-panel-close {
+    align-items: center;
+    background: #202a36;
+    border: 1px solid #506174;
+    border-radius: 6px;
+    color: #f4f8fc;
+    display: inline-flex;
+    flex: 0 0 auto;
+    height: 38px;
+    justify-content: center;
+    min-width: 38px;
+    position: sticky;
+    right: 0;
+    top: 0;
+    z-index: 5;
+}
+.pondsec-panel-close:hover,
+.pondsec-panel-close:focus {
+    background: #2a3544;
+    border-color: #65b7ff;
+    color: #ffffff;
+}
+.pondsec-panel-close i {
+    font-size: 16px;
+    line-height: 1;
 }
 .pondsec-case-head h3 {
     color: #f5f8fb;
@@ -1191,6 +1365,43 @@ $(function() {
     display: block;
     margin-top: 6px;
     overflow-wrap: anywhere;
+}
+.pondsec-mini-table {
+    border-collapse: collapse;
+    width: 100%;
+}
+.pondsec-mini-table th,
+.pondsec-mini-table td {
+    border-bottom: 1px solid #2a3544;
+    padding: 9px 8px;
+    text-align: left;
+    vertical-align: middle;
+}
+.pondsec-mini-table th {
+    color: #8f9dac;
+    font-size: 11px;
+    text-transform: uppercase;
+}
+.pondsec-history-item {
+    background: #1b2430;
+    border: 1px solid #2a3544;
+    border-left: 4px solid #65b7ff;
+    border-radius: 6px;
+    margin-bottom: 8px;
+    padding: 10px;
+}
+.pondsec-history-item strong {
+    color: #edf3f8;
+}
+.pondsec-history-item span {
+    color: #8f9dac;
+    display: block;
+    font-size: 12px;
+    margin-top: 3px;
+}
+.pondsec-history-item p {
+    color: #c8d2dc;
+    margin: 7px 0 0;
 }
 .pondsec-decision-list {
     display: grid;
@@ -1644,7 +1855,7 @@ $(function() {
             <h3 id="incident_detail_title">Incident</h3>
             <div id="incident_detail_meta" class="pondsec-case-meta-row"></div>
         </div>
-        <button id="incident_detail_close" class="btn btn-default" type="button"><i class="fa fa-times"></i></button>
+        <button id="incident_detail_close" class="pondsec-panel-close" type="button" aria-label="Close case detail"><i class="fa fa-times"></i></button>
     </div>
     <div id="incident_case_actions" class="pondsec-actions pondsec-case-actions"></div>
     <nav class="pondsec-case-tabs" aria-label="Case analysis tabs">
@@ -1733,4 +1944,34 @@ $(function() {
             <div id="incident_related_cases"></div>
         </section>
     </div>
+</aside>
+
+<aside id="host_detail_panel" class="pondsec-case-panel">
+    <div class="pondsec-case-head">
+        <div>
+            <h3 id="host_detail_title">Host</h3>
+            <div id="host_detail_meta" class="pondsec-case-meta-row"></div>
+        </div>
+        <button id="host_detail_close" class="pondsec-panel-close" type="button" aria-label="Close host detail"><i class="fa fa-times"></i></button>
+    </div>
+    <section class="pondsec-case-section">
+        <h4>Entity resolution</h4>
+        <div id="host_identity_grid" class="pondsec-case-grid wide"></div>
+    </section>
+    <section class="pondsec-case-section">
+        <h4>IP identity</h4>
+        <div id="host_ip_sets" class="pondsec-case-grid"></div>
+    </section>
+    <section class="pondsec-case-section">
+        <h4>Roles and context</h4>
+        <div id="host_entity_traits" class="pondsec-case-grid"></div>
+    </section>
+    <section class="pondsec-case-section">
+        <h4>Linked host records</h4>
+        <div id="host_records"></div>
+    </section>
+    <section class="pondsec-case-section">
+        <h4>Resolution history</h4>
+        <div id="host_history"></div>
+    </section>
 </aside>
