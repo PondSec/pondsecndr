@@ -2212,7 +2212,7 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(actions[0]["status"], "skipped")
             self.assertEqual(service.store.list_rows("block_entries"), [])
 
-    def test_service_learning_phase_collects_without_incidents(self) -> None:
+    def test_service_learning_phase_keeps_deterministic_detections_but_blocks_response(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             eve = root / "eve.json"
@@ -2231,19 +2231,22 @@ class BackendTests(unittest.TestCase):
                 log_dir=root / "log",
                 run_dir=root / "run",
                 detection=DetectionConfig(machine_learning=True, learning_mode=True, learning_started_at="2026-07-05T10:00:00+00:00", learning_days=14),
-                response=ResponseConfig(automatic_blocking=True, manual_confirmation=False, block_external=True, isolate_internal=True),
+                response=ResponseConfig(mode="enforce", automatic_blocking=True, manual_confirmation=False, block_external=True, isolate_internal=True),
             )
             service = PondSecService(config)
             result = service.run_once(max_lines=100)
 
             self.assertEqual(result["inserted_events"], 18)
-            self.assertEqual(result["detections"], 0)
-            self.assertEqual(result["incidents"], 0)
-            self.assertTrue(result["learning_collection_only"])
-            self.assertEqual(service.store.list_rows("detections"), [])
-            self.assertEqual(service.store.list_rows("incidents"), [])
+            self.assertGreater(result["detections"], 0)
+            self.assertGreater(result["incidents"], 0)
+            self.assertFalse(result["learning_collection_only"])
+            self.assertTrue(result["learning_ai_suppressed"])
+            self.assertTrue(result["response_actions"])
+            self.assertTrue(all(action["status"] == "denied" for action in result["response_actions"]))
+            self.assertTrue(any("learning phase is active" in action["reason"] for action in result["response_actions"]))
+            self.assertGreater(len(service.store.list_rows("detections")), 0)
+            self.assertGreater(len(service.store.list_rows("incidents")), 0)
             self.assertEqual(service.store.list_rows("block_entries"), [])
-            self.assertGreater(service.store.baseline_summary()["total_hosts"], 0)
 
     def test_service_expected_response_denials_do_not_pollute_error_state(self) -> None:
         self.assertTrue(PondSecService._is_expected_response_denial("source IP is protected"))
