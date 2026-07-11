@@ -174,8 +174,9 @@ class BackendTests(unittest.TestCase):
             service = PondSecService(config)
             with patch("pondsec_ndr.service.FilterLogCollector", DeniedFilterLogCollector):
                 result = service.run_once(max_lines=100)
-            self.assertEqual(result["status"], "degraded")
+            self.assertEqual(result["status"], "healthy")
             self.assertIn("filter log is not readable", result["collector"]["opnsense_filterlog"]["last_error"])
+            self.assertIn("filter log is not readable", result["optional_collector_warnings"][0])
 
     def test_filterlog_short_lines_are_ignored_without_parser_error(self) -> None:
         line = (
@@ -768,6 +769,64 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(result["status"], "degraded")
             self.assertLessEqual(result["inserted_events"], 5)
             self.assertTrue(result["resource_warnings"] == [] or isinstance(result["resource_warnings"], list))
+
+    def test_service_persists_learning_started_at_from_existing_telemetry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "db"
+            store = EventStore(data_dir / "pondsec-ndr.db")
+            store.migrate()
+            with store.connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO events(
+                        event_id, schema_version, event_type, timestamp,
+                        source_ip, source_port, source_interface,
+                        destination_ip, destination_port, protocol,
+                        direction, metadata_json, raw_source
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "learning-start-event",
+                        1,
+                        "flow",
+                        "2026-07-01T09:00:00+00:00",
+                        "192.168.10.44",
+                        51044,
+                        "igb0_vlan10",
+                        "198.51.100.44",
+                        443,
+                        "TCP",
+                        "egress",
+                        "{}",
+                        "suricata_eve",
+                    ),
+                )
+            config = PondSecConfig(
+                enabled=True,
+                suricata_eve_path=str(root / "eve.json"),
+                data_dir=data_dir,
+                log_dir=root / "log",
+                run_dir=root / "run",
+                detection=DetectionConfig(machine_learning=True, learning_mode=True, learning_days=14),
+            )
+            service = PondSecService(config)
+            self.assertTrue(service.config.detection.learning_started_at.startswith("2026-07-01T09:00:00"))
+            self.assertTrue((data_dir / "learning_started_at").exists())
+
+    def test_short_cpu_burst_does_not_raise_resource_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = PondSecConfig(data_dir=root / "db", log_dir=root / "log", run_dir=root / "run")
+            service = PondSecService(config)
+            self.assertEqual(
+                service._resource_warnings({"inference_and_detection_wall_ms": 120, "cpu_percent": 99, "rss_mb": 32}),
+                [],
+            )
+            self.assertIn(
+                "cpu_warning_threshold_exceeded",
+                service._resource_warnings({"inference_and_detection_wall_ms": 2000, "cpu_percent": 99, "rss_mb": 32}),
+            )
 
     def test_service_learning_mode_suppresses_ai_baseline_incidents_until_override(self) -> None:
         def anomaly_raw_event() -> dict:

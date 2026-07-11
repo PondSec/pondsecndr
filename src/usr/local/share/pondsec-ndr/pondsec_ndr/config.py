@@ -61,6 +61,15 @@ def _parse_datetime(value: Any) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
+def _read_learning_started_marker(data_dir: Path) -> str:
+    marker = data_dir / "learning_started_at"
+    try:
+        value = marker.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+    return value if _parse_datetime(value) else ""
+
+
 @dataclass(slots=True)
 class InterfaceConfig:
     monitored: list[str] = field(default_factory=list)
@@ -298,7 +307,7 @@ def load_config(path: Path | None = None) -> PondSecConfig:
             unusual_internal=_bool(detection.get("unusual_internal"), True),
             machine_learning=_bool(detection.get("machine_learning"), True),
             learning_mode=_bool(detection.get("learning_mode"), True),
-            learning_started_at=str(detection.get("learning_started_at") or ""),
+            learning_started_at=str(detection.get("learning_started_at") or _read_learning_started_marker(data_dir) or ""),
             learning_days=_int(detection.get("learning_days"), 14, 1, 90),
             early_ai_activation_override=_bool(detection.get("early_ai_activation_override"), False),
             learning_phase_observations=_int(detection.get("learning_phase_observations"), 1000, 10, 10000000),

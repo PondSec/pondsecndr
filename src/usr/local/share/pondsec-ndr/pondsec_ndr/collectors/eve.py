@@ -107,5 +107,8 @@ class EveCollector:
         except OSError as exc:
             stats.last_error = str(exc)
             return events, stats
-        self._save_offset(inode, offset)
+        try:
+            self._save_offset(inode, offset)
+        except OSError as exc:
+            stats.last_error = f"EVE collector offset cannot be saved: {exc}"
         return events, stats

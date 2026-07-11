@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from dataclasses import asdict
+import grp
 import os
 from pathlib import Path
+import pwd
 import resource
 import signal
 import time
@@ -29,6 +31,7 @@ class PondSecService:
         self.logger = configure_logging(self.config.log_dir, self.config.debug_logging)
         self.store = EventStore(self.config.data_dir / "pondsec-ndr.db")
         self.store.migrate()
+        self._ensure_learning_started_at()
         self.stop_requested = False
         self.started_at = time.time()
         self.counters: dict[str, Any] = {
@@ -38,11 +41,51 @@ class PondSecService:
             "parser_errors": 0,
             "queue_drops": 0,
             "last_collector_errors": [],
+            "last_optional_collector_errors": [],
             "last_ml_errors": [],
             "last_response_errors": [],
             "incident_rate_timestamps": [],
             "pf_action_rate_timestamps": [],
         }
+
+    def _ensure_learning_started_at(self) -> None:
+        if self.config.detection.learning_started_at:
+            return
+        marker = self.config.data_dir / "learning_started_at"
+        try:
+            value = marker.read_text(encoding="utf-8").strip()
+        except OSError:
+            value = ""
+        if value:
+            try:
+                datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError:
+                value = ""
+        if not value:
+            value = self.store.learning_started_at_candidate() or datetime.now(timezone.utc).isoformat()
+            try:
+                marker.write_text(value + "\n", encoding="utf-8")
+                self._chown_to_service_user(marker)
+            except OSError as exc:
+                self.logger.warning(
+                    "learning start marker cannot be saved",
+                    extra={"component": "service", "event": "learning_marker_error", "error": str(exc)},
+                )
+        self.config.detection.learning_started_at = value
+
+    @staticmethod
+    def _chown_to_service_user(path: Path) -> None:
+        if os.geteuid() != 0:
+            return
+        try:
+            user = pwd.getpwnam("pondsecndr")
+            group = grp.getgrnam("pondsecndr")
+        except KeyError:
+            return
+        try:
+            os.chown(path, user.pw_uid, group.gr_gid)
+        except OSError:
+            return
 
     def install_signal_handlers(self) -> None:
         signal.signal(signal.SIGTERM, self._request_stop)
@@ -90,9 +133,12 @@ class PondSecService:
         queue_drops = stats.queue_drops + (filter_stats.queue_drops if filter_stats else 0) + backpressure_drops
         self.counters["parser_errors"] += parser_errors
         self.counters["queue_drops"] += queue_drops
-        for error in (stats.last_error, filter_stats.last_error if filter_stats else None):
-            if error:
-                self.counters["last_collector_errors"] = ([error] + self.counters["last_collector_errors"])[:5]
+        if stats.last_error:
+            self.counters["last_collector_errors"] = ([stats.last_error] + self.counters["last_collector_errors"])[:5]
+        if filter_stats and filter_stats.last_error:
+            self.counters["last_optional_collector_errors"] = (
+                [filter_stats.last_error] + self.counters["last_optional_collector_errors"]
+            )[:5]
 
         if self._database_over_limit():
             cleaned = self.store.cleanup(self.config.retention_days)
@@ -148,8 +194,6 @@ class PondSecService:
         status = "healthy"
         if stats.last_error and not events:
             status = "degraded"
-        if filter_stats and filter_stats.last_error and not events:
-            status = "degraded"
         if suppressed_incidents or backpressure_drops:
             status = "degraded" if status == "healthy" else status
         self._write_health(status, {
@@ -171,6 +215,7 @@ class PondSecService:
             "resource_warnings": resource_warnings,
             "learning_status": learning_status,
             "learning_suppressed_detectors": learning_suppressed_detectors,
+            "optional_collector_warnings": self.counters["last_optional_collector_errors"],
             "limits": {
                 "max_event_rate": self.config.max_event_rate,
                 "max_queue_length": self.config.max_queue_length,
@@ -199,6 +244,7 @@ class PondSecService:
             "resource_warnings": resource_warnings,
             "learning_status": learning_status,
             "learning_suppressed_detectors": learning_suppressed_detectors,
+            "optional_collector_warnings": self.counters["last_optional_collector_errors"],
         }
 
     def _enabled_detectors(self, learning_status: dict[str, Any]) -> tuple[list[Any], list[str]]:
@@ -257,7 +303,10 @@ class PondSecService:
         warnings = []
         if float(usage.get("rss_mb") or 0) > self.config.memory_warning_mb:
             warnings.append("memory_warning_threshold_exceeded")
-        if float(usage.get("cpu_percent") or 0) > self.config.cpu_warning_percent:
+        if (
+            float(usage.get("inference_and_detection_wall_ms") or 0) >= 1000
+            and float(usage.get("cpu_percent") or 0) > self.config.cpu_warning_percent
+        ):
             warnings.append("cpu_warning_threshold_exceeded")
         return warnings
 
@@ -365,6 +414,7 @@ class PondSecService:
             "queue_drops": self.counters["queue_drops"],
             "parser_errors": self.counters["parser_errors"],
             "last_collector_errors": self.counters["last_collector_errors"],
+            "last_optional_collector_errors": self.counters["last_optional_collector_errors"],
             "last_ml_errors": self.counters["last_ml_errors"],
             "last_response_errors": self.counters["last_response_errors"],
         }

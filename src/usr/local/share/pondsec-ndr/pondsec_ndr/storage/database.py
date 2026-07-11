@@ -1358,6 +1358,23 @@ class EventStore:
             return {"status": "stopped", "pid": None, "updated_at": None, "detail": {}}
         return {"status": row["status"], "pid": row["pid"], "updated_at": row["updated_at"], "detail": json.loads(row["detail_json"])}
 
+    def learning_started_at_candidate(self) -> str | None:
+        queries = [
+            "SELECT min(timestamp) AS value FROM events",
+            "SELECT min(timestamp) AS value FROM features",
+            "SELECT min(timestamp) AS value FROM detections",
+            "SELECT min(first_observation) AS value FROM host_baselines",
+            "SELECT min(created_at) AS value FROM incidents",
+        ]
+        values: list[str] = []
+        with self.connect() as conn:
+            for query in queries:
+                row = conn.execute(query).fetchone()
+                if row and row["value"]:
+                    values.append(str(row["value"]))
+        parsed = sorted((_parse_time(value).isoformat() for value in values if value))
+        return parsed[0] if parsed else None
+
     def list_rows(self, table: str, limit: int = 100) -> list[dict[str, Any]]:
         allowed = {"events", "detections", "incidents", "hosts", "block_entries", "allowlist_entries", "policies", "models", "audit_log"}
         if table not in allowed:
