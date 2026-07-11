@@ -1522,6 +1522,53 @@ class BackendTests(unittest.TestCase):
             with self.assertRaisesRegex(ResponseDenied, "strong internal|not enough"):
                 propose_block_for_incident(store, config, "incident-intel-alone", actor="test", automatic=True)
 
+    def test_response_policy_denies_two_weak_internal_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            incident = robust_internal_incident("incident-two-weak-events")
+            incident.update({
+                "title": "Two weak internal events",
+                "source_ip": "192.168.30.3",
+                "destination_ip": "1.1.1.1",
+                "category": "multi_stage",
+                "risk_score": 96,
+                "severity": 9,
+                "confidence": 0.96,
+                "event_count": 2,
+                "detection_count": 2,
+                "evidence": {"detections": [
+                    {
+                        "detection_id": "d-weak-anomaly",
+                        "detector_id": "pondsec.host_baseline_anomaly",
+                        "category": "anomaly",
+                        "source_ip": "192.168.30.3",
+                        "destination_ip": None,
+                        "severity": 9,
+                        "confidence": 0.96,
+                        "evidence": {"baseline_deviation": 0.7, "raw_sources": ["host_baseline"]},
+                    },
+                    {
+                        "detection_id": "d-weak-intel",
+                        "detector_id": "pondsec.threat_intel",
+                        "category": "threat_intelligence",
+                        "source_ip": "192.168.30.3",
+                        "destination_ip": "1.1.1.1",
+                        "severity": 9,
+                        "confidence": 0.96,
+                        "evidence": {"indicator": "listed", "raw_sources": ["threat_intel"]},
+                    },
+                ]},
+            })
+            store.insert_incidents([incident])
+            seed_host_baseline(store, "192.168.30.3")
+            config = PondSecConfig(
+                response=ResponseConfig(mode="enforce", automatic_blocking=True, isolate_internal=True, ai_full_decision_mode=True),
+                detection=armed_detection_config(),
+            )
+            with self.assertRaisesRegex(ResponseDenied, "not enough|no strong internal"):
+                propose_block_for_incident(store, config, "incident-two-weak-events", actor="test", automatic=True)
+
     def test_response_policy_denies_high_severity_without_independent_engines(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = EventStore(Path(tmp) / "pondsec-ndr.db")
