@@ -17,6 +17,7 @@ from pondsec_ndr.models.cicids_features import CICIDS2017_FEATURES, cicids_vecto
 
 
 MODEL_ID = "saidimn-ids-cnn-cicids2017"
+MODEL_NAME = "Saidimn IDS CNN CICIDS2017"
 RUNTIME_VERSION = "pondsec-numpy-cnn1d-v1"
 DEFAULT_RUNTIME_PATH = Path(__file__).with_name("artifacts") / "saidimn_ids_cnn_cicids2017.npz"
 DEFAULT_RUNTIME_SHA256 = "51bec93ec2c8ac9a480fcef8694852792a8869a817b07d1cef11a2f1fd62c45b"
@@ -86,6 +87,7 @@ class SaidimnIdsCnnRuntime:
             results.append({
                 "source_ip": feature["source_ip"],
                 "model_id": MODEL_ID,
+                "model_name": MODEL_NAME,
                 "model_version": RUNTIME_VERSION,
                 "model_checksum": self.checksum,
                 "artifact_path": str(self.path),
@@ -107,6 +109,7 @@ class SaidimnIdsCnnRuntime:
         return {
             "status": "ok" if checksum_ok and score_ok else "failed",
             "model_id": MODEL_ID,
+            "model_name": MODEL_NAME,
             "model_version": RUNTIME_VERSION,
             "model_checksum": self.checksum,
             "expected_checksum": DEFAULT_RUNTIME_SHA256,

@@ -21,6 +21,7 @@ from pondsec_ndr.diagnostics import diagnostic_archive, diagnostics as diagnosti
 from pondsec_ndr.features.aggregator import aggregate_features, shannon_entropy
 from pondsec_ndr.models.cicids_features import CICIDS2017_FEATURES, cicids_vector_from_feature
 from pondsec_ndr.models.manager import model_inventory
+from pondsec_ndr.models.runtime import SaidimnIdsCnnRuntime
 from pondsec_ndr.normalizers.suricata import normalize_eve
 from pondsec_ndr.privacy import export_privacy_bundle, purge_telemetry_before
 from pondsec_ndr.response.engine import ResponseDenied, activate_block, is_protected_target, propose_block_for_incident, propose_manual_block, remove_block
@@ -939,6 +940,13 @@ class BackendTests(unittest.TestCase):
             preferred = [item for item in inventory if item["preferred"]]
             self.assertEqual(preferred[0]["model_id"], "saidimn-ids-cnn-cicids2017")
             self.assertEqual(preferred[0]["license"].lower(), "mit")
+
+    def test_pretrained_runtime_selftest_reports_model_name(self) -> None:
+        payload = SaidimnIdsCnnRuntime().self_test()
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["model_id"], "saidimn-ids-cnn-cicids2017")
+        self.assertEqual(payload["model_name"], "Saidimn IDS CNN CICIDS2017")
+        self.assertTrue(payload["checksum_ok"])
 
     def test_cicids_feature_vector_has_expected_dimensions(self) -> None:
         feature = aggregate_features([
