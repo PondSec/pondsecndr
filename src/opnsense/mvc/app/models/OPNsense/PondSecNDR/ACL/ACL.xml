@@ -19,10 +19,17 @@
     </pondsec-ndr-view-incidents>
     <pondsec-ndr-manage-incidents>
         <name>WebCfg - PondSec NDR: Manage incidents</name>
-        <description>Close, reopen, and annotate PondSec NDR incidents</description>
+        <description>Close, reopen, archive, release, merge, and delete PondSec NDR incidents</description>
         <patterns>
             <pattern>api/pondsecndr/incidents/close/*</pattern>
             <pattern>api/pondsecndr/incidents/reopen/*</pattern>
+            <pattern>api/pondsecndr/incidents/archive/*</pattern>
+            <pattern>api/pondsecndr/incidents/delete/*</pattern>
+            <pattern>api/pondsecndr/incidents/falsePositive/*</pattern>
+            <pattern>api/pondsecndr/incidents/release/*</pattern>
+            <pattern>api/pondsecndr/incidents/merge/*/*</pattern>
+            <pattern>api/pondsecndr/incidents/link/*/*</pattern>
+            <pattern>api/pondsecndr/incidents/keepSeparate/*/*</pattern>
         </patterns>
     </pondsec-ndr-manage-incidents>
     <pondsec-ndr-view-hosts>
