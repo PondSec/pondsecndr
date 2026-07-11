@@ -375,6 +375,12 @@
         <type>text</type>
     </field>
     <field>
+        <id>pondsecndr.response.internal_isolation_cooldown_seconds</id>
+        <label>Internal isolation cooldown seconds</label>
+        <type>text</type>
+        <help>Minimum time between executed internal auto-isolations. Recommendations do not consume this cooldown.</help>
+    </field>
+    <field>
         <id>pondsecndr.response.max_internal_isolations_per_hour</id>
         <label>Maximum internal isolations per hour</label>
         <type>text</type>
