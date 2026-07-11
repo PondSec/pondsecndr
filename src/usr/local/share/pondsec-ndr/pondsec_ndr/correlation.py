@@ -12,6 +12,7 @@ from pondsec_ndr.risk import score_detection_group, severity_from_risk
 
 
 DEFAULT_CORRELATION_WINDOW_SECONDS = 1800
+PROMOTION_THRESHOLD = 70
 INTERNAL_NETWORKS = (
     ipaddress.ip_network("10.0.0.0/8"),
     ipaddress.ip_network("172.16.0.0/12"),
@@ -60,13 +61,17 @@ def correlate_detections(detections: list[dict[str, Any]], window_seconds: int =
         items = case["detections"]
         risk_score, factors = score_detection_group(items)
         if risk_score < 35:
+            promotion = _suppression_decision(items, categories=[], reason="risk_score_below_incident_floor", score=risk_score)
+            _annotate_detection_promotion(items, promotion, "suppressed")
             continue
         roles = _entity_roles(items)
         categories = sorted({str(item.get("category") or "unknown") for item in items})
         category = "multi_stage" if len(categories) > 1 else categories[0]
         promotable, promotion = _incident_promotion(items, categories, risk_score, roles)
         if not promotable:
+            _annotate_detection_promotion(items, promotion, "suppressed")
             continue
+        _annotate_detection_promotion(items, promotion, "promoted")
         first_seen = min(str(item.get("timestamp") or now) for item in items)
         last_seen = max(str(item.get("timestamp") or now) for item in items)
         source_ip = roles.get("threat_source") or _most_common([item.get("source_ip") for item in items])
@@ -127,40 +132,266 @@ def _incident_promotion(
     risk_score: int,
     roles: dict[str, Any],
 ) -> tuple[bool, dict[str, Any]]:
+    score, positive, negative = _promotion_score(detections, categories, risk_score, roles)
     detector_ids = {str(item.get("detector_id") or "") for item in detections}
-    if detector_ids & STRONG_INCIDENT_DETECTORS:
-        return True, {
+    base = {
+        "promotion_score": score,
+        "promotion_threshold": PROMOTION_THRESHOLD,
+        "positive_evidence": positive,
+        "negative_evidence": negative,
+        "categories": categories,
+        "detectors": sorted(detector_ids),
+        "attack_stages": sorted({_stage_for_category(category) for category in categories}),
+        "entity_consistency": _entity_consistency(detections),
+        "roles": roles,
+    }
+    if score >= PROMOTION_THRESHOLD:
+        decision = dict(base)
+        decision.update({
             "decision": "promoted",
-            "reason": "strong_detector",
-            "detectors": sorted(detector_ids & STRONG_INCIDENT_DETECTORS),
-        }
+            "reason": _promotion_reason(positive),
+        })
+        return True, decision
 
-    if _has_marker_supply_chain(detections):
-        return True, {"decision": "promoted", "reason": "supply_chain_marker"}
-
-    if _has_high_confidence_signature(detections):
-        return True, {"decision": "promoted", "reason": "high_confidence_signature"}
-
-    if _has_high_confidence_ml(detections):
-        return True, {"decision": "promoted", "reason": "high_confidence_model"}
-
-    non_recon_categories = set(categories) - {"reconnaissance", "anomaly"}
-    if len(non_recon_categories) >= 2 and risk_score >= 80:
-        return True, {
-            "decision": "promoted",
-            "reason": "corroborated_non_recon_categories",
-            "categories": sorted(non_recon_categories),
-        }
-
-    if _has_actionable_reconnaissance(detections, roles):
-        return True, {"decision": "promoted", "reason": "actionable_reconnaissance"}
-
-    return False, {
+    decision = dict(base)
+    decision.update({
         "decision": "suppressed",
-        "reason": "telemetry_only_without_strong_corroboration",
+        "reason": _suppression_reason(negative),
+    })
+    return False, decision
+
+
+def _promotion_score(
+    detections: list[dict[str, Any]],
+    categories: list[str],
+    risk_score: int,
+    roles: dict[str, Any],
+) -> tuple[int, list[dict[str, Any]], list[dict[str, Any]]]:
+    positive: list[dict[str, Any]] = []
+    negative: list[dict[str, Any]] = []
+    detector_ids = {str(item.get("detector_id") or "") for item in detections}
+    stages = {_stage_for_category(category) for category in categories}
+    avg_confidence = sum(float(item.get("confidence") or 0) for item in detections) / max(1, len(detections))
+    max_severity = max((int(item.get("severity") or 0) for item in detections), default=0)
+
+    score = 0
+    score += _add_factor(positive, "detection_confidence", int(avg_confidence * 20), {"average_confidence": round(avg_confidence, 4)})
+    score += _add_factor(positive, "severity", min(36, max_severity * 4), {"max_severity": max_severity})
+    score += _add_factor(positive, "independent_detectors", min(15, len(detector_ids) * 6), {"count": len(detector_ids)})
+    score += _add_factor(positive, "attack_stage_coverage", min(16, len(stages) * 8), {"stages": sorted(stages)})
+    score += _add_factor(positive, "risk_score_context", min(10, max(0, risk_score // 10)), {"risk_score": risk_score})
+
+    strong_detectors = sorted(detector_ids & STRONG_INCIDENT_DETECTORS)
+    marker_supply_chain = _has_marker_supply_chain(detections)
+    high_confidence_signature = _has_high_confidence_signature(detections)
+    high_confidence_ml = _has_high_confidence_ml(detections)
+    actionable_reconnaissance = _has_actionable_reconnaissance(detections, roles)
+    if strong_detectors:
+        score += _add_factor(positive, "strong_detector", 35, {"detectors": strong_detectors})
+    if marker_supply_chain:
+        score += _add_factor(positive, "supply_chain_marker", 30, {})
+    if high_confidence_signature:
+        score += _add_factor(positive, "high_confidence_signature", 25, {})
+    if high_confidence_ml:
+        score += _add_factor(positive, "high_confidence_model", 25, {})
+    if actionable_reconnaissance:
+        score += _add_factor(positive, "actionable_reconnaissance", 25, {})
+    if _entity_consistency(detections):
+        score += _add_factor(positive, "entity_consistency", 6, {})
+    if roles.get("external_actor") and roles.get("victim"):
+        score += _add_factor(positive, "clear_direction", 6, {"direction": "external_to_internal"})
+    if _provider_quality(detections) == "high":
+        score += _add_factor(positive, "provider_data_quality", 6, {"quality": "high"})
+
+    has_strong_context = bool(
+        strong_detectors
+        or marker_supply_chain
+        or high_confidence_signature
+        or high_confidence_ml
+        or actionable_reconnaissance
+    )
+    if len(detector_ids) == 1 and not has_strong_context:
+        score -= _add_factor(negative, "single_weak_detector", 25, {"detectors": sorted(detector_ids)})
+    if _is_web_fanout_only(detections):
+        score -= _add_factor(negative, "normal_https_fanout", 40, {})
+    if _is_heuristic_supply_chain_only(detections):
+        score -= _add_factor(negative, "supply_chain_without_marker", 35, {})
+    if _is_beacon_only(detections):
+        score -= _add_factor(negative, "periodicity_without_corroboration", 30, {})
+    if _has_immature_baseline(detections):
+        score -= _add_factor(negative, "immature_baseline", 25, {})
+    if _has_many_external_destinations_without_failures(detections):
+        score -= _add_factor(negative, "external_fanout_without_scan_failures", 20, {})
+    benign_context = _benign_application_context(detections)
+    if benign_context and not (marker_supply_chain or high_confidence_signature or strong_detectors):
+        score -= _add_factor(negative, "known_benign_application_context", 25, {"context": benign_context})
+    if not _has_reputation_or_signature_context(detections) and not actionable_reconnaissance:
+        score -= _add_factor(negative, "missing_reputation_or_signature_context", 5, {})
+
+    return max(0, min(100, score)), positive, negative
+
+
+def _add_factor(target: list[dict[str, Any]], name: str, value: int, detail: dict[str, Any]) -> int:
+    value = int(max(0, value))
+    if value:
+        target.append({"name": name, "value": value, **detail})
+    return value
+
+
+def _promotion_reason(positive: list[dict[str, Any]]) -> str:
+    names = {item["name"] for item in positive}
+    for name in (
+        "strong_detector",
+        "supply_chain_marker",
+        "high_confidence_signature",
+        "high_confidence_model",
+        "actionable_reconnaissance",
+    ):
+        if name in names:
+            return name
+    if "attack_stage_coverage" in names and "independent_detectors" in names:
+        return "corroborated_multi_signal"
+    return "promotion_score_threshold"
+
+
+def _suppression_reason(negative: list[dict[str, Any]]) -> str:
+    if not negative:
+        return "promotion_score_below_threshold"
+    return str(max(negative, key=lambda item: int(item.get("value") or 0)).get("name") or "promotion_score_below_threshold")
+
+
+def _suppression_decision(
+    detections: list[dict[str, Any]],
+    categories: list[str],
+    reason: str,
+    score: int = 0,
+) -> dict[str, Any]:
+    detector_ids = {str(item.get("detector_id") or "") for item in detections}
+    return {
+        "decision": "suppressed",
+        "reason": reason,
+        "promotion_score": score,
+        "promotion_threshold": PROMOTION_THRESHOLD,
+        "positive_evidence": [],
+        "negative_evidence": [{"name": reason, "value": PROMOTION_THRESHOLD}],
         "categories": categories,
         "detectors": sorted(detector_ids),
     }
+
+
+def _annotate_detection_promotion(detections: list[dict[str, Any]], promotion: dict[str, Any], state: str) -> None:
+    for detection in detections:
+        evidence = detection.get("evidence")
+        if not isinstance(evidence, dict):
+            evidence = {}
+            detection["evidence"] = evidence
+        evidence["detection_state"] = state
+        evidence["promotion"] = promotion
+
+
+def _entity_consistency(detections: list[dict[str, Any]]) -> bool:
+    sources = {_text_or_none(item.get("source_ip")) for item in detections}
+    sources.discard(None)
+    if len(sources) == 1:
+        return True
+    destinations = {_text_or_none(item.get("destination_ip")) for item in detections}
+    destinations.discard(None)
+    return bool(sources & destinations)
+
+
+def _provider_quality(detections: list[dict[str, Any]]) -> str:
+    signals = 0
+    for detection in detections:
+        evidence = detection.get("evidence") if isinstance(detection.get("evidence"), dict) else {}
+        if evidence.get("signature_id") or evidence.get("suricata_action") or evidence.get("event_source"):
+            signals += 1
+        if evidence.get("raw_sources") or evidence.get("providers") or evidence.get("source"):
+            signals += 1
+        if evidence.get("application") or evidence.get("sni") or evidence.get("domain"):
+            signals += 1
+    return "high" if signals >= 2 else "low"
+
+
+def _is_web_fanout_only(detections: list[dict[str, Any]]) -> bool:
+    if not detections:
+        return False
+    for detection in detections:
+        if detection.get("detector_id") != "pondsec.horizontal_scan":
+            return False
+        evidence = detection.get("evidence") if isinstance(detection.get("evidence"), dict) else {}
+        port = _safe_int(evidence.get("port"))
+        source = _text_or_none(detection.get("source_ip"))
+        if port not in WEB_FANOUT_PORTS or not source or not _is_internal_address(source):
+            return False
+    return True
+
+
+def _is_heuristic_supply_chain_only(detections: list[dict[str, Any]]) -> bool:
+    return bool(detections) and all(
+        detection.get("detector_id") == "pondsec.supply_chain_callback"
+        and isinstance(detection.get("evidence"), dict)
+        and detection["evidence"].get("signature_required") is False
+        for detection in detections
+    )
+
+
+def _is_beacon_only(detections: list[dict[str, Any]]) -> bool:
+    return bool(detections) and all(detection.get("detector_id") == "pondsec.beaconing" for detection in detections)
+
+
+def _has_immature_baseline(detections: list[dict[str, Any]]) -> bool:
+    for detection in detections:
+        evidence = detection.get("evidence") if isinstance(detection.get("evidence"), dict) else {}
+        status = str(evidence.get("baseline_status") or "")
+        observations = int(evidence.get("baseline_observations") or 0)
+        if status in {"building", "incomplete", "learning"} or (status and observations < 50):
+            return True
+    return False
+
+
+def _has_many_external_destinations_without_failures(detections: list[dict[str, Any]]) -> bool:
+    for detection in detections:
+        evidence = detection.get("evidence") if isinstance(detection.get("evidence"), dict) else {}
+        destinations = int(evidence.get("destination_count") or evidence.get("unique_destinations") or 0)
+        external = int(evidence.get("external_connections") or 0)
+        failures = int(evidence.get("failed_connections") or 0)
+        if (destinations >= 35 or external >= 35) and failures < 5:
+            return True
+    return False
+
+
+def _benign_application_context(detections: list[dict[str, Any]]) -> list[str]:
+    terms = {
+        "apple",
+        "microsoft",
+        "google",
+        "cloudflare",
+        "akamai",
+        "cdn",
+        "update",
+        "telemetry",
+        "push",
+        "ntp",
+        "backup",
+        "zoom",
+        "teams",
+    }
+    matches: set[str] = set()
+    for detection in detections:
+        evidence = detection.get("evidence") if isinstance(detection.get("evidence"), dict) else {}
+        haystack = " ".join(str(value).lower() for value in evidence.values() if isinstance(value, (str, int, float)))
+        for term in terms:
+            if term in haystack:
+                matches.add(term)
+    return sorted(matches)
+
+
+def _has_reputation_or_signature_context(detections: list[dict[str, Any]]) -> bool:
+    for detection in detections:
+        evidence = detection.get("evidence") if isinstance(detection.get("evidence"), dict) else {}
+        if evidence.get("signature_id") or evidence.get("signature") or evidence.get("reputation") or evidence.get("threat_intel_confidence"):
+            return True
+    return False
 
 
 def _has_marker_supply_chain(detections: list[dict[str, Any]]) -> bool:

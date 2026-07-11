@@ -332,9 +332,9 @@ class PondSecService:
         enabled_detectors, learning_suppressed_detectors = self._enabled_detectors(learning_status)
         for detector in enabled_detectors:
             detections.extend(detector.detect(analysis_events, features))
-        inserted_detections = self.store.insert_detections(detections)
 
         incidents = correlate_detections(detections, window_seconds=self.config.detection.correlation_window_minutes * 60)
+        inserted_detections = self.store.insert_detections(detections)
         incidents, suppressed_incidents = self._limit_rate(
             incidents,
             "incident_rate_timestamps",

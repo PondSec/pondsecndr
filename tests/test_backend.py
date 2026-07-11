@@ -1578,6 +1578,10 @@ class BackendTests(unittest.TestCase):
             "recommended_action": "investigate",
         }]
         self.assertEqual(correlate_detections(detections), [])
+        self.assertEqual(detections[0]["evidence"]["detection_state"], "suppressed")
+        promotion = detections[0]["evidence"]["promotion"]
+        self.assertLess(promotion["promotion_score"], promotion["promotion_threshold"])
+        self.assertTrue(any(item["name"] == "normal_https_fanout" for item in promotion["negative_evidence"]))
 
     def test_correlation_promotes_credential_pressure_with_beaconing(self) -> None:
         detections = [
@@ -1617,7 +1621,10 @@ class BackendTests(unittest.TestCase):
         incidents = correlate_detections(detections)
         self.assertEqual(len(incidents), 1)
         self.assertEqual(incidents[0]["category"], "multi_stage")
-        self.assertEqual(incidents[0]["evidence"]["correlation"]["promotion"]["reason"], "strong_detector")
+        promotion = incidents[0]["evidence"]["correlation"]["promotion"]
+        self.assertEqual(promotion["reason"], "strong_detector")
+        self.assertGreaterEqual(promotion["promotion_score"], promotion["promotion_threshold"])
+        self.assertTrue(all(item["evidence"]["detection_state"] == "promoted" for item in detections))
 
     def test_correlation_suppresses_heuristic_supply_chain_fanout(self) -> None:
         detections = [{
@@ -1642,6 +1649,10 @@ class BackendTests(unittest.TestCase):
             "recommended_action": "investigate",
         }]
         self.assertEqual(correlate_detections(detections), [])
+        self.assertEqual(detections[0]["evidence"]["detection_state"], "suppressed")
+        promotion = detections[0]["evidence"]["promotion"]
+        self.assertEqual(promotion["reason"], "supply_chain_without_marker")
+        self.assertLess(promotion["promotion_score"], promotion["promotion_threshold"])
 
     def test_correlation_promotes_marker_supply_chain_signal(self) -> None:
         detections = [{
@@ -1662,7 +1673,9 @@ class BackendTests(unittest.TestCase):
         }]
         incidents = correlate_detections(detections)
         self.assertEqual(len(incidents), 1)
-        self.assertEqual(incidents[0]["evidence"]["correlation"]["promotion"]["reason"], "supply_chain_marker")
+        promotion = incidents[0]["evidence"]["correlation"]["promotion"]
+        self.assertEqual(promotion["reason"], "supply_chain_marker")
+        self.assertGreaterEqual(promotion["promotion_score"], promotion["promotion_threshold"])
 
     def test_incident_analysis_builds_threat_graph_and_stage_view(self) -> None:
         incident = {
@@ -2185,11 +2198,19 @@ class BackendTests(unittest.TestCase):
             self.assertGreaterEqual(second["generated_detections"], 1)
             self.assertGreaterEqual(second["detections"], 1)
             with EventStore(root / "db" / "pondsec-ndr.db").connect() as conn:
-                detector_ids = {
-                    row["detector_id"]
-                    for row in conn.execute("SELECT detector_id FROM detections WHERE source_ip = ?", ("192.168.10.94",))
-                }
+                rows = conn.execute(
+                    "SELECT detector_id, evidence_json FROM detections WHERE source_ip = ?",
+                    ("192.168.10.94",),
+                ).fetchall()
+                detector_ids = {row["detector_id"] for row in rows}
             self.assertIn("pondsec.beaconing", detector_ids)
+            beacon_evidence = [
+                json.loads(row["evidence_json"])
+                for row in rows
+                if row["detector_id"] == "pondsec.beaconing"
+            ][0]
+            self.assertEqual(beacon_evidence["detection_state"], "suppressed")
+            self.assertEqual(beacon_evidence["promotion"]["reason"], "periodicity_without_corroboration")
 
     def test_service_run_once_applies_queue_backpressure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
