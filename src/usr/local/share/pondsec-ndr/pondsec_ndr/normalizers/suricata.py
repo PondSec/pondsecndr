@@ -61,10 +61,14 @@ def _flow_metadata(raw: dict[str, Any]) -> dict[str, Any]:
 
 def _dns_metadata(raw: dict[str, Any]) -> dict[str, Any]:
     dns = raw.get("dns") or {}
+    queries = dns.get("queries") or []
     answers = dns.get("answers") or []
+    first_query = queries[0] if isinstance(queries, list) and queries and isinstance(queries[0], dict) else {}
+    first_answer = answers[0] if isinstance(answers, list) and answers and isinstance(answers[0], dict) else {}
     return {
-        "rrname": dns.get("rrname") or dns.get("query"),
-        "rrtype": dns.get("rrtype"),
+        "rrname": dns.get("rrname") or dns.get("query") or first_query.get("rrname") or first_answer.get("rrname"),
+        "rrtype": dns.get("rrtype") or first_query.get("rrtype") or first_answer.get("rrtype"),
+        "dns_type": dns.get("type"),
         "rcode": dns.get("rcode"),
         "answers_count": len(answers) if isinstance(answers, list) else 0,
         "tx_id": dns.get("tx_id"),

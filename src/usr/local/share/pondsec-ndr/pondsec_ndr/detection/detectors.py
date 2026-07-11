@@ -273,6 +273,7 @@ class CredentialBruteforceDetector(Detector):
     auth_ports = {22, 25, 88, 110, 135, 139, 143, 389, 445, 465, 587, 636, 993, 995, 1433, 3306, 3389, 5432, 5900, 5985, 5986}
     auth_failure_results = {"denied", "failed", "failure", "invalid", "login_failed", "rejected", "unauthorized"}
     http_failure_statuses = {401, 403}
+    auth_path_terms = ("/basic", "/login", "/signin", "/sign-in", "/wp-login", "/admin/login", "/auth/")
     marker_terms = (
         "credential",
         "brute force",
@@ -302,7 +303,8 @@ class CredentialBruteforceDetector(Detector):
             marker_count = sum(1 for event in source_events if self._is_credential_marker(event))
             auth_result_failures = sum(1 for event in source_events if self._has_failed_auth_result(event))
             http_failures = sum(1 for event in source_events if self._has_http_auth_failure(event))
-            failed = marker_count + auth_result_failures + http_failures
+            auth_endpoint_events = sum(1 for event in source_events if self._has_http_auth_endpoint_pressure(event))
+            failed = marker_count + auth_result_failures + http_failures + auth_endpoint_events
             has_spray_shape = failed >= 6 and len(destinations) >= 3
             has_bruteforce_shape = failed >= 8 and len(destinations) >= 1
             if not marker_count and not has_spray_shape and not has_bruteforce_shape:
@@ -323,14 +325,17 @@ class CredentialBruteforceDetector(Detector):
                     "auth_failure_events": failed,
                     "http_auth_failures": http_failures,
                     "auth_result_failures": auth_result_failures,
+                    "auth_endpoint_events": auth_endpoint_events,
                     "marker_events": marker_count,
                     "destination_count": len(destinations),
                     "auth_ports": sorted(ports),
                     "http_statuses": http_statuses,
-                    "explicit_auth_evidence": True,
+                    "explicit_auth_evidence": bool(marker_count or auth_result_failures or http_failures),
+                    "auth_endpoint_pressure": bool(auth_endpoint_events),
                     "thresholds": [
                         {"feature": "auth_failure_events", "operator": ">=", "threshold": 8, "observed": failed},
                         {"feature": "auth_failure_destinations", "operator": ">=", "threshold": 3, "observed": len(destinations)},
+                        {"feature": "auth_endpoint_events", "operator": ">=", "threshold": 8, "observed": auth_endpoint_events},
                         {"feature": "credential_marker", "operator": "present", "threshold": "present", "observed": marker_count},
                     ],
                 },
@@ -339,7 +344,12 @@ class CredentialBruteforceDetector(Detector):
         return detections
 
     def _has_auth_failure_evidence(self, event: dict[str, Any]) -> bool:
-        return self._has_http_auth_failure(event) or self._has_failed_auth_result(event) or self._is_credential_marker(event)
+        return (
+            self._has_http_auth_failure(event)
+            or self._has_failed_auth_result(event)
+            or self._has_http_auth_endpoint(event)
+            or self._is_credential_marker(event)
+        )
 
     def _has_http_auth_failure(self, event: dict[str, Any]) -> bool:
         if event.get("event_type") != "http":
@@ -353,6 +363,15 @@ class CredentialBruteforceDetector(Detector):
     def _has_failed_auth_result(self, event: dict[str, Any]) -> bool:
         result = str(event.get("metadata", {}).get("auth_result") or "").lower()
         return result in self.auth_failure_results
+
+    def _has_http_auth_endpoint(self, event: dict[str, Any]) -> bool:
+        if event.get("event_type") != "http":
+            return False
+        path = str(event.get("metadata", {}).get("url_path") or "").lower()
+        return bool(path) and any(term in path for term in self.auth_path_terms)
+
+    def _has_http_auth_endpoint_pressure(self, event: dict[str, Any]) -> bool:
+        return self._has_http_auth_endpoint(event) and not self._has_http_auth_failure(event)
 
     def _is_credential_marker(self, event: dict[str, Any]) -> bool:
         if event.get("event_type") not in {"alert", "drop"}:

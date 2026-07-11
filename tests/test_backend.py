@@ -234,6 +234,27 @@ class BackendTests(unittest.TestCase):
         self.assertNotIn("Authorization", event["metadata"]["headers"])
         self.assertEqual(event["direction"], "egress")
 
+    def test_suricata_normalizer_reads_dns_v3_queries(self) -> None:
+        event = normalize_eve({
+            "timestamp": "2026-07-05T10:00:00+00:00",
+            "event_type": "dns",
+            "src_ip": "192.168.10.10",
+            "src_port": 51515,
+            "dest_ip": "192.168.10.5",
+            "dest_port": 53,
+            "proto": "UDP",
+            "dns": {
+                "version": 3,
+                "type": "request",
+                "tx_id": 7,
+                "rcode": "NOERROR",
+                "queries": [{"rrname": "longlabel.validation.pondsec.test", "rrtype": "TXT"}],
+            },
+        })
+        self.assertEqual(event["metadata"]["rrname"], "longlabel.validation.pondsec.test")
+        self.assertEqual(event["metadata"]["rrtype"], "TXT")
+        self.assertEqual(event["metadata"]["dns_type"], "request")
+
     def test_collector_skips_corrupt_json_and_persists_offset(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             eve = Path(tmp) / "eve.json"
@@ -887,6 +908,32 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(detections[0]["recommended_action"], "block")
         self.assertTrue(detections[0]["evidence"]["explicit_auth_evidence"])
         self.assertEqual(detections[0]["evidence"]["http_auth_failures"], 9)
+
+    def test_credential_bruteforce_detector_uses_repeated_auth_endpoint_pressure(self) -> None:
+        events = [
+            normalize_eve({
+                "timestamp": f"2026-07-05T10:00:{i:02d}+00:00",
+                "event_type": "http",
+                "src_ip": "192.168.20.55",
+                "src_port": 52000 + i,
+                "dest_ip": "192.168.30.21",
+                "dest_port": 8080,
+                "proto": "TCP",
+                "http": {
+                    "hostname": "auth.validation.pondsec.test",
+                    "http_method": "GET",
+                    "url": "/basic",
+                    "protocol": "HTTP/1.1",
+                },
+            })
+            for i in range(9)
+        ]
+        detections = CredentialBruteforceDetector().detect(events, aggregate_features(events))
+        self.assertEqual(len(detections), 1)
+        self.assertEqual(detections[0]["category"], "credential_abuse")
+        self.assertFalse(detections[0]["evidence"]["explicit_auth_evidence"])
+        self.assertTrue(detections[0]["evidence"]["auth_endpoint_pressure"])
+        self.assertEqual(detections[0]["evidence"]["auth_endpoint_events"], 9)
 
     def test_exploit_attempt_detector_labels_safe_suricata_marker(self) -> None:
         event = normalize_eve({
