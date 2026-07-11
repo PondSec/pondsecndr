@@ -9,6 +9,8 @@ import ipaddress
 import json
 import os
 from pathlib import Path
+import shutil
+import subprocess
 import sys
 import time
 from typing import Any
@@ -150,6 +152,12 @@ def main(argv: list[str] | None = None) -> int:
     database_sub = database.add_subparsers(dest="database_command", required=True)
     database_sub.add_parser("check")
     database_sub.add_parser("migrate")
+
+    maintenance = sub.add_parser("maintenance")
+    maintenance_sub = maintenance.add_subparsers(dest="maintenance_command", required=True)
+    reset_runtime = maintenance_sub.add_parser("reset-runtime")
+    reset_runtime.add_argument("--restart-service", action="store_true")
+    reset_runtime.add_argument("--flush-pf", action="store_true")
 
     config_cmd = sub.add_parser("config")
     config_sub = config_cmd.add_subparsers(dest="config_command", required=True)
@@ -360,6 +368,9 @@ def dispatch(args: argparse.Namespace, config: Any, store: EventStore) -> tuple[
             return {"status": "ok", "schema_version": SCHEMA_VERSION}, 0
         payload = store.check()
         return payload, 0 if payload["status"] == "ok" else 1
+    if command == "maintenance" and args.maintenance_command == "reset-runtime":
+        payload = reset_runtime_state(store, config, restart_service=args.restart_service, flush_pf=args.flush_pf)
+        return payload, 0 if payload["status"] == "ok" else 1
     if command == "sensor":
         if args.sensor_command == "status":
             payload = sensor_status(config)
@@ -382,6 +393,54 @@ def dispatch(args: argparse.Namespace, config: Any, store: EventStore) -> tuple[
     if command == "traffic":
         return {"items": [], "message": "Traffic analytics requires ingested events; no synthetic data is generated."}, 0
     raise ValueError(f"unsupported command: {command}")
+
+
+def reset_runtime_state(store: EventStore, config: Any, restart_service: bool = False, flush_pf: bool = False) -> dict[str, Any]:
+    service_stop = _run_service_action("onestop") if restart_service else None
+    pf_flush = PFTableEnforcer().flush().as_dict() if flush_pf else None
+    reset = store.reset_runtime_state(actor="maintenance-reset")
+    removed_paths = []
+    for path in [
+        config.data_dir / "learning_started_at",
+        config.data_dir / "collector_offsets",
+        config.data_dir / "eve.offset.json",
+        config.data_dir / "filterlog.offset.json",
+    ]:
+        try:
+            if path.is_dir():
+                shutil.rmtree(path)
+                removed_paths.append(str(path))
+            elif path.exists():
+                path.unlink()
+                removed_paths.append(str(path))
+        except OSError as exc:
+            return {"status": "failed", "message": f"cannot remove runtime path {path}: {exc}", "reset": reset}
+    service_start = _run_service_action("onestart") if restart_service else None
+    return {
+        "status": "ok",
+        "reset": reset,
+        "pf_flush": pf_flush,
+        "removed_paths": removed_paths,
+        "service_stop": service_stop,
+        "service_start": service_start,
+        "learning_phase": "restarted_on_next_service_start",
+        "kept": ["configuration", "allowlist", "policies", "models"],
+    }
+
+
+def _run_service_action(action: str) -> dict[str, Any]:
+    command = ["/usr/local/etc/rc.d/pondsec_ndr", action]
+    try:
+        result = subprocess.run(command, check=False, capture_output=True, text=True, timeout=30)
+    except OSError as exc:
+        return {"status": "failed", "command": command, "message": str(exc)}
+    return {
+        "status": "ok" if result.returncode == 0 else "failed",
+        "command": command,
+        "returncode": result.returncode,
+        "stdout": result.stdout.strip(),
+        "stderr": result.stderr.strip(),
+    }
 
 
 def replay_file(eve_file: Path, max_lines: int, config: Any) -> dict[str, Any]:

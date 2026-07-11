@@ -1315,9 +1315,44 @@ class EventStore:
                 self._audit(conn, actor, "block.expired", row["block_id"], {})
             return len(rows)
 
+    def reset_runtime_state(self, actor: str = "system") -> dict[str, Any]:
+        """Clear runtime telemetry while keeping configuration, models, policies, and allowlists."""
+        runtime_tables = [
+            "incident_detections",
+            "responses",
+            "block_entries",
+            "incidents",
+            "detections",
+            "features",
+            "flows",
+            "events",
+            "host_baselines",
+            "hosts",
+            "service_health",
+            "collector_offsets",
+            "audit_log",
+        ]
+        deleted: dict[str, int] = {}
+        with self.connect() as conn:
+            conn.execute("PRAGMA foreign_keys=OFF")
+            before = conn.total_changes
+            for table in runtime_tables:
+                table_before = conn.total_changes
+                conn.execute(f"DELETE FROM {table}")
+                deleted[table] = conn.total_changes - table_before
+            self._audit(conn, actor, "database.reset_runtime_state", None, {"deleted": deleted})
+            total = conn.total_changes - before
+        with self.connect() as conn:
+            conn.execute("VACUUM")
+        return {"status": "ok", "deleted": deleted, "total_deleted": total}
+
     def audit_case_action(self, action: str, incident_id: str, detail: dict[str, Any], actor: str = "system") -> None:
         with self.connect() as conn:
             self._audit(conn, actor, f"case.{action}", incident_id, detail)
+
+    def audit_response_decision(self, incident_id: str | None, action: str, detail: dict[str, Any], actor: str = "system") -> None:
+        with self.connect() as conn:
+            self._audit(conn, actor, f"response.{action}", incident_id, detail)
 
     def merge_incidents(self, primary_id: str, secondary_id: str, actor: str = "system") -> dict[str, Any]:
         if primary_id == secondary_id:

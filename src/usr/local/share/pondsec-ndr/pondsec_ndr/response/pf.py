@@ -51,6 +51,9 @@ class PFTableEnforcer:
     def delete(self, target: str) -> PFResult:
         return self._table_op("delete", target)
 
+    def flush(self) -> PFResult:
+        return self._table_op("flush", "")
+
     def test(self, target: str) -> PFResult:
         return self._table_op("test", target)
 
@@ -67,7 +70,9 @@ class PFTableEnforcer:
         return False
 
     def _table_op(self, operation: str, target: str) -> PFResult:
-        command = ["/sbin/pfctl", "-t", self.table, "-T", operation, target]
+        command = ["/sbin/pfctl", "-t", self.table, "-T", operation]
+        if target:
+            command.append(target)
         try:
             result = self.runner(command)
         except OSError as exc:

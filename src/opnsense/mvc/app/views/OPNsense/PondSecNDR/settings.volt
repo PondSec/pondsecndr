@@ -39,6 +39,21 @@ $(function() {
         });
     });
 
+    $('#pondsec_runtime_reset').on('click', function() {
+        var confirmed = window.confirm('Reset PondSec runtime data, incidents, detections, blocks, hosts, and learning baselines? Configuration, allowlist, policies, and models are kept. The AI learning phase starts from day 0.');
+        if (!confirmed) {
+            return;
+        }
+        showSaveState('saving', 'Resetting runtime state...');
+        ajaxCall('/api/pondsecndr/service/resetRuntime', {}, function(data) {
+            if (data && data.status === 'ok') {
+                showSaveState('ok', 'Runtime reset completed. Learning starts again from day 0.');
+            } else {
+                showSaveState('failed', (data && (data.message || data.status)) ? (data.message || data.status) : 'Runtime reset failed.');
+            }
+        });
+    });
+
     setTimeout(enhanceFormSections, 250);
 });
 </script>
@@ -119,6 +134,9 @@ $(function() {
 .pondsec-setup-card {
     min-height: 132px;
     padding: 14px;
+}
+.pondsec-danger-card {
+    border-color: rgba(246, 86, 97, 0.45);
 }
 .pondsec-setup-card span {
     color: #8f9dac;
@@ -246,6 +264,22 @@ $(function() {
     right: 28px;
     z-index: 5;
 }
+.pondsec-reset-panel {
+    background: #18212c;
+    border: 1px solid rgba(246, 86, 97, 0.45);
+    border-radius: 6px;
+    margin-top: 18px;
+    max-width: 1180px;
+    padding: 16px;
+}
+.pondsec-reset-panel h4 {
+    color: #f5f8fb;
+    margin: 0 0 8px;
+}
+.pondsec-reset-panel p {
+    color: #9ba8b6;
+    margin: 0 0 12px;
+}
 #pondsec_save_state {
     align-items: center;
     color: #9ba8b6;
@@ -335,6 +369,7 @@ $(function() {
             <button type="button" data-target=".pondsec-native-form"><i class="fa fa-plug"></i> {{ lang._('Interfaces') }}</button>
             <button type="button" data-target=".pondsec-native-form"><i class="fa fa-ban"></i> {{ lang._('Response policy') }}</button>
             <button type="button" data-target=".pondsec-native-form"><i class="fa fa-lock"></i> {{ lang._('Privacy') }}</button>
+            <button type="button" data-target=".pondsec-reset-panel"><i class="fa fa-refresh"></i> {{ lang._('Reset') }}</button>
         </nav>
         <main class="pondsec-settings-main">
             <div class="pondsec-settings-intro">
@@ -343,6 +378,11 @@ $(function() {
             </div>
             <div class="pondsec-form-wrap">
                 {{ partial("layout_partials/base_form", ['fields': generalForm, 'id': 'frm_GeneralSettings']) }}
+                <div class="pondsec-reset-panel">
+                    <h4><i class="fa fa-refresh"></i> {{ lang._('Start PondSec learning from scratch') }}</h4>
+                    <p>{{ lang._('Clears runtime telemetry, detections, incidents, response blocks, host state, and AI baselines. Configuration, allowlist, policies, and model artifacts are kept.') }}</p>
+                    <button class="btn btn-danger" id="pondsec_runtime_reset" type="button"><i class="fa fa-warning"></i> {{ lang._('Reset runtime data and restart learning') }}</button>
+                </div>
                 <div class="pondsec-savebar">
                     <div id="pondsec_save_state"><span class="pondsec-badge info">{{ lang._('ready') }}</span><span>{{ lang._('Review changes before saving.') }}</span></div>
                     <button class="btn btn-primary" id="saveAct" type="button"><i class="fa fa-save"></i> <b>{{ lang._('Save and apply') }}</b></button>

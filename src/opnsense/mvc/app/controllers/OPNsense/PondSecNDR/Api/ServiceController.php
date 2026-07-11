@@ -27,4 +27,9 @@ class ServiceController extends ApiMutableServiceControllerBase
     {
         return $this->runBackendJson('diagnostics');
     }
+
+    public function resetRuntimeAction()
+    {
+        return $this->runBackendJson('reset_runtime');
+    }
 }

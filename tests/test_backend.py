@@ -11,7 +11,7 @@ import unittest
 from unittest.mock import patch
 
 import pondsec_ndr.diagnostics as diagnostics_mod
-from pondsec_ndr.cli import _incident_analysis, main as cli_main
+from pondsec_ndr.cli import _incident_analysis, main as cli_main, reset_runtime_state
 from pondsec_ndr.collectors.eve import EveCollector
 from pondsec_ndr.collectors.filterlog import FilterLogCollector, FilterLogStats, normalize_filterlog_line
 from pondsec_ndr.config import DetectionConfig, PondSecConfig, ResponseConfig
@@ -1299,6 +1299,61 @@ class BackendTests(unittest.TestCase):
             self.assertIn(active["block_id"], {item["block_id"] for item in view["items"]})
             self.assertNotIn(removed["block_id"], {item["block_id"] for item in view["items"]})
             self.assertEqual(view["summary"]["hidden_historical_duplicates"], 1)
+
+    def test_runtime_reset_keeps_allowlist_and_models(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = EventStore(root / "pondsec-ndr.db")
+            store.migrate()
+            store.insert_events([normalize_eve(flow_event("2026-07-05T10:00:00+00:00", "192.168.10.20", "1.1.1.1", 443))])
+            store.insert_detections([{
+                "detection_id": "runtime-reset-detection",
+                "detector_id": "pondsec.test",
+                "detector_version": "1.0.0",
+                "category": "anomaly",
+                "title": "Reset test",
+                "description": "Reset test",
+                "timestamp": "2026-07-05T10:00:00+00:00",
+                "source_ip": "192.168.10.20",
+                "destination_ip": "1.1.1.1",
+                "severity": 7,
+                "confidence": 0.8,
+                "anomaly_score": 0.8,
+                "evidence": {},
+                "recommended_action": "investigate",
+            }])
+            store.insert_incidents([{
+                "incident_id": "runtime-reset-incident",
+                "title": "Runtime reset incident",
+                "status": "open",
+                "risk_score": 80,
+                "severity": 8,
+                "confidence": 0.8,
+                "source_ip": "192.168.10.20",
+                "destination_ip": "1.1.1.1",
+                "category": "anomaly",
+                "created_at": "2026-07-05T10:00:00+00:00",
+                "updated_at": "2026-07-05T10:00:00+00:00",
+                "evidence": {},
+                "risk_factors": [],
+            }])
+            store.add_allowlist_entry("192.168.10.0/24", "trusted network", actor="test")
+            config = PondSecConfig(data_dir=root)
+            (root / "learning_started_at").write_text("2026-07-05T10:00:00+00:00\n", encoding="utf-8")
+            offset_dir = root / "collector_offsets"
+            offset_dir.mkdir()
+            (offset_dir / "suricata_eve.json").write_text("{}", encoding="utf-8")
+
+            payload = reset_runtime_state(store, config, restart_service=False, flush_pf=False)
+
+            self.assertEqual(payload["status"], "ok")
+            self.assertEqual(store.list_rows("events"), [])
+            self.assertEqual(store.list_rows("detections"), [])
+            self.assertEqual(store.list_rows("incidents"), [])
+            self.assertEqual(store.list_rows("block_entries"), [])
+            self.assertEqual(store.list_rows("allowlist_entries")[0]["value"], "192.168.10.0/24")
+            self.assertFalse((root / "learning_started_at").exists())
+            self.assertFalse(offset_dir.exists())
 
     def test_service_auto_response_skips_baseline_only_anomaly(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
