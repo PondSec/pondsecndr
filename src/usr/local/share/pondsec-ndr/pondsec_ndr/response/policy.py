@@ -60,6 +60,10 @@ def evaluate_automatic_response_policy(
         reasons.append("incident severity is below response threshold")
     if float(incident.get("confidence") or 0.0) * 100 < config.response.minimum_confidence:
         reasons.append("incident confidence is below response threshold")
+    if summary["promotion_score"] is None:
+        reasons.append("incident promotion score is missing")
+    elif int(summary["promotion_score"]) < config.response.minimum_promotion_score:
+        reasons.append("incident promotion score is below automatic response threshold")
 
     if target_is_internal:
         reasons.extend(_internal_isolation_reasons(store, config, incident, target_ip, summary))
@@ -120,6 +124,7 @@ def evaluate_automatic_response_policy(
             "minimum_risk_score": config.response.minimum_risk_score,
             "minimum_severity": config.response.minimum_severity,
             "minimum_confidence": config.response.minimum_confidence,
+            "minimum_promotion_score": config.response.minimum_promotion_score,
             "min_internal_event_count": config.response.min_internal_event_count,
             "min_internal_detection_count": config.response.min_internal_detection_count,
             "min_internal_categories": config.response.min_internal_categories,
@@ -154,12 +159,14 @@ def _decision_layers(
     risk_score = int(incident.get("risk_score") or 0)
     severity = int(incident.get("severity") or 0)
     confidence_percent = float(incident.get("confidence") or 0.0) * 100
+    promotion_score = summary["promotion_score"]
     event_count = int(incident.get("event_count") or 0)
     detection_count = int(incident.get("detection_count") or summary["detections_considered"] or 0)
     threshold_passes = {
         "risk_score": risk_score >= config.response.minimum_risk_score,
         "severity": severity >= config.response.minimum_severity,
         "confidence": confidence_percent >= config.response.minimum_confidence,
+        "promotion_score": promotion_score is not None and int(promotion_score) >= config.response.minimum_promotion_score,
     }
     evidence_passes = {
         "event_count": event_count >= config.response.min_internal_event_count,
@@ -185,6 +192,7 @@ def _decision_layers(
             "detector_ids": summary["detector_ids"],
             "engines": summary["independent_engines"],
             "data_sources": summary["data_sources"],
+            "promotion": summary["promotion"],
         },
         "compromise_assessment": {
             "status": "likely_compromised" if compromise_ready else "unconfirmed",
@@ -237,6 +245,8 @@ def _internal_isolation_reasons(
         reasons.append("not enough supporting indicators for internal isolation")
     if len(summary["independent_engines"]) < config.response.min_independent_engines:
         reasons.append("not enough independent engines for internal isolation")
+    if summary["promotion_decision"] != "promoted":
+        reasons.append("incident was not promoted by the incident promotion gate")
     if summary["ml_only"]:
         reasons.append("machine-learning evidence cannot isolate a client by itself")
     if set(summary["categories"]).issubset(NOISY_SINGLE_SIGNAL_CATEGORIES):
@@ -267,16 +277,36 @@ def _evidence_summary(incident: dict[str, Any], config: PondSecConfig) -> dict[s
     supporting = sorted({indicator for item in detections for indicator in _supporting_indicators(item, config)})
     prevented_flags = [_is_prevented_or_blocked(item) for item in detections]
     ml_ids = {"pondsec.pretrained_ids_model"}
+    promotion = _promotion_context(incident, detections)
     return {
         "categories": categories,
         "detector_ids": detector_ids,
         "independent_engines": engines,
         "data_sources": sources,
         "supporting_indicators": supporting,
+        "promotion": promotion,
+        "promotion_score": promotion.get("promotion_score"),
+        "promotion_threshold": promotion.get("promotion_threshold"),
+        "promotion_decision": promotion.get("decision"),
+        "promotion_reason": promotion.get("reason"),
         "ml_only": bool(detections) and all(str(item.get("detector_id")) in ml_ids or str(item.get("category")) == "machine_learning" for item in detections),
         "all_prevented_or_blocked": bool(prevented_flags) and all(prevented_flags),
         "detections_considered": len(detections),
     }
+
+
+def _promotion_context(incident: dict[str, Any], detections: list[dict[str, Any]]) -> dict[str, Any]:
+    evidence = incident.get("evidence") if isinstance(incident.get("evidence"), dict) else {}
+    correlation = evidence.get("correlation") if isinstance(evidence.get("correlation"), dict) else {}
+    promotion = correlation.get("promotion") if isinstance(correlation.get("promotion"), dict) else None
+    if promotion:
+        return promotion
+    for detection in detections:
+        detection_evidence = _evidence(detection)
+        promotion = detection_evidence.get("promotion")
+        if isinstance(promotion, dict):
+            return promotion
+    return {}
 
 
 def _engine_for_detection(detection: dict[str, Any]) -> str:

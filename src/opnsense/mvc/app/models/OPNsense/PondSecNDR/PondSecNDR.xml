@@ -549,6 +549,12 @@
                 <default>0</default>
                 <Required>Y</Required>
             </automatic_blocking>
+            <minimum_promotion_score type="IntegerField">
+                <default>90</default>
+                <MinimumValue>1</MinimumValue>
+                <MaximumValue>100</MaximumValue>
+                <Required>Y</Required>
+            </minimum_promotion_score>
             <minimum_confidence type="IntegerField">
                 <default>95</default>
                 <MinimumValue>1</MinimumValue>

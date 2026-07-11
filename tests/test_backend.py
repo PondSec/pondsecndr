@@ -141,6 +141,16 @@ def robust_internal_incident(incident_id: str = "incident-robust-internal", sour
                 "affected_host": source_ip,
                 "response_target": "8.8.4.4",
             },
+            "correlation": {
+                "promotion": {
+                    "decision": "promoted",
+                    "reason": "strong_detector",
+                    "promotion_score": 100,
+                    "promotion_threshold": 70,
+                    "positive_evidence": [{"name": "strong_detector", "value": 35}],
+                    "negative_evidence": [],
+                },
+            },
             "detections": [
                 {
                     "detection_id": "d-internal-beacon",
@@ -2706,9 +2716,25 @@ class BackendTests(unittest.TestCase):
             self.assertIn("Isolation proposal", proposal["reason"])
             layers = proposal["policy_decision"]["decision_layers"]
             self.assertEqual(layers["detection"]["status"], "observed")
+            self.assertEqual(layers["detection"]["promotion"]["promotion_score"], 100)
             self.assertEqual(layers["compromise_assessment"]["status"], "likely_compromised")
             self.assertEqual(layers["containment_decision"]["status"], "eligible")
             self.assertEqual(layers["execution"]["status"], "allowed")
+
+    def test_response_policy_requires_high_promotion_score_for_automatic_action(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            incident = robust_internal_incident("incident-low-promotion-score")
+            incident["evidence"]["correlation"]["promotion"]["promotion_score"] = 82
+            store.insert_incidents([incident])
+            seed_host_baseline(store, "192.168.30.3")
+            config = PondSecConfig(
+                response=ResponseConfig(mode="enforce", automatic_blocking=True, isolate_internal=True, ai_full_decision_mode=True),
+                detection=armed_detection_config(),
+            )
+            with self.assertRaisesRegex(ResponseDenied, "promotion score"):
+                propose_block_for_incident(store, config, "incident-low-promotion-score", actor="test", automatic=True)
 
     def test_response_engine_denies_weak_internal_auto_isolation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

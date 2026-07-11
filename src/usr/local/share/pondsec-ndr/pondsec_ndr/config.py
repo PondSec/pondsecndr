@@ -285,6 +285,7 @@ class ResponseConfig:
     kill_switch: bool = False
     maintenance_mode: bool = False
     automatic_blocking: bool = False
+    minimum_promotion_score: int = 90
     minimum_confidence: int = 95
     minimum_risk_score: int = 95
     minimum_severity: int = 9
@@ -358,6 +359,8 @@ class PondSecConfig:
             errors.append("prevent mode without manual confirmation requires at least 75 percent confidence")
         if self.response.mode in {"enforce", "shadow_enforce"} and not self.response.automatic_blocking:
             errors.append(f"response {self.response.mode} mode requires automatic blocking to be enabled")
+        if self.response.minimum_promotion_score < 1:
+            errors.append("minimum_promotion_score must be positive")
         if self.retention_days < 1:
             errors.append("retention_days must be positive")
         if self.max_database_mb < 64:
@@ -593,6 +596,7 @@ def load_config(path: Path | None = None) -> PondSecConfig:
             kill_switch=_bool(response.get("kill_switch"), False),
             maintenance_mode=_bool(response.get("maintenance_mode"), False),
             automatic_blocking=_bool(response.get("automatic_blocking"), False),
+            minimum_promotion_score=_int(response.get("minimum_promotion_score"), 90, 1, 100),
             minimum_confidence=_int(response.get("minimum_confidence"), 95, 1, 100),
             minimum_risk_score=_int(response.get("minimum_risk_score"), 95, 1, 100),
             minimum_severity=_int(response.get("minimum_severity"), 9, 1, 10),

@@ -249,6 +249,7 @@ $(function() {
             'Response kill switch': 'Response-Kill-Switch',
             'Maintenance mode': 'Wartungsmodus',
             'Automatic blocking': 'Automatisches Blockieren',
+            'Minimum response promotion score': 'Minimaler Response-Promotion-Score',
             'Minimum response confidence': 'Minimale Response-Confidence',
             'Minimum response risk score': 'Minimaler Response-Risiko-Score',
             'Minimum response severity': 'Minimale Response-Severity',
@@ -305,6 +306,7 @@ $(function() {
             'After the configured learning days reach zero, PondSec uses Prevent, Enforce, AI full decision, internal isolation and external blocking automatically while keeping all safety gates.': 'Wenn die konfigurierten Lerntage null erreichen, nutzt PondSec automatisch Prevent, Enforce, vollstaendige KI-Entscheidung, interne Isolation und externes Blocking, behaelt aber alle Sicherheitspruefungen bei.',
             'Required for internal auto-isolation in Enforce mode after the 14-day learning phase. AI evidence never bypasses multi-source safety checks.': 'Erforderlich fuer interne Auto-Isolation im Enforce-Modus nach 14 Tagen Lernphase. KI-Evidence umgeht nie Multi-Source-Sicherheitschecks.',
             'Keep disabled during learning. Automatic PF changes require Enforce mode and all response-policy conditions to pass.': 'Waehrend der Lernphase deaktiviert lassen. Automatische PF-Aenderungen brauchen Enforce und alle bestandenen Response-Policy-Bedingungen.',
+            'Automatic prevention requires a stronger promotion score than incident creation. Default: 90.': 'Automatische Prevention braucht einen staerkeren Promotion-Score als die Incident-Erstellung. Standard: 90.',
             'Minimum time between executed internal auto-isolations. Recommendations do not consume this cooldown.': 'Mindestzeit zwischen ausgefuehrten internen Auto-Isolationen. Empfehlungen verbrauchen diesen Cooldown nicht.'
         }
     };

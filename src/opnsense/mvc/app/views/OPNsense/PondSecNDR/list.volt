@@ -96,6 +96,13 @@ $(function() {
         'Notable features': 'Auffaellige Merkmale',
         'Risk factors': 'Risikofaktoren',
         'Response policy decisions': 'Response-Policy-Entscheidungen',
+        'Promotion decision': 'Promotion-Entscheidung',
+        'Promotion score': 'Promotion-Score',
+        'Threshold': 'Schwellenwert',
+        'Decision': 'Entscheidung',
+        'Positive evidence': 'Positive Evidenz',
+        'Negative evidence': 'Entlastende Evidenz',
+        'No promotion decision recorded.': 'Keine Promotion-Entscheidung aufgezeichnet.',
         'Entity resolution': 'Entity-Aufloesung',
         'IP identity': 'IP-Identitaet',
         'Roles and context': 'Rollen und Kontext',
@@ -580,6 +587,36 @@ $(function() {
                 (reasons.length ? '<ul>' + reasons.slice(0, 6).map(function(reason) { return '<li>' + escapeHtml(reason) + '</li>'; }).join('') + '</ul>' : '') +
             '</div>';
         }).join('');
+    }
+
+    function renderPromotionDecision(promotion) {
+        promotion = promotion || {};
+        if (!Object.keys(promotion).length) {
+            return '<div class="pondsec-empty">No promotion decision recorded.</div>';
+        }
+        var positive = promotion.positive_evidence || [];
+        var negative = promotion.negative_evidence || [];
+        function factorList(items) {
+            if (!items.length) {
+                return '<span class="pondsec-empty-inline">-</span>';
+            }
+            return items.slice(0, 8).map(function(item) {
+                return '<span class="pondsec-token">' + escapeHtml(humanKey(item.name || 'factor')) + ' +' + escapeHtml(item.value || 0) + '</span>';
+            }).join('');
+        }
+        return '<div class="pondsec-decision">' +
+            '<div class="pondsec-decision-head">' + badge(promotion.decision || 'recorded') + '<strong>Promotion decision</strong></div>' +
+            '<div class="pondsec-decision-grid">' +
+                '<div><span>Promotion score</span><strong>' + escapeHtml(hasValue(promotion.promotion_score) ? promotion.promotion_score : '-') + '</strong></div>' +
+                '<div><span>Threshold</span><strong>' + escapeHtml(hasValue(promotion.promotion_threshold) ? promotion.promotion_threshold : '-') + '</strong></div>' +
+                '<div><span>Decision</span><strong>' + escapeHtml(promotion.decision || '-') + '</strong></div>' +
+                '<div><span>Reason</span><strong>' + escapeHtml(humanKey(promotion.reason || '-')) + '</strong></div>' +
+            '</div>' +
+            '<div class="pondsec-promotion-factors">' +
+                '<div><span>Positive evidence</span>' + factorList(positive) + '</div>' +
+                '<div><span>Negative evidence</span>' + factorList(negative) + '</div>' +
+            '</div>' +
+        '</div>';
     }
 
     function renderCaseActions(incident, caseSummary) {
@@ -1218,6 +1255,7 @@ $(function() {
         var relatedCases = analysis.related_cases || [];
         var threatIntel = analysis.threat_intelligence || {};
         var responseDecisions = analysis.response_decisions || [];
+        var promotion = analysis.promotion || {};
         resetCaseDetails();
         currentIncidentId = incident.incident_id || null;
         $('#incident_detail_title').text(incident.title || incident.incident_id || 'Incident');
@@ -1259,6 +1297,7 @@ $(function() {
         $('#incident_risk_factors').html(riskFactors.length ? riskFactors.map(function(item) {
             return '<div class="pondsec-feature"><span>' + escapeHtml(item.name || item.factor || 'risk') + '</span><strong>' + compactValue(item.value || item.score || item.weight || item) + '</strong></div>';
         }).join('') : '<div class="pondsec-empty">No risk factors recorded.</div>');
+        $('#incident_promotion_decision').html(renderPromotionDecision(promotion));
         $('#incident_response_decisions').html(renderResponseDecisions(responseDecisions));
         renderCaseDetail({type: 'Case summary', title: 'Case overview', item: caseSummary});
         $('#incident_detail_panel').addClass('open');
@@ -1802,6 +1841,23 @@ $(function() {
     margin: 10px 0 0 18px;
     padding: 0;
 }
+.pondsec-promotion-factors {
+    display: grid;
+    gap: 10px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    margin-top: 10px;
+}
+.pondsec-promotion-factors div {
+    border-top: 1px solid #2a3544;
+    padding-top: 8px;
+}
+.pondsec-promotion-factors span:first-child {
+    color: #8f9dac;
+    display: block;
+    font-size: 11px;
+    margin-bottom: 6px;
+    text-transform: uppercase;
+}
 .pondsec-case-kv em,
 .pondsec-certainty {
     border-radius: 999px;
@@ -2159,7 +2215,8 @@ $(function() {
     .pondsec-case-grid.wide,
     .pondsec-stage-lane,
     .pondsec-certainty-grid,
-    .pondsec-decision-grid {
+    .pondsec-decision-grid,
+    .pondsec-promotion-factors {
         grid-template-columns: 1fr;
     }
 }
@@ -2275,6 +2332,10 @@ $(function() {
         <section class="pondsec-case-section">
             <h4>Risk factors</h4>
             <div id="incident_risk_factors" class="pondsec-feature-grid"></div>
+        </section>
+        <section class="pondsec-case-section">
+            <h4>Promotion decision</h4>
+            <div id="incident_promotion_decision" class="pondsec-decision-list"></div>
         </section>
         <section class="pondsec-case-section">
             <h4>Response policy decisions</h4>

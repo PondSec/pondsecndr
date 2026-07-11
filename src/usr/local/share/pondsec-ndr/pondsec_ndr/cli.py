@@ -1176,6 +1176,7 @@ def _incident_analysis(
     graph = _incident_attack_graph(incident, detections, targets, response_block, entity_roles)
     visual_timeline = _group_timeline(timeline)
     summary = _case_summary(incident, targets, admin_guidance, response_block, entity_roles, response_blocks, threat_intel)
+    promotion = _incident_promotion_context(incident, detections)
     related_cases = _related_cases(store, incident, entity_roles) if store else []
     response_decisions = store.response_decisions_for_incident(incident.get("incident_id")) if store else []
     return {
@@ -1206,7 +1207,22 @@ def _incident_analysis(
         "administrator_guidance": admin_guidance[:12],
         "risk_factors": incident_risk_factors,
         "correlation": evidence.get("correlation", {}),
+        "promotion": promotion,
     }
+
+
+def _incident_promotion_context(incident: dict[str, Any], detections: list[dict[str, Any]]) -> dict[str, Any]:
+    evidence = incident.get("evidence") if isinstance(incident.get("evidence"), dict) else {}
+    correlation = evidence.get("correlation") if isinstance(evidence.get("correlation"), dict) else {}
+    promotion = correlation.get("promotion") if isinstance(correlation.get("promotion"), dict) else None
+    if promotion:
+        return promotion
+    for detection in detections:
+        detection_evidence = detection.get("evidence") if isinstance(detection.get("evidence"), dict) else {}
+        promotion = detection_evidence.get("promotion")
+        if isinstance(promotion, dict):
+            return promotion
+    return {}
 
 
 def _empty_attack_stages() -> dict[str, dict[str, Any]]:

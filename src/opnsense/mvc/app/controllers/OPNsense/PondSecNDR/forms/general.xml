@@ -626,6 +626,12 @@
         <help>Keep disabled during learning. Automatic PF changes require Enforce mode and all response-policy conditions to pass.</help>
     </field>
     <field>
+        <id>pondsecndr.response.minimum_promotion_score</id>
+        <label>Minimum response promotion score</label>
+        <type>text</type>
+        <help>Automatic prevention requires a stronger promotion score than incident creation. Default: 90.</help>
+    </field>
+    <field>
         <id>pondsecndr.response.minimum_confidence</id>
         <label>Minimum response confidence</label>
         <type>text</type>
