@@ -1928,6 +1928,48 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(merged["attack_stage"], "multi_stage")
             self.assertTrue(merged["evidence"]["correlation"]["deduplicated"])
 
+    def test_incident_dedup_keeps_different_internal_sources_on_aggregate_port_separate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            first = {
+                "incident_id": "incident-internal-aggregate-1",
+                "title": "Internal scan from first host",
+                "status": "open",
+                "risk_score": 88,
+                "severity": 8,
+                "confidence": 0.95,
+                "source_ip": "192.168.10.128",
+                "destination_ip": "port:443",
+                "category": "reconnaissance",
+                "created_at": "2026-07-05T10:00:00+00:00",
+                "updated_at": "2026-07-05T10:00:00+00:00",
+                "first_seen": "2026-07-05T10:00:00+00:00",
+                "last_seen": "2026-07-05T10:00:20+00:00",
+                "event_count": 20,
+                "evidence": {"detections": [{"detection_id": "d-internal-1", "source_ip": "192.168.10.128", "destination_ip": "port:443"}]},
+                "risk_factors": [{"name": "scan", "value": 88}],
+                "detection_ids": ["d-internal-1"],
+            }
+            second = dict(
+                first,
+                incident_id="incident-internal-aggregate-2",
+                title="Internal scan from second host",
+                source_ip="192.168.10.20",
+                created_at="2026-07-05T10:03:00+00:00",
+                updated_at="2026-07-05T10:03:00+00:00",
+                first_seen="2026-07-05T10:03:00+00:00",
+                last_seen="2026-07-05T10:03:20+00:00",
+                event_count=18,
+                evidence={"detections": [{"detection_id": "d-internal-2", "source_ip": "192.168.10.20", "destination_ip": "port:443"}]},
+                detection_ids=["d-internal-2"],
+            )
+            self.assertEqual(store.insert_incidents([first]), 1)
+            self.assertEqual(store.insert_incidents([second]), 1)
+            rows = store.list_rows("incidents")
+            self.assertEqual(len(rows), 2)
+            self.assertEqual({row["source_ip"] for row in rows}, {"192.168.10.128", "192.168.10.20"})
+
     def test_external_model_catalog_prefers_public_trained_model(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             inventory = model_inventory(Path(tmp))

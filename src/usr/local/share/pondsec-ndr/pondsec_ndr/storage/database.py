@@ -129,6 +129,17 @@ def _is_private_address(value: str | None) -> bool:
         return False
 
 
+def _case_entity_value(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value)
+    if not text or text in {"any", "internal", "external", "auth_services", "host-baseline"}:
+        return None
+    if text.startswith("port:"):
+        return None
+    return text
+
+
 def _normalize_mac(value: Any) -> str | None:
     if not value:
         return None
@@ -1840,7 +1851,9 @@ class EventStore:
 
     @staticmethod
     def _incident_related(row: sqlite3.Row, incident: dict[str, Any]) -> bool:
-        if row["source_ip"] and incident.get("source_ip") and row["source_ip"] == incident.get("source_ip"):
+        existing_source = _case_entity_value(row["source_ip"])
+        incoming_source = _case_entity_value(incident.get("source_ip"))
+        if existing_source and incoming_source and existing_source == incoming_source:
             return EventStore._incident_target_matches(row, incident)
         try:
             existing_evidence = json.loads(row["evidence_json"] or "{}")
@@ -1848,15 +1861,49 @@ class EventStore:
             existing_evidence = {}
         existing_roles = existing_evidence.get("entity_roles", {}) if isinstance(existing_evidence, dict) else {}
         incoming_roles = (incident.get("evidence") or {}).get("entity_roles", {}) if isinstance(incident.get("evidence"), dict) else {}
+        if (
+            existing_source
+            and incoming_source
+            and existing_source != incoming_source
+            and _is_private_address(existing_source)
+            and _is_private_address(incoming_source)
+            and not EventStore._internal_sources_explicitly_related(row, existing_roles, incident, incoming_roles)
+        ):
+            return False
         existing_entities = EventStore._role_entities(row, existing_roles)
         incoming_entities = EventStore._role_entities_dict(incident, incoming_roles)
-        if incident.get("source_ip") and incident.get("source_ip") in existing_entities:
+        if incoming_source and incoming_source in existing_entities:
             return True
-        if row["source_ip"] and row["source_ip"] in incoming_entities:
+        if existing_source and existing_source in incoming_entities:
             return True
         shared = existing_entities & incoming_entities
         if shared:
             return True
+        return False
+
+    @staticmethod
+    def _internal_sources_explicitly_related(
+        row: sqlite3.Row,
+        existing_roles: dict[str, Any],
+        incident: dict[str, Any],
+        incoming_roles: dict[str, Any],
+    ) -> bool:
+        existing_source = _case_entity_value(row["source_ip"])
+        incoming_source = _case_entity_value(incident.get("source_ip"))
+        existing_destination = _case_entity_value(row["destination_ip"])
+        incoming_destination = _case_entity_value(incident.get("destination_ip"))
+        if existing_source and incoming_destination == existing_source:
+            return True
+        if incoming_source and existing_destination == incoming_source:
+            return True
+        if isinstance(existing_roles, dict):
+            for key in ("victim", "affected_host", "pivot_host", "destination"):
+                if _case_entity_value(existing_roles.get(key)) == incoming_source:
+                    return True
+        if isinstance(incoming_roles, dict):
+            for key in ("victim", "affected_host", "pivot_host", "destination"):
+                if _case_entity_value(incoming_roles.get(key)) == existing_source:
+                    return True
         return False
 
     @staticmethod
@@ -1876,21 +1923,27 @@ class EventStore:
 
     @staticmethod
     def _role_entities(row: sqlite3.Row, roles: dict[str, Any]) -> set[str]:
-        entities = {str(row[key]) for key in ("source_ip", "destination_ip") if row[key]}
+        entities = {value for key in ("source_ip", "destination_ip") if (value := _case_entity_value(row[key]))}
         try:
-            entities.update(str(target) for target in json.loads(row["affected_targets_json"] or "[]") if target)
+            entities.update(
+                value for target in json.loads(row["affected_targets_json"] or "[]")
+                if (value := _case_entity_value(target))
+            )
         except json.JSONDecodeError:
             pass
         if isinstance(roles, dict):
-            entities.update(str(value) for value in roles.values() if value)
+            entities.update(value for role_value in roles.values() if (value := _case_entity_value(role_value)))
         return entities
 
     @staticmethod
     def _role_entities_dict(incident: dict[str, Any], roles: dict[str, Any]) -> set[str]:
-        entities = {str(incident[key]) for key in ("source_ip", "destination_ip") if incident.get(key)}
-        entities.update(str(target) for target in incident.get("affected_targets", []) if target)
+        entities = {
+            value for key in ("source_ip", "destination_ip")
+            if (value := _case_entity_value(incident.get(key)))
+        }
+        entities.update(value for target in incident.get("affected_targets", []) if (value := _case_entity_value(target)))
         if isinstance(roles, dict):
-            entities.update(str(value) for value in roles.values() if value)
+            entities.update(value for role_value in roles.values() if (value := _case_entity_value(role_value)))
         return entities
 
     @staticmethod
