@@ -28,6 +28,13 @@ def _safe_queryless_url(value: Any) -> str | None:
     return path
 
 
+def _basename(value: Any) -> str | None:
+    if not value:
+        return None
+    text = str(value).replace("\\", "/").rsplit("/", 1)[-1].strip()
+    return text[:256] if text else None
+
+
 def _direction(src_ip: str | None, dst_ip: str | None) -> str:
     src_private = is_private_ip(src_ip)
     dst_private = is_private_ip(dst_ip)
@@ -173,7 +180,19 @@ def normalize_eve(raw: dict[str, Any]) -> dict[str, Any]:
         metadata.update(_drop_metadata(raw))
     elif event_type == "fileinfo":
         info = raw.get("fileinfo") or {}
-        metadata.update({"filename_seen": bool(info.get("filename")), "size": info.get("size"), "state": info.get("state")})
+        metadata.update({
+            "filename_seen": bool(info.get("filename")),
+            "filename": _basename(info.get("filename")),
+            "size": info.get("size"),
+            "state": info.get("state"),
+            "mime_type": info.get("magic") or info.get("mime_type"),
+            "stored": info.get("stored"),
+            "gaps": info.get("gaps"),
+            "tx_id": info.get("tx_id"),
+            "md5": info.get("md5"),
+            "sha1": info.get("sha1"),
+            "sha256": info.get("sha256"),
+        })
     elif event_type == "anomaly":
         anomaly = raw.get("anomaly") or {}
         metadata.update({"type": anomaly.get("type"), "event": anomaly.get("event"), "layer": anomaly.get("layer")})

@@ -314,6 +314,16 @@ def _engine_for_detection(detection: dict[str, Any]) -> str:
     category = str(detection.get("category") or "")
     if detector_id.startswith("pondsec.suricata") or _evidence(detection).get("signature_id"):
         return "suricata"
+    if detector_id == "pondsec.zenarmor_security_event":
+        return "zenarmor"
+    if detector_id == "pondsec.file_sandbox_verdict":
+        return "sandbox"
+    if detector_id == "pondsec.url_threat":
+        return "url_filter"
+    if detector_id == "pondsec.dns_sinkhole_hit":
+        return "dns"
+    if detector_id == "pondsec.threat_intel_indicator":
+        return "threat_intel"
     if detector_id == "pondsec.pretrained_ids_model" or category == "machine_learning":
         return "machine_learning"
     if detector_id == "pondsec.dns_tunneling":
@@ -354,6 +364,8 @@ def _supporting_indicators(detection: dict[str, Any], config: PondSecConfig) -> 
         indicators.add("beaconing")
     if detector_id == "pondsec.dns_tunneling":
         indicators.add("dns_anomaly")
+    if detector_id == "pondsec.dns_sinkhole_hit":
+        indicators.add("dns_sinkhole")
     if detector_id == "pondsec.host_baseline_anomaly":
         indicators.add("baseline_deviation")
     if detector_id == "pondsec.lateral_movement" or category == "lateral_movement":
@@ -366,6 +378,12 @@ def _supporting_indicators(detection: dict[str, Any], config: PondSecConfig) -> 
         indicators.add("supply_chain_callback")
     if detector_id == "pondsec.malware_callback" or category == "malware":
         indicators.add("malware_callback")
+    if detector_id == "pondsec.file_sandbox_verdict":
+        indicators.add("file_malware_verdict")
+    if detector_id == "pondsec.url_threat":
+        indicators.add("url_threat")
+    if detector_id == "pondsec.zenarmor_security_event":
+        indicators.add("zenarmor_security_context")
     if detector_id == "pondsec.data_exfiltration" or category == "exfiltration":
         indicators.add("data_transfer")
     if detector_id == "pondsec.unusual_tls_fingerprint":
@@ -380,8 +398,12 @@ def _supporting_indicators(detection: dict[str, Any], config: PondSecConfig) -> 
 def _is_prevented_or_blocked(detection: dict[str, Any]) -> bool:
     detector_id = str(detection.get("detector_id") or "")
     evidence = _evidence(detection)
-    action = str(evidence.get("suricata_action") or evidence.get("action") or "").lower()
-    return detector_id == "pondsec.suricata_drop" or action in {"blocked", "block", "drop", "dropped", "reject"}
+    action = str(evidence.get("suricata_action") or evidence.get("action") or evidence.get("decision") or "").lower()
+    return (
+        detector_id == "pondsec.suricata_drop"
+        or evidence.get("provider_prevented") is True
+        or action in {"blocked", "block", "drop", "dropped", "reject", "deny", "denied", "sinkhole"}
+    )
 
 
 def _evidence(detection: dict[str, Any]) -> dict[str, Any]:

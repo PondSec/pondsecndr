@@ -29,14 +29,19 @@ from pondsec_ndr.detection.detectors import (
     BeaconingDetector,
     CredentialBruteforceDetector,
     DNSTunnelingDetector,
+    DnsSinkholeDetector,
     ExploitAttemptDetector,
+    FileSandboxVerdictDetector,
     HostBaselineAnomalyDetector,
     PortScanDetector,
     SupplyChainCallbackDetector,
     SuricataAlertAdapter,
+    ThreatIntelIndicatorDetector,
     UnusualDestinationDetector,
     VerticalScanDetector,
     WormLikePropagationDetector,
+    UrlThreatDetector,
+    ZenarmorSecurityEventDetector,
 )
 from pondsec_ndr.diagnostics import diagnostic_archive, diagnostics as diagnostics_payload, eve_access_status
 from pondsec_ndr.features.aggregator import aggregate_features, shannon_entropy
@@ -684,6 +689,11 @@ class BackendTests(unittest.TestCase):
             "url": "https://video.example.test/watch?token=secret",
             "tls_sni": "video.example.test",
             "tls_version": "TLSv1.3",
+            "tls_inspected": "true",
+            "filename": "/tmp/eicar.com",
+            "mime_type": "text/plain",
+            "sha256": "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f",
+            "sandbox_verdict": "malicious",
             "device_name": "laptop-20",
             "session_id": "sess-1",
             "user": "alice",
@@ -698,7 +708,10 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(event["metadata"]["application"], "YouTube")
         self.assertEqual(event["metadata"]["policy_name"], "Workstations")
         self.assertEqual(event["metadata"]["tls_sni"], "video.example.test")
+        self.assertEqual(event["metadata"]["tls_inspected"], "true")
         self.assertEqual(event["metadata"]["url_path"], "/watch")
+        self.assertEqual(event["metadata"]["filename"], "eicar.com")
+        self.assertEqual(event["metadata"]["sandbox_verdict"], "malicious")
         self.assertEqual(event["metadata"]["byte_count"], 6000)
         self.assertNotIn("token=secret", json.dumps(event["metadata"]))
 
@@ -1292,6 +1305,138 @@ class BackendTests(unittest.TestCase):
         detection = [item for item in SuricataAlertAdapter().detect([event], []) if item["detector_id"] == "pondsec.suricata_drop"]
         self.assertEqual(len(detection), 1)
         self.assertEqual(detection[0]["evidence"]["suricata_action"], "blocked")
+
+    def test_zenarmor_security_and_url_detectors_import_tls_policy_context(self) -> None:
+        event = normalize_zenarmor_event({
+            "timestamp": "2026-07-05T12:30:00+00:00",
+            "src_ip": "192.168.10.25",
+            "src_port": 52000,
+            "dst_ip": "198.51.100.40",
+            "dst_port": 443,
+            "protocol": "tcp",
+            "application": "Web Browsing",
+            "web_category": "Phishing",
+            "security_category": "Credential Phishing",
+            "threat_name": "Credential phishing URL",
+            "decision": "blocked",
+            "policy_name": "Workstations",
+            "url": "https://login.validation.pondsec.test/pondsec-validation-phishing?token=secret",
+            "tls_sni": "login.validation.pondsec.test",
+            "tls_inspected": "true",
+            "session_id": "sess-phish",
+        }, sensor_name="zenarmor-local")
+        self.assertIsNotNone(event)
+        assert event is not None
+        detections = (
+            ZenarmorSecurityEventDetector().detect([event], [])
+            + UrlThreatDetector().detect([event], [])
+        )
+        self.assertEqual({item["detector_id"] for item in detections}, {"pondsec.zenarmor_security_event", "pondsec.url_threat"})
+        self.assertTrue(all(item["category"] == "credential_abuse" for item in detections))
+        self.assertTrue(all(item["evidence"]["tls_inspected"] == "true" for item in detections))
+        self.assertNotIn("token=secret", json.dumps(detections, sort_keys=True))
+        incidents = correlate_detections(detections)
+        self.assertEqual(len(incidents), 1)
+        promotion = incidents[0]["evidence"]["correlation"]["promotion"]
+        self.assertEqual(promotion["decision"], "promoted")
+        self.assertGreaterEqual(promotion["promotion_score"], promotion["promotion_threshold"])
+
+    def test_zenarmor_cdn_policy_context_does_not_create_security_detection(self) -> None:
+        event = normalize_zenarmor_event({
+            "timestamp": "2026-07-05T12:31:00+00:00",
+            "src_ip": "192.168.10.26",
+            "src_port": 52001,
+            "dst_ip": "198.51.100.41",
+            "dst_port": 443,
+            "protocol": "tcp",
+            "application": "Apple Push",
+            "web_category": "CDN",
+            "security_category": "",
+            "decision": "allowed",
+            "url": "https://cdn.apple.example.test/library/update",
+            "tls_sni": "cdn.apple.example.test",
+        })
+        self.assertIsNotNone(event)
+        assert event is not None
+        self.assertEqual(ZenarmorSecurityEventDetector().detect([event], []), [])
+        self.assertEqual(UrlThreatDetector().detect([event], []), [])
+
+    def test_file_sandbox_detector_detects_eicar_hash_from_suricata_fileinfo(self) -> None:
+        event = normalize_eve({
+            "timestamp": "2026-07-05T12:32:00+00:00",
+            "event_type": "fileinfo",
+            "src_ip": "198.51.100.55",
+            "src_port": 443,
+            "dest_ip": "192.168.10.27",
+            "dest_port": 51515,
+            "proto": "TCP",
+            "fileinfo": {
+                "filename": "/downloads/eicar.com",
+                "magic": "ASCII text",
+                "size": 68,
+                "state": "CLOSED",
+                "sha256": "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f",
+            },
+        })
+        self.assertEqual(event["metadata"]["filename"], "eicar.com")
+        detections = FileSandboxVerdictDetector().detect([event], [])
+        self.assertEqual(len(detections), 1)
+        self.assertEqual(detections[0]["detector_id"], "pondsec.file_sandbox_verdict")
+        self.assertEqual(detections[0]["category"], "malware")
+        self.assertTrue(detections[0]["evidence"]["safe_test_file"])
+        incidents = correlate_detections(detections)
+        self.assertEqual(len(incidents), 1)
+
+    def test_dns_sinkhole_detector_labels_blocked_domain_lookup(self) -> None:
+        event = {
+            "schema_version": "1",
+            "event_id": "dns-sinkhole-1",
+            "event_type": "dns",
+            "timestamp": "2026-07-05T12:33:00+00:00",
+            "source": {"ip": "192.168.10.28", "port": 53000, "interface": None},
+            "destination": {"ip": "192.168.10.5", "port": 53},
+            "protocol": "UDP",
+            "direction": "internal",
+            "metadata": {
+                "event_source": "dnsmasq",
+                "rrname": "c2.validation.pondsec.test",
+                "decision": "sinkhole",
+                "answers": ["0.0.0.0"],
+                "sinkhole_hit": True,
+            },
+            "raw_source": "dnsmasq",
+        }
+        detections = DnsSinkholeDetector().detect([event], [])
+        self.assertEqual(len(detections), 1)
+        self.assertEqual(detections[0]["category"], "command_and_control")
+        self.assertTrue(detections[0]["evidence"]["provider_prevented"])
+
+    def test_threat_intel_indicator_detector_promotes_high_confidence_ioc(self) -> None:
+        event = normalize_eve({
+            "timestamp": "2026-07-05T12:34:00+00:00",
+            "event_type": "tls",
+            "src_ip": "192.168.10.29",
+            "src_port": 52029,
+            "dest_ip": "203.0.113.29",
+            "dest_port": 443,
+            "proto": "TCP",
+            "tls": {"sni": "c2.validation.pondsec.test", "version": "TLSv1.3"},
+        })
+        event["metadata"].update({
+            "ioc_match": "c2.validation.pondsec.test",
+            "ioc_type": "domain",
+            "reputation": "malicious",
+            "threat_intel_confidence": 0.97,
+            "threat_intel_source": "local-validation-feed",
+            "threat_name": "command and control validation indicator",
+        })
+        detections = ThreatIntelIndicatorDetector().detect([event], [])
+        self.assertEqual(len(detections), 1)
+        self.assertEqual(detections[0]["detector_id"], "pondsec.threat_intel_indicator")
+        self.assertEqual(detections[0]["category"], "command_and_control")
+        incidents = correlate_detections(detections)
+        self.assertEqual(len(incidents), 1)
+        self.assertEqual(incidents[0]["evidence"]["correlation"]["promotion"]["reason"], "strong_detector")
 
     def test_store_migration_inserts_events_and_dashboard_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

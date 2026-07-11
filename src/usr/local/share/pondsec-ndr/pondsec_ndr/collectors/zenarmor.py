@@ -312,10 +312,23 @@ def normalize_zenarmor_event(
         "rule_name": _first(raw, "rule", "rule_name", "rule.name"),
         "domain": _first(raw, "domain", "host", "hostname", "dst_hostname", "query", "sni", "tls_sni", "server_name", "url.domain"),
         "url_path": _url_path(_first(raw, "url", "uri", "http.url")),
+        "url": _safe_url(_first(raw, "url", "uri", "http.url")),
         "tls_sni": _first(raw, "tls_sni", "sni", "server_name", "tls.server_name"),
         "tls_version": _first(raw, "tls_version", "tls.version"),
+        "tls_inspected": _first(raw, "tls_inspected", "tls_inspection", "ssl_inspected", "ssl_inspection", "tls.inspected"),
         "ja3": _first(raw, "ja3", "tls.ja3"),
         "ja4": _first(raw, "ja4", "tls.ja4"),
+        "filename": _basename(_first(raw, "filename", "file_name", "file.name", "http.file.name")),
+        "mime_type": _first(raw, "mime_type", "file_mime_type", "file.mime_type", "http.response.mime_type"),
+        "file_size": _int(_first(raw, "file_size", "file.size", "http.file.size")),
+        "md5": _first(raw, "md5", "file.md5", "hash.md5"),
+        "sha1": _first(raw, "sha1", "file.sha1", "hash.sha1"),
+        "sha256": _first(raw, "sha256", "file.sha256", "hash.sha256"),
+        "file_verdict": _first(raw, "file_verdict", "file.verdict", "file_disposition", "file.disposition"),
+        "sandbox_verdict": _first(raw, "sandbox_verdict", "sandbox.verdict", "sandbox_result", "sandbox.result"),
+        "av_verdict": _first(raw, "av_verdict", "antivirus_verdict", "antivirus.verdict", "malware_verdict"),
+        "email_protocol": _first(raw, "email_protocol", "mail_protocol", "mail.protocol"),
+        "email_attachment": _first(raw, "email_attachment", "mail_attachment", "mail.attachment"),
         "device_id": _first(raw, "device_id", "device.id"),
         "device_name": _first(raw, "device_name", "device.name"),
         "device_os": _first(raw, "device_os", "device.os"),
@@ -419,11 +432,16 @@ def _filter_metadata(metadata: dict[str, Any], import_options: Mapping[str, bool
     groups = {
         "import_applications": {"application", "application_category"},
         "import_categories": {"application_category", "web_category", "security_category"},
-        "import_tls_metadata": {"tls_sni", "tls_version", "ja3", "ja4"},
+        "import_tls_metadata": {"tls_sni", "tls_version", "tls_inspected", "ja3", "ja4"},
         "import_session_context": {"session_id", "bytes_out", "bytes_in", "byte_count", "packet_count", "asn", "country"},
         "import_policy_actions": {"decision", "policy_name", "rule_name"},
         "import_device_context": {"device_id", "device_name", "user"},
-        "import_security_events": {"security_category", "threat_name", "sase_event"},
+        "import_security_events": {
+            "security_category", "threat_name", "sase_event", "filename",
+            "mime_type", "file_size", "md5", "sha1", "sha256",
+            "file_verdict", "sandbox_verdict", "av_verdict",
+            "email_protocol", "email_attachment",
+        },
     }
     for option, keys in groups.items():
         if _enabled(import_options, option):
@@ -463,6 +481,26 @@ def _url_path(value: Any) -> str | None:
     if text.startswith("/"):
         return text.split("?", 1)[0]
     return None
+
+
+def _safe_url(value: Any) -> str | None:
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    parsed = urlsplit(text)
+    path = parsed.path or (text if text.startswith("/") else "")
+    if not path:
+        return None
+    return path.split("?", 1)[0][:256]
+
+
+def _basename(value: Any) -> str | None:
+    if not value:
+        return None
+    text = str(value).replace("\\", "/").rsplit("/", 1)[-1].strip()
+    return text[:256] if text else None
 
 
 def _indexes(raw: Mapping[str, Any]) -> list[str]:

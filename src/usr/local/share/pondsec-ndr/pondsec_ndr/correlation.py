@@ -24,12 +24,17 @@ STRONG_INCIDENT_DETECTORS = {
     "pondsec.credential_bruteforce",
     "pondsec.data_exfiltration",
     "pondsec.dns_tunneling",
+    "pondsec.dns_sinkhole_hit",
     "pondsec.exploit_attempt",
     "pondsec.exploit_blocked",
+    "pondsec.file_sandbox_verdict",
     "pondsec.lateral_movement",
     "pondsec.malware_callback",
     "pondsec.suricata_drop",
+    "pondsec.threat_intel_indicator",
+    "pondsec.url_threat",
     "pondsec.worm_like_propagation",
+    "pondsec.zenarmor_security_event",
 }
 WEB_FANOUT_PORTS = {80, 443, 853}
 
@@ -415,7 +420,17 @@ def _benign_application_context(detections: list[dict[str, Any]]) -> list[str]:
 def _has_reputation_or_signature_context(detections: list[dict[str, Any]]) -> bool:
     for detection in detections:
         evidence = detection.get("evidence") if isinstance(detection.get("evidence"), dict) else {}
-        if evidence.get("signature_id") or evidence.get("signature") or evidence.get("reputation") or evidence.get("threat_intel_confidence"):
+        if (
+            evidence.get("signature_id")
+            or evidence.get("signature")
+            or evidence.get("reputation")
+            or evidence.get("threat_intel_confidence")
+            or evidence.get("threat_name")
+            or evidence.get("security_category")
+            or evidence.get("sandbox_verdict")
+            or evidence.get("av_verdict")
+            or evidence.get("file_verdict")
+        ):
             return True
     return False
 

@@ -24,10 +24,24 @@ def _event_indicator_text(event: dict[str, Any]) -> str:
     return _normalised_indicator_text(
         metadata.get("signature"),
         metadata.get("category"),
+        metadata.get("threat_name"),
+        metadata.get("security_category"),
+        metadata.get("web_category"),
+        metadata.get("application"),
+        metadata.get("application_category"),
         metadata.get("rrname"),
+        metadata.get("query"),
+        metadata.get("domain"),
         metadata.get("sni"),
+        metadata.get("tls_sni"),
+        metadata.get("server_name"),
         metadata.get("hostname"),
         metadata.get("url_path"),
+        metadata.get("filename"),
+        metadata.get("mime_type"),
+        metadata.get("file_verdict"),
+        metadata.get("sandbox_verdict"),
+        metadata.get("av_verdict"),
         metadata.get("http_method"),
         metadata.get("status"),
         metadata.get("auth_result"),
@@ -37,6 +51,123 @@ def _event_indicator_text(event: dict[str, Any]) -> str:
 
 def _has_validation_marker(text: str) -> bool:
     return "pondsec validation" in text or "validation marker" in text or ("pondsec" in text and "validation" in text)
+
+
+HIGH_RISK_URL_TERMS = (
+    "malware",
+    "phishing",
+    "credential",
+    "fraud",
+    "scam",
+    "botnet",
+    "c2",
+    "command and control",
+    "ransomware",
+    "exploit",
+    "drive by",
+    "payload",
+)
+MALWARE_TERMS = (
+    "malware",
+    "trojan",
+    "ransomware",
+    "botnet",
+    "loader",
+    "dropper",
+    "payload",
+    "infected",
+    "eicar",
+)
+PHISHING_TERMS = ("phishing", "credential", "fraud", "scam", "password")
+C2_TERMS = ("c2", "command and control", "botnet", "beacon", "callback")
+EXPLOIT_TERMS = ("exploit", "rce", "remote code execution", "injection", "cve", "traversal")
+BENIGN_WEB_TERMS = (
+    "cdn",
+    "cloudflare",
+    "akamai",
+    "apple",
+    "microsoft",
+    "google",
+    "update",
+    "telemetry",
+    "push",
+)
+BLOCK_DECISIONS = {"block", "blocked", "deny", "denied", "drop", "dropped", "sinkhole", "quarantine"}
+MALICIOUS_VERDICTS = {"malicious", "infected", "malware", "blocked", "quarantine", "quarantined", "denied", "high"}
+SUSPICIOUS_FILE_EXTENSIONS = (
+    ".ps1",
+    ".vbs",
+    ".js",
+    ".jse",
+    ".hta",
+    ".bat",
+    ".cmd",
+    ".scr",
+    ".lnk",
+    ".iso",
+    ".img",
+    ".zip",
+    ".rar",
+    ".7z",
+)
+EICAR_HASHES = {
+    "44d88612fea8a8f36de82e1278abb02f",
+    "3395856ce81f2b7382dee72602f798b642f14140",
+    "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f",
+}
+EMAIL_PORTS = {25, 110, 143, 465, 587, 993, 995}
+
+
+def _metadata(event: dict[str, Any]) -> dict[str, Any]:
+    value = event.get("metadata")
+    return value if isinstance(value, dict) else {}
+
+
+def _first_metadata(metadata: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = metadata.get(key)
+        if value not in (None, "", [], {}):
+            return value
+    return None
+
+
+def _text_contains_any(text: str, terms: tuple[str, ...] | set[str]) -> bool:
+    return any(term in text for term in terms)
+
+
+def _threat_category_from_text(text: str) -> tuple[str, str]:
+    if _text_contains_any(text, PHISHING_TERMS):
+        return "credential_abuse", "phishing_or_credential"
+    if _text_contains_any(text, C2_TERMS):
+        return "command_and_control", "command_and_control"
+    if _text_contains_any(text, EXPLOIT_TERMS):
+        return "exploit_attempt", "exploit"
+    if _text_contains_any(text, MALWARE_TERMS):
+        return "malware", "malware"
+    return "signature", "security_policy"
+
+
+def _domain_or_host(event: dict[str, Any]) -> str | None:
+    metadata = _metadata(event)
+    value = _first_metadata(metadata, "domain", "hostname", "sni", "tls_sni", "server_name", "rrname", "query")
+    return str(value).strip().lower().rstrip(".") if value else None
+
+
+def _provider_id(event: dict[str, Any]) -> str:
+    metadata = _metadata(event)
+    return str(metadata.get("event_source") or event.get("raw_source") or "unknown")
+
+
+def _is_zenarmor_event(event: dict[str, Any]) -> bool:
+    return _provider_id(event) == "zenarmor" or str(event.get("raw_source") or "") == "zenarmor"
+
+
+def _boolish(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value in (None, ""):
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "on", "enabled", "blocked", "sinkhole"}
 
 
 class PortScanDetector(Detector):
@@ -847,6 +978,319 @@ class MalwareCallbackDetector(Detector):
         return detections
 
 
+class ZenarmorSecurityEventDetector(Detector):
+    detector_id = "pondsec.zenarmor_security_event"
+
+    def detect(self, events: list[dict[str, Any]], features: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        detections = []
+        for event in events:
+            if not _is_zenarmor_event(event):
+                continue
+            metadata = _metadata(event)
+            decision = str(metadata.get("decision") or "").lower()
+            text = _event_indicator_text(event)
+            has_security_context = bool(
+                metadata.get("threat_name")
+                or metadata.get("security_category")
+                or _text_contains_any(text, HIGH_RISK_URL_TERMS)
+            )
+            if not has_security_context:
+                continue
+            category, threat_kind = _threat_category_from_text(text)
+            blocked = decision in BLOCK_DECISIONS or event.get("event_type") == "drop"
+            source = event.get("source", {}).get("ip")
+            destination = event.get("destination", {}).get("ip") or _domain_or_host(event)
+            severity = 9 if threat_kind in {"malware", "command_and_control", "exploit"} else 8
+            confidence = 0.94 if blocked and metadata.get("threat_name") else 0.9 if blocked else 0.86
+            detections.append(make_detection(
+                self.detector_id,
+                category,
+                "Zenarmor security event",
+                "Zenarmor exported security, URL, TLS or policy context for a high-risk event.",
+                source,
+                destination,
+                severity,
+                confidence,
+                0.78 if blocked else 0.62,
+                {
+                    "provider_id": "zenarmor",
+                    "event_source": "zenarmor",
+                    "decision": decision or None,
+                    "threat_name": metadata.get("threat_name"),
+                    "security_category": metadata.get("security_category"),
+                    "web_category": metadata.get("web_category"),
+                    "application": metadata.get("application"),
+                    "policy_name": metadata.get("policy_name"),
+                    "rule_name": metadata.get("rule_name"),
+                    "domain": _domain_or_host(event),
+                    "url_path": metadata.get("url_path"),
+                    "tls_sni": metadata.get("tls_sni"),
+                    "tls_inspected": metadata.get("tls_inspected"),
+                    "session_id": metadata.get("session_id"),
+                    "device_name": metadata.get("device_name"),
+                    "byte_count": metadata.get("byte_count"),
+                    "threat_kind": threat_kind,
+                    "provider_prevented": blocked,
+                    "thresholds": [
+                        {"feature": "zenarmor_security_context", "operator": "present", "threshold": "present", "observed": metadata.get("threat_name") or metadata.get("security_category")},
+                        {"feature": "zenarmor_decision", "operator": "in", "threshold": sorted(BLOCK_DECISIONS), "observed": decision or event.get("event_type")},
+                    ],
+                },
+                recommended_action="investigate" if blocked else "block",
+            ))
+        return detections
+
+
+class UrlThreatDetector(Detector):
+    detector_id = "pondsec.url_threat"
+
+    def detect(self, events: list[dict[str, Any]], features: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        detections = []
+        for event in events:
+            if event.get("event_type") not in {"dns", "http", "tls", "alert", "drop"}:
+                continue
+            metadata = _metadata(event)
+            domain = _domain_or_host(event)
+            url_path = metadata.get("url_path")
+            if not domain and not url_path:
+                continue
+            text = _event_indicator_text(event)
+            has_high_risk_context = bool(
+                metadata.get("threat_name")
+                or metadata.get("security_category")
+                or _text_contains_any(text, HIGH_RISK_URL_TERMS)
+                or _has_validation_marker(text)
+            )
+            if not has_high_risk_context:
+                continue
+            if _text_contains_any(text, BENIGN_WEB_TERMS) and not (metadata.get("threat_name") or metadata.get("security_category") or _has_validation_marker(text)):
+                continue
+            category, threat_kind = _threat_category_from_text(text)
+            source = event.get("source", {}).get("ip")
+            destination = event.get("destination", {}).get("ip") or domain
+            provider = _provider_id(event)
+            detections.append(make_detection(
+                self.detector_id,
+                category,
+                "High-risk URL or domain",
+                "URL, DNS or TLS metadata contains high-risk category, threat or validation-marker context.",
+                source,
+                destination,
+                8 if metadata.get("threat_name") or metadata.get("security_category") else 7,
+                0.9 if metadata.get("threat_name") or metadata.get("security_category") else 0.82,
+                0.7,
+                {
+                    "provider_id": provider,
+                    "event_source": provider,
+                    "domain": domain,
+                    "url_path": url_path,
+                    "threat_name": metadata.get("threat_name"),
+                    "security_category": metadata.get("security_category"),
+                    "web_category": metadata.get("web_category"),
+                    "application": metadata.get("application"),
+                    "tls_sni": metadata.get("tls_sni") or metadata.get("sni") or metadata.get("server_name"),
+                    "tls_inspected": metadata.get("tls_inspected"),
+                    "validation_marker": _has_validation_marker(text),
+                    "threat_kind": threat_kind,
+                    "thresholds": [
+                        {"feature": "url_or_domain_security_context", "operator": "present", "threshold": "present", "observed": metadata.get("threat_name") or metadata.get("security_category") or domain},
+                    ],
+                },
+                recommended_action="block",
+            ))
+        return detections
+
+
+class FileSandboxVerdictDetector(Detector):
+    detector_id = "pondsec.file_sandbox_verdict"
+
+    def detect(self, events: list[dict[str, Any]], features: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        detections = []
+        for event in events:
+            metadata = _metadata(event)
+            filename = str(_first_metadata(metadata, "filename", "file_name") or "")
+            hashes = {
+                str(metadata.get("md5") or "").lower(),
+                str(metadata.get("sha1") or "").lower(),
+                str(metadata.get("sha256") or "").lower(),
+            }
+            verdict_text = _normalised_indicator_text(
+                metadata.get("file_verdict"),
+                metadata.get("sandbox_verdict"),
+                metadata.get("av_verdict"),
+                metadata.get("threat_name"),
+                metadata.get("security_category"),
+                metadata.get("mime_type"),
+                filename,
+            )
+            has_file_context = event.get("event_type") == "fileinfo" or bool(filename or (hashes - {""}) or verdict_text.strip())
+            if not has_file_context:
+                continue
+            eicar = bool((hashes - {""}) & EICAR_HASHES) or "eicar" in verdict_text
+            malicious_verdict = eicar or any(term in verdict_text for term in MALICIOUS_VERDICTS) or _text_contains_any(verdict_text, MALWARE_TERMS)
+            suspicious_extension = any(filename.lower().endswith(ext) for ext in SUSPICIOUS_FILE_EXTENSIONS)
+            if not malicious_verdict and not suspicious_extension:
+                continue
+            source = event.get("source", {}).get("ip")
+            destination = event.get("destination", {}).get("ip") or _domain_or_host(event)
+            email_context = self._email_context(event, metadata)
+            detector_id = self.detector_id if malicious_verdict else "pondsec.suspicious_file_transfer"
+            title = "Email-borne file threat" if email_context and malicious_verdict else "File sandbox or malware verdict" if malicious_verdict else "Suspicious file transfer"
+            detections.append(make_detection(
+                detector_id,
+                "malware" if malicious_verdict else "supply_chain",
+                title,
+                "File metadata, hash, AV or sandbox verdict indicates a malicious or risky transferred artifact.",
+                source,
+                destination,
+                9 if malicious_verdict else 5,
+                0.96 if eicar or metadata.get("sandbox_verdict") or metadata.get("av_verdict") else 0.84 if malicious_verdict else 0.68,
+                0.86 if malicious_verdict else 0.45,
+                {
+                    "provider_id": _provider_id(event),
+                    "event_source": _provider_id(event),
+                    "filename": filename or None,
+                    "mime_type": metadata.get("mime_type"),
+                    "file_size": metadata.get("file_size") or metadata.get("size") or metadata.get("seen_bytes") or metadata.get("total_bytes"),
+                    "md5": metadata.get("md5"),
+                    "sha1": metadata.get("sha1"),
+                    "sha256": metadata.get("sha256"),
+                    "file_verdict": metadata.get("file_verdict"),
+                    "sandbox_verdict": metadata.get("sandbox_verdict"),
+                    "av_verdict": metadata.get("av_verdict"),
+                    "threat_name": metadata.get("threat_name"),
+                    "suspicious_extension": suspicious_extension,
+                    "email_context": email_context,
+                    "safe_test_file": eicar,
+                    "signature_required": bool(malicious_verdict),
+                    "thresholds": [
+                        {"feature": "file_or_sandbox_verdict", "operator": "malicious_or_suspicious", "threshold": sorted(MALICIOUS_VERDICTS), "observed": metadata.get("sandbox_verdict") or metadata.get("av_verdict") or metadata.get("file_verdict") or filename},
+                    ],
+                },
+                recommended_action="block" if malicious_verdict else "investigate",
+            ))
+        return detections
+
+    @staticmethod
+    def _email_context(event: dict[str, Any], metadata: dict[str, Any]) -> bool:
+        port = event.get("destination", {}).get("port")
+        app_text = _normalised_indicator_text(
+            metadata.get("application"),
+            metadata.get("application_category"),
+            metadata.get("email_protocol"),
+            metadata.get("email_attachment"),
+            metadata.get("protocol"),
+        )
+        return bool(port in EMAIL_PORTS or "mail" in app_text or "smtp" in app_text or "imap" in app_text or "pop3" in app_text or "webmail" in app_text)
+
+
+class DnsSinkholeDetector(Detector):
+    detector_id = "pondsec.dns_sinkhole_hit"
+
+    def detect(self, events: list[dict[str, Any]], features: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        detections = []
+        for event in events:
+            if event.get("event_type") != "dns":
+                continue
+            metadata = _metadata(event)
+            decision = str(_first_metadata(metadata, "decision", "policy_action", "dns_action") or "").lower()
+            answers = metadata.get("answers") or []
+            if not isinstance(answers, list):
+                answers = [answers]
+            sinkhole = (
+                _boolish(_first_metadata(metadata, "sinkhole", "sinkhole_hit", "dns_sinkhole", "blocked_domain"))
+                or decision in {"sinkhole", "blocked", "block", "deny", "denied"}
+                or any(str(answer) in {"0.0.0.0", "::", "127.0.0.1"} for answer in answers)
+            )
+            if not sinkhole:
+                continue
+            domain = _domain_or_host(event)
+            source = event.get("source", {}).get("ip")
+            detections.append(make_detection(
+                self.detector_id,
+                "command_and_control",
+                "DNS sinkhole hit",
+                "DNS telemetry indicates a blocked or sinkholed domain lookup from an internal entity.",
+                source,
+                domain or event.get("destination", {}).get("ip"),
+                8,
+                0.9,
+                0.74,
+                {
+                    "provider_id": _provider_id(event),
+                    "event_source": _provider_id(event),
+                    "domain": domain,
+                    "decision": decision or None,
+                    "answers": answers[:8],
+                    "security_category": metadata.get("security_category"),
+                    "threat_name": metadata.get("threat_name"),
+                    "provider_prevented": True,
+                    "thresholds": [
+                        {"feature": "dns_sinkhole_decision", "operator": "present", "threshold": "sinkhole_or_blocked", "observed": decision or answers[:3]},
+                    ],
+                },
+                recommended_action="investigate",
+            ))
+        return detections
+
+
+class ThreatIntelIndicatorDetector(Detector):
+    detector_id = "pondsec.threat_intel_indicator"
+
+    def detect(self, events: list[dict[str, Any]], features: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        detections = []
+        for event in events:
+            metadata = _metadata(event)
+            reputation = str(_first_metadata(metadata, "reputation", "domain_reputation", "ip_reputation", "threat_reputation") or "").lower()
+            confidence = self._confidence(metadata)
+            ioc_match = _first_metadata(metadata, "ioc_match", "indicator_match", "threat_intel_match")
+            if not ioc_match and confidence < 0.85 and reputation not in {"malicious", "known_bad", "bad", "high", "block", "blocked"}:
+                continue
+            text = _event_indicator_text(event) + " " + reputation
+            category, threat_kind = _threat_category_from_text(text)
+            source = event.get("source", {}).get("ip")
+            destination = event.get("destination", {}).get("ip") or _domain_or_host(event)
+            detections.append(make_detection(
+                self.detector_id,
+                category if category != "signature" else "command_and_control",
+                "Threat-intel indicator match",
+                "Local or provider-supplied threat intelligence matched the IP, domain, URL or file indicator.",
+                source,
+                destination,
+                9 if confidence >= 0.95 or reputation in {"malicious", "known_bad"} else 8,
+                min(0.98, max(0.86, confidence)),
+                min(1.0, confidence),
+                {
+                    "provider_id": _provider_id(event),
+                    "event_source": _provider_id(event),
+                    "indicator": ioc_match or _domain_or_host(event) or destination,
+                    "ioc_type": metadata.get("ioc_type") or metadata.get("indicator_type"),
+                    "reputation": reputation or None,
+                    "threat_intel_confidence": confidence,
+                    "threat_intel_source": metadata.get("threat_intel_source") or metadata.get("intel_source"),
+                    "threat_name": metadata.get("threat_name"),
+                    "threat_kind": threat_kind,
+                    "thresholds": [
+                        {"feature": "threat_intel_confidence", "operator": ">=", "threshold": 0.85, "observed": confidence},
+                        {"feature": "reputation", "operator": "in", "threshold": "malicious/known_bad/high", "observed": reputation},
+                    ],
+                },
+                recommended_action="block",
+            ))
+        return detections
+
+    @staticmethod
+    def _confidence(metadata: dict[str, Any]) -> float:
+        for key in ("threat_intel_confidence", "ioc_confidence", "reputation_confidence", "confidence"):
+            value = metadata.get(key)
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                continue
+            return number / 100 if number > 1 else number
+        return 0.0
+
+
 class HostBaselineAnomalyDetector(Detector):
     detector_id = "pondsec.host_baseline_anomaly"
     ready_statuses = {"complete", "updated", "uncertain", "established"}
@@ -1088,5 +1532,10 @@ def default_detectors() -> list[Detector]:
         SupplyChainCallbackDetector(),
         ExploitAttemptDetector(),
         MalwareCallbackDetector(),
+        ZenarmorSecurityEventDetector(),
+        UrlThreatDetector(),
+        FileSandboxVerdictDetector(),
+        DnsSinkholeDetector(),
+        ThreatIntelIndicatorDetector(),
         SuricataAlertAdapter(),
     ]
