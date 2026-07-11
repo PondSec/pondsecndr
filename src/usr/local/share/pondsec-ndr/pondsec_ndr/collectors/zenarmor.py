@@ -244,6 +244,19 @@ class ZenarmorSyslogCollector:
 
 
 def parse_zenarmor_line(line: str) -> dict[str, Any]:
+    data_match = re.search(r"\bdata=(\{.*\})\s*$", line)
+    if data_match:
+        try:
+            parsed = json.loads(data_match.group(1))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Zenarmor data JSON parse error: {exc.msg}") from exc
+        if not isinstance(parsed, dict):
+            raise ValueError("Zenarmor data payload is not an object")
+        prefix = line[:data_match.start()]
+        for key, value in re.findall(r"([A-Za-z0-9_.-]+)=([^,\s]+)", prefix):
+            parsed.setdefault(key, value.rstrip(","))
+        return parsed
+
     json_start = line.find("{")
     if json_start >= 0:
         try:
@@ -266,20 +279,25 @@ def normalize_zenarmor_event(
     remote_target: str = "",
     import_options: Mapping[str, bool] | None = None,
 ) -> dict[str, Any] | None:
-    timestamp = parse_timestamp(_first(raw, "timestamp", "@timestamp", "time", "ts", "event_time", "start_time"))
+    timestamp = _zenarmor_timestamp(_first(raw, "timestamp", "@timestamp", "time", "ts", "event_time", "start_time"))
     if not timestamp:
         raise ValueError("Zenarmor event has invalid timestamp")
 
-    source_ip = valid_ip(_first(raw, "src_ip", "source_ip", "src", "client_ip", "local_ip", "source.ip"))
-    destination_ip = valid_ip(_first(raw, "dst_ip", "dest_ip", "destination_ip", "dst", "server_ip", "remote_ip", "destination.ip"))
+    source_ip = valid_ip(_first(raw, "src_ip", "source_ip", "src", "client_ip", "local_ip", "ip_src_saddr", "source.ip"))
+    destination_ip = valid_ip(_first(raw, "dst_ip", "dest_ip", "destination_ip", "dst", "server_ip", "remote_ip", "ip_dst_saddr", "destination.ip"))
     if not source_ip and not destination_ip:
         return None
 
-    source_port = valid_port(_first(raw, "src_port", "source_port", "sport", "source.port"))
-    destination_port = valid_port(_first(raw, "dst_port", "dest_port", "destination_port", "dport", "destination.port"))
-    protocol = str(_first(raw, "protocol", "proto", "network.protocol") or "").upper() or None
-    decision = str(_first(raw, "decision", "action", "verdict", "policy_action", "event.action") or "").lower()
+    source_port = valid_port(_first(raw, "src_port", "source_port", "sport", "ip_src_port", "source.port"))
+    destination_port = valid_port(_first(raw, "dst_port", "dest_port", "destination_port", "dport", "ip_dst_port", "destination.port"))
+    protocol = str(_first(raw, "protocol", "proto", "transport_proto", "network.protocol") or "").upper() or None
+    decision = _decision(raw)
     event_type = _event_type(raw, decision)
+    bytes_out = _int(_first(raw, "bytes_out", "sent_bytes", "source.bytes", "src_nbytes", "output"))
+    bytes_in = _int(_first(raw, "bytes_in", "received_bytes", "destination.bytes", "dst_nbytes", "input"))
+    packet_count = _int(_first(raw, "packets", "packet_count", "network.packets"))
+    if not packet_count:
+        packet_count = _int(_first(raw, "src_npackets")) + _int(_first(raw, "dst_npackets"))
 
     metadata = {
         "event_source": "zenarmor",
@@ -287,27 +305,33 @@ def normalize_zenarmor_event(
         "remote_target": remote_target or None,
         "application": _first(raw, "application", "app", "app_name", "application.name"),
         "application_category": _first(raw, "application_category", "app_category", "appcat", "application.category"),
-        "web_category": _first(raw, "web_category", "category", "url_category", "web.category"),
+        "web_category": _first(raw, "web_category", "category", "domain_categories", "url_category", "web.category"),
         "security_category": _first(raw, "security_category", "threat_category", "security.category"),
         "decision": decision or None,
         "policy_name": _first(raw, "policy", "policy_name", "policy.name"),
         "rule_name": _first(raw, "rule", "rule_name", "rule.name"),
-        "domain": _first(raw, "domain", "host", "hostname", "sni", "tls_sni", "server_name", "url.domain"),
+        "domain": _first(raw, "domain", "host", "hostname", "dst_hostname", "query", "sni", "tls_sni", "server_name", "url.domain"),
         "url_path": _url_path(_first(raw, "url", "uri", "http.url")),
         "tls_sni": _first(raw, "tls_sni", "sni", "server_name", "tls.server_name"),
         "tls_version": _first(raw, "tls_version", "tls.version"),
         "ja3": _first(raw, "ja3", "tls.ja3"),
         "ja4": _first(raw, "ja4", "tls.ja4"),
         "device_id": _first(raw, "device_id", "device.id"),
-        "device_name": _first(raw, "device", "device_name", "device.name"),
-        "session_id": _first(raw, "session_id", "session.id", "conn_id"),
-        "user": _first(raw, "user", "username", "user.name"),
+        "device_name": _first(raw, "device_name", "device.name"),
+        "device_os": _first(raw, "device_os", "device.os"),
+        "device_vendor": _first(raw, "device_vendor", "device.vendor"),
+        "session_id": _first(raw, "session_id", "session.id", "conn_id", "conn_uuid"),
+        "connection_uuid": _first(raw, "conn_uuid"),
+        "interface": _first(raw, "interface", "source.interface"),
+        "vlan_id": _first(raw, "vlan", "vlanid"),
+        "community_id": _first(raw, "community_id"),
+        "user": _first(raw, "user", "username", "src_username", "user.name"),
         "asn": _first(raw, "asn", "destination.asn"),
         "country": _first(raw, "country", "destination.country"),
         "sase_event": _first(raw, "sase_event", "sase.event", "ztna_event"),
-        "bytes_out": _int(_first(raw, "bytes_out", "sent_bytes", "source.bytes")),
-        "bytes_in": _int(_first(raw, "bytes_in", "received_bytes", "destination.bytes")),
-        "packet_count": _int(_first(raw, "packets", "packet_count", "network.packets")),
+        "bytes_out": bytes_out,
+        "bytes_in": bytes_in,
+        "packet_count": packet_count,
         "threat_name": _first(raw, "threat", "threat_name", "signature", "alert.signature"),
         "indexes": _indexes(raw),
         "integration_notes": "exported_reporting_data_only",
@@ -335,13 +359,53 @@ def normalize_zenarmor_event(
 def _event_type(raw: Mapping[str, Any], decision: str) -> str:
     if decision in {"block", "blocked", "deny", "denied", "drop", "dropped"}:
         return "drop"
+    indexes = {item.lower() for item in _indexes(raw)}
+    if "alert" in indexes:
+        return "alert"
+    if "dns" in indexes:
+        return "dns"
+    if "http" in indexes:
+        return "http"
+    if "tls" in indexes:
+        return "tls"
     if _first(raw, "threat", "threat_name", "signature", "alert.signature"):
         return "alert"
+    if _first(raw, "query", "qtype", "dns.question.name"):
+        return "dns"
     if _first(raw, "tls_sni", "sni", "server_name", "tls.version", "tls_version"):
         return "tls"
     if _first(raw, "url", "uri", "host", "hostname", "web_category"):
         return "http"
     return "flow"
+
+
+def _zenarmor_timestamp(value: Any) -> str | None:
+    if value in (None, ""):
+        return parse_timestamp(value)
+    if isinstance(value, (int, float)):
+        number = float(value)
+        if number > 10_000_000_000:
+            number /= 1000
+        return parse_timestamp(number)
+    text = str(value).strip()
+    if re.fullmatch(r"\d+(\.\d+)?", text):
+        number = float(text)
+        if number > 10_000_000_000:
+            number /= 1000
+        return parse_timestamp(number)
+    return parse_timestamp(value)
+
+
+def _decision(raw: Mapping[str, Any]) -> str:
+    explicit = _first(raw, "decision", "action", "verdict", "policy_action", "event.action")
+    blocked = _first(raw, "is_blocked", "blocked")
+    if blocked not in (None, ""):
+        text = str(blocked).strip().lower()
+        if text in {"1", "true", "yes"}:
+            return "blocked"
+        if text in {"0", "false", "no"}:
+            return "allowed"
+    return str(explicit or "").strip().lower()
 
 
 def _enabled(import_options: Mapping[str, bool], key: str) -> bool:

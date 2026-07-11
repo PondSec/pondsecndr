@@ -591,6 +591,41 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(events2, [])
             self.assertEqual(stats2.read_lines, 0)
 
+    def test_zenarmor_syslog_data_export_uses_real_field_names(self) -> None:
+        line = (
+            '<6>2026-07-11T15:19:47+02:00 HWFirewall01.internal zenarmor[79555]: '
+            'daemon=zenarmor, index=tls, data={"start_time":1783775983000,'
+            '"transport_proto":"TCP","interface":"igb0_vlan10","vlanid":"0",'
+            '"conn_uuid":"af494f36-86fd-4f9a-8793-eb77caf55128",'
+            '"ip_src_saddr":"192.168.10.146","ip_src_port":38736,'
+            '"ip_dst_saddr":"13.217.9.161","ip_dst_port":443,'
+            '"is_blocked":0,"src_npackets":6,"dst_npackets":7,'
+            '"src_nbytes":762,"dst_nbytes":5013,"app_name":"Dynamic Classifier",'
+            '"app_category":"Dynamic Classifier","server_name":"dcape-na.amazon.com",'
+            '"category":"Shopping","device":{"id":"b4107a5a9bc9","name":"Other Device",'
+            '"vendor":"Amazon Technologies Inc.","os":"Android OS"},'
+            '"community_id":"1:nNLbsf4PZjmT6d/IPwWRLmx3ZUM=","ja3":"5b5b"}'
+        )
+        raw = parse_zenarmor_line(line)
+        self.assertEqual(raw["index"], "tls")
+        event = normalize_zenarmor_event(raw, sensor_name="zenarmor-local")
+        self.assertIsNotNone(event)
+        assert event is not None
+        self.assertEqual(event["timestamp"], "2026-07-11T13:19:43+00:00")
+        self.assertEqual(event["event_type"], "tls")
+        self.assertEqual(event["source"]["ip"], "192.168.10.146")
+        self.assertEqual(event["destination"]["ip"], "13.217.9.161")
+        self.assertEqual(event["destination"]["port"], 443)
+        self.assertEqual(event["protocol"], "TCP")
+        self.assertEqual(event["metadata"]["decision"], "allowed")
+        self.assertEqual(event["metadata"]["application"], "Dynamic Classifier")
+        self.assertEqual(event["metadata"]["tls_sni"], "dcape-na.amazon.com")
+        self.assertEqual(event["metadata"]["device_id"], "b4107a5a9bc9")
+        self.assertEqual(event["metadata"]["device_os"], "Android OS")
+        self.assertEqual(event["metadata"]["packet_count"], 13)
+        self.assertEqual(event["metadata"]["byte_count"], 5775)
+        self.assertEqual(event["metadata"]["indexes"], ["tls"])
+
     def test_zenarmor_import_options_filter_optional_context(self) -> None:
         event = normalize_zenarmor_event({
             "timestamp": "2026-07-05T10:00:00+00:00",
