@@ -1,3 +1,9 @@
+{% set threat_intel = OPNsense.pondsecndr.threat_intel|default({}) %}
+{% set zeek = OPNsense.pondsecndr.zeek|default({}) %}
+{% set zeek_logs = zeek.logs|default({}) %}
+{% set zenarmor = OPNsense.pondsecndr.zenarmor|default({}) %}
+{% set netflow = OPNsense.pondsecndr.netflow|default({}) %}
+{% set dnsmasq = OPNsense.pondsecndr.dnsmasq|default({}) %}
 {
   "enabled": "{{ OPNsense.pondsecndr.general.enabled|default("0") }}",
   "mode": "{{ OPNsense.pondsecndr.general.mode|default("monitor") }}",
@@ -57,59 +63,59 @@
     "false_positive_feedback_days": "{{ OPNsense.pondsecndr.detection.false_positive_feedback_days|default("14") }}"
   },
   "threat_intel": {
-    "cve_enrichment": "{{ OPNsense.pondsecndr.threat_intel.cve_enrichment|default("1") }}",
-    "external_lookup": "{{ OPNsense.pondsecndr.threat_intel.external_lookup|default("0") }}",
-    "cache_ttl_hours": "{{ OPNsense.pondsecndr.threat_intel.cache_ttl_hours|default("24") }}",
-    "api_timeout_seconds": "{{ OPNsense.pondsecndr.threat_intel.api_timeout_seconds|default("5") }}"
+    "cve_enrichment": "{{ threat_intel.cve_enrichment|default("1") }}",
+    "external_lookup": "{{ threat_intel.external_lookup|default("0") }}",
+    "cache_ttl_hours": "{{ threat_intel.cache_ttl_hours|default("24") }}",
+    "api_timeout_seconds": "{{ threat_intel.api_timeout_seconds|default("5") }}"
   },
   "zeek": {
-    "enabled": "{{ OPNsense.pondsecndr.zeek.enabled|default("0") }}",
-    "mode": "{{ OPNsense.pondsecndr.zeek.mode|default("external") }}",
-    "parser": "{{ OPNsense.pondsecndr.zeek.parser|default("tsv") }}",
-    "sensor_name": "{{ OPNsense.pondsecndr.zeek.sensor_name|default("") }}",
-    "interface": "{{ OPNsense.pondsecndr.zeek.interface|default("") }}",
-    "remote_target": "{{ OPNsense.pondsecndr.zeek.remote_target|default("") }}",
-    "log_dir": "{{ OPNsense.pondsecndr.zeek.log_dir|default("/var/log/zeek/current") }}",
-    "start_at_end": "{{ OPNsense.pondsecndr.zeek.start_at_end|default("1") }}",
+    "enabled": "{{ zeek.enabled|default("0") }}",
+    "mode": "{{ zeek.mode|default("external") }}",
+    "parser": "{{ zeek.parser|default("tsv") }}",
+    "sensor_name": "{{ zeek.sensor_name|default("") }}",
+    "interface": "{{ zeek.interface|default("") }}",
+    "remote_target": "{{ zeek.remote_target|default("") }}",
+    "log_dir": "{{ zeek.log_dir|default("/var/log/zeek/current") }}",
+    "start_at_end": "{{ zeek.start_at_end|default("1") }}",
     "logs": {
-      "conn": "{{ OPNsense.pondsecndr.zeek.conn_log|default("conn.log") }}",
-      "dns": "{{ OPNsense.pondsecndr.zeek.dns_log|default("dns.log") }}",
-      "ssl": "{{ OPNsense.pondsecndr.zeek.ssl_log|default("ssl.log") }}",
-      "x509": "{{ OPNsense.pondsecndr.zeek.x509_log|default("x509.log") }}",
-      "http": "{{ OPNsense.pondsecndr.zeek.http_log|default("http.log") }}",
-      "files": "{{ OPNsense.pondsecndr.zeek.files_log|default("files.log") }}",
-      "notice": "{{ OPNsense.pondsecndr.zeek.notice_log|default("notice.log") }}",
-      "weird": "{{ OPNsense.pondsecndr.zeek.weird_log|default("weird.log") }}"
+      "conn": "{{ zeek_logs.conn|default(zeek.conn_log|default("conn.log")) }}",
+      "dns": "{{ zeek_logs.dns|default(zeek.dns_log|default("dns.log")) }}",
+      "ssl": "{{ zeek_logs.ssl|default(zeek.ssl_log|default("ssl.log")) }}",
+      "x509": "{{ zeek_logs.x509|default(zeek.x509_log|default("x509.log")) }}",
+      "http": "{{ zeek_logs.http|default(zeek.http_log|default("http.log")) }}",
+      "files": "{{ zeek_logs.files|default(zeek.files_log|default("files.log")) }}",
+      "notice": "{{ zeek_logs.notice|default(zeek.notice_log|default("notice.log")) }}",
+      "weird": "{{ zeek_logs.weird|default(zeek.weird_log|default("weird.log")) }}"
     }
   },
   "zenarmor": {
-    "enabled": "{{ OPNsense.pondsecndr.zenarmor.enabled|default("0") }}",
-    "source": "{{ OPNsense.pondsecndr.zenarmor.source|default("syslog_export") }}",
-    "sensor_name": "{{ OPNsense.pondsecndr.zenarmor.sensor_name|default("") }}",
-    "remote_target": "{{ OPNsense.pondsecndr.zenarmor.remote_target|default("") }}",
-    "syslog_path": "{{ OPNsense.pondsecndr.zenarmor.syslog_path|default("/var/log/zenarmor/streaming.log") }}",
-    "start_at_end": "{{ OPNsense.pondsecndr.zenarmor.start_at_end|default("1") }}",
-    "api_enabled": "{{ OPNsense.pondsecndr.zenarmor.api_enabled|default("0") }}",
-    "api_base_url": "{{ OPNsense.pondsecndr.zenarmor.api_base_url|default("") }}",
-    "api_key_ref": "{{ OPNsense.pondsecndr.zenarmor.api_key_ref|default("") }}"
+    "enabled": "{{ zenarmor.enabled|default("0") }}",
+    "source": "{{ zenarmor.source|default("syslog_export") }}",
+    "sensor_name": "{{ zenarmor.sensor_name|default("") }}",
+    "remote_target": "{{ zenarmor.remote_target|default("") }}",
+    "syslog_path": "{{ zenarmor.syslog_path|default("/var/log/zenarmor/streaming.log") }}",
+    "start_at_end": "{{ zenarmor.start_at_end|default("1") }}",
+    "api_enabled": "{{ zenarmor.api_enabled|default("0") }}",
+    "api_base_url": "{{ zenarmor.api_base_url|default("") }}",
+    "api_key_ref": "{{ zenarmor.api_key_ref|default("") }}"
   },
   "netflow": {
-    "enabled": "{{ OPNsense.pondsecndr.netflow.enabled|default("0") }}",
-    "listen_address": "{{ OPNsense.pondsecndr.netflow.listen_address|default("127.0.0.1") }}",
-    "port": "{{ OPNsense.pondsecndr.netflow.port|default("2055") }}",
-    "allowed_exporters": "{{ OPNsense.pondsecndr.netflow.allowed_exporters|default("") }}",
-    "sampling_rate": "{{ OPNsense.pondsecndr.netflow.sampling_rate|default("1") }}",
-    "template_ttl_seconds": "{{ OPNsense.pondsecndr.netflow.template_ttl_seconds|default("3600") }}",
-    "retention_days": "{{ OPNsense.pondsecndr.netflow.retention_days|default("30") }}",
-    "max_datagrams_per_run": "{{ OPNsense.pondsecndr.netflow.max_datagrams_per_run|default("1000") }}"
+    "enabled": "{{ netflow.enabled|default("0") }}",
+    "listen_address": "{{ netflow.listen_address|default("127.0.0.1") }}",
+    "port": "{{ netflow.port|default("2055") }}",
+    "allowed_exporters": "{{ netflow.allowed_exporters|default("") }}",
+    "sampling_rate": "{{ netflow.sampling_rate|default("1") }}",
+    "template_ttl_seconds": "{{ netflow.template_ttl_seconds|default("3600") }}",
+    "retention_days": "{{ netflow.retention_days|default("30") }}",
+    "max_datagrams_per_run": "{{ netflow.max_datagrams_per_run|default("1000") }}"
   },
   "dnsmasq": {
-    "enabled": "{{ OPNsense.pondsecndr.dnsmasq.enabled|default("0") }}",
-    "sensor_name": "{{ OPNsense.pondsecndr.dnsmasq.sensor_name|default("") }}",
-    "dns_log_path": "{{ OPNsense.pondsecndr.dnsmasq.dns_log_path|default("/var/log/resolver/latest.log") }}",
-    "dhcp_log_path": "{{ OPNsense.pondsecndr.dnsmasq.dhcp_log_path|default("/var/log/dhcpd/latest.log") }}",
-    "lease_path": "{{ OPNsense.pondsecndr.dnsmasq.lease_path|default("/var/db/dnsmasq.leases") }}",
-    "start_at_end": "{{ OPNsense.pondsecndr.dnsmasq.start_at_end|default("1") }}"
+    "enabled": "{{ dnsmasq.enabled|default("0") }}",
+    "sensor_name": "{{ dnsmasq.sensor_name|default("") }}",
+    "dns_log_path": "{{ dnsmasq.dns_log_path|default("/var/log/resolver/latest.log") }}",
+    "dhcp_log_path": "{{ dnsmasq.dhcp_log_path|default("/var/log/dhcpd/latest.log") }}",
+    "lease_path": "{{ dnsmasq.lease_path|default("/var/db/dnsmasq.leases") }}",
+    "start_at_end": "{{ dnsmasq.start_at_end|default("1") }}"
   },
   "response": {
     "mode": "{{ OPNsense.pondsecndr.response.mode|default("observe") }}",
