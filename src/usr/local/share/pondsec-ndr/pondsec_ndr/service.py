@@ -185,7 +185,7 @@ class PondSecService:
             self.config.incident_rate_limit_per_minute,
         )
         inserted_incidents = self.store.insert_incidents(incidents)
-        anomalous_sources = {detection["source_ip"] for detection in detections if detection.get("source_ip")}
+        anomalous_sources = self._baseline_skip_sources(detections)
         baseline_updates = self.store.update_host_baselines(features, skip_sources=anomalous_sources)
         response_actions = self._auto_response(incidents)
         cleaned = self.store.cleanup(self.config.retention_days)
@@ -432,6 +432,13 @@ class PondSecService:
         detections = incident.get("evidence", {}).get("detections", [])
         detector_ids = {item.get("detector_id") for item in detections if isinstance(item, dict)}
         return detector_ids == {"pondsec.host_baseline_anomaly"}
+
+    def _baseline_skip_sources(self, detections: list[dict[str, Any]]) -> set[str]:
+        anomalous_sources = {detection["source_ip"] for detection in detections if detection.get("source_ip")}
+        if not anomalous_sources:
+            return set()
+        feedback_sources = self.store.false_positive_feedback_sources(self.config.detection.false_positive_feedback_days)
+        return anomalous_sources - feedback_sources
 
     @staticmethod
     def _is_expected_response_denial(reason: str) -> bool:

@@ -1153,6 +1153,38 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(result["status"], "ok")
             self.assertIsNone(store.get_incident("incident-delete-test"))
 
+    def test_false_positive_feedback_relaxes_future_host_baseline_skip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = PondSecConfig(
+                data_dir=root / "db",
+                log_dir=root / "log",
+                run_dir=root / "run",
+                detection=DetectionConfig(false_positive_feedback_days=14),
+            )
+            service = PondSecService(config)
+            service.store.insert_incidents([{
+                "incident_id": "incident-false-positive-feedback",
+                "title": "False positive feedback",
+                "status": "open",
+                "risk_score": 71,
+                "severity": 7,
+                "confidence": 0.8,
+                "source_ip": "192.168.10.11",
+                "destination_ip": "198.51.100.11",
+                "category": "anomaly",
+                "created_at": "2026-07-05T10:00:00+00:00",
+                "updated_at": "2026-07-05T10:00:00+00:00",
+                "evidence": {},
+                "risk_factors": [],
+            }])
+            changed = service.store.update_incident_status("incident-false-positive-feedback", "false_positive", actor="test")
+            self.assertTrue(changed)
+            self.assertIn("192.168.10.11", service.store.false_positive_feedback_sources(14))
+            self.assertEqual(len(service.store.list_rows("incident_feedback")), 1)
+            self.assertEqual(service._baseline_skip_sources([{"source_ip": "192.168.10.11"}]), set())
+            self.assertEqual(service._baseline_skip_sources([{"source_ip": "192.168.10.12"}]), {"192.168.10.12"})
+
     def test_delete_incident_denies_active_response_blocks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = EventStore(Path(tmp) / "pondsec-ndr.db")

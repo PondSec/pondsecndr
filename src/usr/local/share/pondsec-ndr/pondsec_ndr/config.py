@@ -111,6 +111,7 @@ class DetectionConfig:
     minimum_observations: int = 50
     minimum_incident_confidence: int = 75
     correlation_window_minutes: int = 30
+    false_positive_feedback_days: int = 14
 
     def learning_status(self, now: datetime | None = None) -> dict[str, Any]:
         now = now or datetime.now(timezone.utc)
@@ -254,6 +255,8 @@ class PondSecConfig:
             errors.append("pf_action_rate_limit_per_minute must be positive")
         if self.detection.correlation_window_minutes < 1:
             errors.append("correlation_window_minutes must be positive")
+        if self.detection.false_positive_feedback_days < 1:
+            errors.append("false_positive_feedback_days must be positive")
         if self.threat_intel.cache_ttl_hours < 1:
             errors.append("threat_intel cache_ttl_hours must be positive")
         if self.response.max_internal_isolations_per_hour < 0:
@@ -339,6 +342,7 @@ def load_config(path: Path | None = None) -> PondSecConfig:
             minimum_observations=_int(detection.get("minimum_observations"), 50, 1, 1000000),
             minimum_incident_confidence=_int(detection.get("minimum_incident_confidence"), 75, 1, 100),
             correlation_window_minutes=_int(detection.get("correlation_window_minutes"), 30, 1, 1440),
+            false_positive_feedback_days=_int(detection.get("false_positive_feedback_days"), 14, 1, 365),
         ),
         threat_intel=ThreatIntelConfig(
             cve_enrichment=_bool(threat_intel.get("cve_enrichment"), True),

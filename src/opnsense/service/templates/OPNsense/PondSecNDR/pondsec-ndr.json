@@ -52,7 +52,8 @@
     "early_ai_activation_override": "{{ OPNsense.pondsecndr.detection.early_ai_activation_override|default("0") }}",
     "learning_phase_observations": "{{ OPNsense.pondsecndr.detection.learning_phase_observations|default("1000") }}",
     "minimum_observations": "{{ OPNsense.pondsecndr.detection.minimum_observations|default("50") }}",
-    "minimum_incident_confidence": "{{ OPNsense.pondsecndr.detection.minimum_incident_confidence|default("75") }}"
+    "minimum_incident_confidence": "{{ OPNsense.pondsecndr.detection.minimum_incident_confidence|default("75") }}",
+    "false_positive_feedback_days": "{{ OPNsense.pondsecndr.detection.false_positive_feedback_days|default("14") }}"
   },
   "response": {
     "mode": "{{ OPNsense.pondsecndr.response.mode|default("observe") }}",

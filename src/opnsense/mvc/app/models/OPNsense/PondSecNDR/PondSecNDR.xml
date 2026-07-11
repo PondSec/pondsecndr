@@ -236,6 +236,12 @@
                 <MaximumValue>1440</MaximumValue>
                 <Required>Y</Required>
             </correlation_window_minutes>
+            <false_positive_feedback_days type="IntegerField">
+                <default>14</default>
+                <MinimumValue>1</MinimumValue>
+                <MaximumValue>365</MaximumValue>
+                <Required>Y</Required>
+            </false_positive_feedback_days>
         </detection>
         <threat_intel>
             <cve_enrichment type="BooleanField">

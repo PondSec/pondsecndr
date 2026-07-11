@@ -314,6 +314,17 @@ SCHEMA = [
         detail_json TEXT NOT NULL
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS incident_feedback (
+        feedback_id TEXT PRIMARY KEY,
+        incident_id TEXT NOT NULL,
+        source_ip TEXT,
+        feedback_type TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        detail_json TEXT NOT NULL
+    )
+    """,
     "CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp)",
     "CREATE INDEX IF NOT EXISTS idx_events_source ON events(source_ip)",
     "CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type)",
@@ -322,6 +333,7 @@ SCHEMA = [
     "CREATE INDEX IF NOT EXISTS idx_incidents_status ON incidents(status)",
     "CREATE INDEX IF NOT EXISTS idx_incidents_source ON incidents(source_ip)",
     "CREATE INDEX IF NOT EXISTS idx_incidents_dedupe ON incidents(status, source_ip, category, destination_ip, validation_tag, last_seen)",
+    "CREATE INDEX IF NOT EXISTS idx_incident_feedback_source ON incident_feedback(feedback_type, source_ip, created_at)",
 ]
 
 INCIDENT_V2_COLUMNS = {
@@ -1066,6 +1078,19 @@ class EventStore:
                     "UPDATE hosts SET open_incidents = (SELECT count(*) FROM incidents WHERE status = 'open' AND source_ip = ?) WHERE ip = ?",
                     (source["source_ip"], source["source_ip"]),
                 )
+                if status == "false_positive":
+                    self._record_incident_feedback(
+                        conn,
+                        incident_id,
+                        source["source_ip"],
+                        "false_positive",
+                        actor,
+                        {
+                            "scope": "host_local_baseline",
+                            "effect": "future baseline updates for this host may include similar observations",
+                            "global_rule_change": False,
+                        },
+                    )
             return changed > 0
 
     def delete_incident(self, incident_id: str, actor: str = "system") -> dict[str, Any]:
@@ -1345,6 +1370,7 @@ class EventStore:
             "hosts",
             "service_health",
             "collector_offsets",
+            "incident_feedback",
             "audit_log",
         ]
         deleted: dict[str, int] = {}
@@ -1368,6 +1394,21 @@ class EventStore:
     def audit_response_decision(self, incident_id: str | None, action: str, detail: dict[str, Any], actor: str = "system") -> None:
         with self.connect() as conn:
             self._audit(conn, actor, f"response.{action}", incident_id, detail)
+
+    def false_positive_feedback_sources(self, since_days: int = 14) -> set[str]:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=max(1, int(since_days)))).isoformat()
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT source_ip
+                FROM incident_feedback
+                WHERE feedback_type = 'false_positive'
+                  AND source_ip IS NOT NULL
+                  AND created_at >= ?
+                """,
+                (cutoff,),
+            ).fetchall()
+        return {str(row["source_ip"]) for row in rows if row["source_ip"]}
 
     def merge_incidents(self, primary_id: str, secondary_id: str, actor: str = "system") -> dict[str, Any]:
         if primary_id == secondary_id:
@@ -1426,6 +1467,24 @@ class EventStore:
             (str(uuid4()), now_iso(), actor, action, target, json.dumps(detail, sort_keys=True)),
         )
 
+    def _record_incident_feedback(
+        self,
+        conn: sqlite3.Connection,
+        incident_id: str,
+        source_ip: str | None,
+        feedback_type: str,
+        actor: str,
+        detail: dict[str, Any],
+    ) -> None:
+        conn.execute(
+            """
+            INSERT INTO incident_feedback(
+                feedback_id, incident_id, source_ip, feedback_type, created_at, actor, detail_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (str(uuid4()), incident_id, source_ip, feedback_type, now_iso(), actor, json.dumps(detail, sort_keys=True)),
+        )
+
     def set_health(self, status: str, pid: int | None, detail: dict[str, Any]) -> None:
         with self.connect() as conn:
             conn.execute(
@@ -1461,7 +1520,7 @@ class EventStore:
         return parsed[0] if parsed else None
 
     def list_rows(self, table: str, limit: int = 100) -> list[dict[str, Any]]:
-        allowed = {"events", "detections", "incidents", "hosts", "block_entries", "allowlist_entries", "policies", "models", "audit_log"}
+        allowed = {"events", "detections", "incidents", "hosts", "block_entries", "allowlist_entries", "policies", "models", "audit_log", "incident_feedback"}
         if table not in allowed:
             raise ValueError(f"unsupported table: {table}")
         order = "timestamp" if table in {"events", "detections", "audit_log"} else "rowid"

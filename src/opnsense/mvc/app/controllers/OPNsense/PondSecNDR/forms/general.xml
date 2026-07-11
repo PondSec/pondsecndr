@@ -246,6 +246,12 @@
         <type>text</type>
     </field>
     <field>
+        <id>pondsecndr.detection.false_positive_feedback_days</id>
+        <label>False-positive feedback days</label>
+        <type>text</type>
+        <help>Host-local feedback window. Marking an incident false-positive can help future baseline updates for that host without changing global rules.</help>
+    </field>
+    <field>
         <id>pondsecndr.detection.correlation_window_minutes</id>
         <label>Case correlation window</label>
         <type>text</type>
