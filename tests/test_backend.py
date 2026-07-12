@@ -1299,6 +1299,68 @@ igb0_vlan10: flags=1008943<UP,BROADCAST,RUNNING>
         self.assertEqual(promotion["decision"], "suppressed")
         self.assertIn(promotion["reason"], {"dns_query_names_missing", "risk_score_below_incident_floor"})
 
+    def test_single_low_risk_exfiltration_detection_does_not_open_incident(self) -> None:
+        detection = {
+            "detection_id": "d-exfil-single-low-risk",
+            "detector_id": "pondsec.data_exfiltration",
+            "detector_version": "1",
+            "category": "exfiltration",
+            "title": "Possible data exfiltration",
+            "description": "Host uploaded substantially more data than it downloaded.",
+            "timestamp": "2026-07-05T10:00:00+00:00",
+            "source_ip": "192.168.10.181",
+            "destination_ip": None,
+            "severity": 8,
+            "confidence": 0.96,
+            "anomaly_score": 1.0,
+            "evidence": {
+                "bytes_out": 1_500_000_000,
+                "non_dns_bytes_out": 1_500_000_000,
+                "external_non_dns_bytes_out": 1_499_900_000,
+                "external_destination_count": 12,
+                "upload_download_ratio": 1200.0,
+            },
+            "recommended_action": "investigate",
+        }
+        risk, factors = score_detection_group([detection])
+        self.assertLess(risk, 70)
+        self.assertIn("single_detector_without_hard_evidence_cap", {item["name"] for item in factors})
+
+        self.assertEqual(correlate_detections([detection]), [])
+        promotion = detection["evidence"]["promotion"]
+        self.assertEqual(promotion["decision"], "suppressed")
+        self.assertEqual(promotion["reason"], "single_weak_detector")
+
+    def test_single_exfiltration_with_reputation_context_still_promotes(self) -> None:
+        detection = {
+            "detection_id": "d-exfil-reputation-context",
+            "detector_id": "pondsec.data_exfiltration",
+            "detector_version": "1",
+            "category": "exfiltration",
+            "title": "Data exfiltration to known malicious destination",
+            "description": "Outbound transfer has threat intelligence context.",
+            "timestamp": "2026-07-05T10:00:00+00:00",
+            "source_ip": "192.168.10.181",
+            "destination_ip": "203.0.113.181",
+            "severity": 8,
+            "confidence": 0.96,
+            "anomaly_score": 1.0,
+            "evidence": {
+                "bytes_out": 1_500_000_000,
+                "external_non_dns_bytes_out": 1_499_900_000,
+                "threat_intel_confidence": 0.95,
+                "threat_name": "validation exfil endpoint",
+            },
+            "recommended_action": "investigate",
+        }
+
+        incidents = correlate_detections([detection])
+
+        self.assertEqual(len(incidents), 1)
+        promotion = incidents[0]["evidence"]["correlation"]["promotion"]
+        self.assertEqual(promotion["decision"], "promoted")
+        self.assertEqual(promotion["reason"], "strong_detector")
+
     def test_risk_scoring_caps_weak_metadata_limited_signals(self) -> None:
         weak_dns = {
             "detector_id": "pondsec.dns_tunneling",

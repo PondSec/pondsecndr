@@ -197,7 +197,7 @@ def _promotion_score(
     metadata_limited_dns = _is_metadata_limited_dns_only(detections)
     strong_detectors = sorted(
         detector_id for detector_id in (detector_ids & STRONG_INCIDENT_DETECTORS)
-        if not (detector_id == "pondsec.dns_tunneling" and metadata_limited_dns)
+        if _strong_detector_can_stand_alone(detector_id, detections, risk_score, metadata_limited_dns)
     )
     marker_supply_chain = _has_marker_supply_chain(detections)
     high_confidence_signature = _has_high_confidence_signature(detections)
@@ -248,6 +248,23 @@ def _promotion_score(
         score -= _add_factor(negative, "missing_reputation_or_signature_context", 5, {})
 
     return max(0, min(100, score)), positive, negative
+
+
+def _strong_detector_can_stand_alone(
+    detector_id: str,
+    detections: list[dict[str, Any]],
+    risk_score: int,
+    metadata_limited_dns: bool,
+) -> bool:
+    if detector_id == "pondsec.dns_tunneling" and metadata_limited_dns:
+        return False
+    if detector_id == "pondsec.data_exfiltration":
+        if risk_score >= PROMOTION_THRESHOLD:
+            return True
+        if len({str(item.get("detector_id") or "") for item in detections}) > 1:
+            return True
+        return _has_reputation_or_signature_context(detections) or _has_provider_prevention_context(detections)
+    return True
 
 
 def _add_factor(target: list[dict[str, Any]], name: str, value: int, detail: dict[str, Any]) -> int:
@@ -447,6 +464,24 @@ def _has_reputation_or_signature_context(detections: list[dict[str, Any]]) -> bo
             or evidence.get("av_verdict")
             or evidence.get("file_verdict")
         ):
+            return True
+    return False
+
+
+def _has_provider_prevention_context(detections: list[dict[str, Any]]) -> bool:
+    prevented_markers = {"blocked", "drop", "dropped", "prevented", "sinkholed", "isolated", "quarantined"}
+    for detection in detections:
+        evidence = detection.get("evidence") if isinstance(detection.get("evidence"), dict) else {}
+        values = {
+            str(evidence.get("action") or "").lower(),
+            str(evidence.get("decision") or "").lower(),
+            str(evidence.get("verdict") or "").lower(),
+            str(evidence.get("suricata_action") or "").lower(),
+            str(evidence.get("policy_action") or "").lower(),
+        }
+        if values & prevented_markers:
+            return True
+        if evidence.get("provider_prevented") is True or evidence.get("firewall_blocked_connections"):
             return True
     return False
 
