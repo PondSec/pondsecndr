@@ -117,8 +117,9 @@ class ZeekLogCollector:
         try:
             with path.open("r", encoding="utf-8", errors="replace") as handle:
                 handle.seek(offset)
-                for raw_line in handle:
-                    if stats.read_lines >= max_lines:
+                while stats.read_lines < max_lines:
+                    raw_line = handle.readline()
+                    if not raw_line:
                         break
                     line = raw_line.rstrip("\n")
                     if not line:

@@ -81,8 +81,9 @@ class ZenarmorCollector:
         try:
             with self.log_path.open("r", encoding="utf-8", errors="replace") as handle:
                 handle.seek(offset)
-                for line in handle:
-                    if stats.read_lines >= max_lines:
+                while stats.read_lines < max_lines:
+                    line = handle.readline()
+                    if not line:
                         break
                     stripped = line.strip()
                     if not stripped:

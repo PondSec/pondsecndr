@@ -704,12 +704,14 @@ class BackendTests(unittest.TestCase):
             events, stats = collector.read_once(max_lines=10)
             self.assertEqual(len(events), 1)
             self.assertEqual(stats.accepted_events, 1)
+            self.assertIsNone(stats.last_error)
             self.assertEqual(stats.sources["conn"]["accepted_events"], 1)
             self.assertEqual(events[0]["raw_source"], "zeek")
 
             events2, stats2 = collector.read_once(max_lines=10)
             self.assertEqual(events2, [])
             self.assertEqual(stats2.read_lines, 0)
+            self.assertIsNone(stats2.last_error)
 
     def test_zeek_collector_can_start_at_end_on_first_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -731,6 +733,7 @@ class BackendTests(unittest.TestCase):
             events, stats = collector.read_once(max_lines=10)
             self.assertEqual(events, [])
             self.assertEqual(stats.read_lines, 0)
+            self.assertIsNone(stats.last_error)
             self.assertFalse(stats.rotation_detected)
 
             with conn_log.open("a", encoding="utf-8") as handle:
@@ -740,6 +743,7 @@ class BackendTests(unittest.TestCase):
             events2, stats2 = collector.read_once(max_lines=10)
             self.assertEqual(len(events2), 1)
             self.assertEqual(stats2.accepted_events, 1)
+            self.assertIsNone(stats2.last_error)
 
     def test_zenarmor_normalizer_keeps_policy_tls_and_app_context(self) -> None:
         event = normalize_zenarmor_event({
@@ -805,6 +809,7 @@ class BackendTests(unittest.TestCase):
             events, stats = collector.read_once(max_lines=10)
             self.assertEqual(len(events), 2)
             self.assertEqual(stats.accepted_events, 2)
+            self.assertIsNone(stats.last_error)
             self.assertEqual(events[0]["metadata"]["application"], "Slack")
             self.assertEqual(events[1]["event_type"], "drop")
             self.assertEqual(events[1]["metadata"]["application"], "GitHub")
@@ -814,6 +819,7 @@ class BackendTests(unittest.TestCase):
             events2, stats2 = collector.read_once(max_lines=10)
             self.assertEqual(events2, [])
             self.assertEqual(stats2.read_lines, 0)
+            self.assertIsNone(stats2.last_error)
 
     def test_zenarmor_syslog_data_export_uses_real_field_names(self) -> None:
         line = (

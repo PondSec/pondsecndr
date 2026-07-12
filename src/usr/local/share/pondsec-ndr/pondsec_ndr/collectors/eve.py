@@ -74,10 +74,11 @@ class EveCollector:
         try:
             with self.eve_path.open("r", encoding="utf-8", errors="replace") as handle:
                 handle.seek(offset)
-                for line in handle:
-                    stats.read_lines += 1
-                    if stats.read_lines > max_lines:
+                while stats.read_lines < max_lines:
+                    line = handle.readline()
+                    if not line:
                         break
+                    stats.read_lines += 1
                     stripped = line.strip()
                     if not stripped:
                         continue
