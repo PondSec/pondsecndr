@@ -3836,6 +3836,67 @@ igb0_vlan10: flags=1008943<UP,BROADCAST,RUNNING>
             self.assertEqual(merged["title"], "Multi-stage activity from 199.45.155.75 to 192.168.30.3 (2 detections)")
             self.assertTrue(merged["evidence"]["correlation"]["deduplicated"])
 
+    def test_correlation_splits_same_source_recon_with_disjoint_targets(self) -> None:
+        def detection(detection_id: str, timestamp: str, target: str) -> dict:
+            return {
+                "detection_id": detection_id,
+                "detector_id": "pondsec.portscan",
+                "detector_version": "1",
+                "category": "reconnaissance",
+                "title": "Possible port scan",
+                "description": "Host contacted an unusual number of ports with failed connections.",
+                "timestamp": timestamp,
+                "source_ip": "192.168.10.20",
+                "destination_ip": None,
+                "severity": 7,
+                "confidence": 0.98,
+                "anomaly_score": 0.3,
+                "evidence": {
+                    "unique_ports": 14,
+                    "unique_destinations": 1,
+                    "sample_destinations": [target],
+                    "failed_connections": 20,
+                },
+                "recommended_action": "investigate",
+            }
+
+        incidents = correlate_detections([
+            detection("d-recon-internal", "2026-07-05T10:00:00+00:00", "192.168.10.5"),
+            detection("d-recon-external", "2026-07-05T10:00:20+00:00", "203.0.113.10"),
+        ])
+
+        self.assertEqual(len(incidents), 2)
+        self.assertEqual([incident["detection_count"] for incident in incidents], [1, 1])
+
+    def test_correlation_keeps_same_source_recon_together_for_same_target(self) -> None:
+        first = {
+            "detection_id": "d-recon-a",
+            "detector_id": "pondsec.portscan",
+            "detector_version": "1",
+            "category": "reconnaissance",
+            "title": "Possible port scan",
+            "description": "Host contacted an unusual number of ports with failed connections.",
+            "timestamp": "2026-07-05T10:00:00+00:00",
+            "source_ip": "192.168.10.20",
+            "destination_ip": None,
+            "severity": 7,
+            "confidence": 0.98,
+            "anomaly_score": 0.3,
+            "evidence": {
+                "unique_ports": 14,
+                "unique_destinations": 1,
+                "sample_destinations": ["192.168.10.5"],
+                "failed_connections": 20,
+            },
+            "recommended_action": "investigate",
+        }
+        second = dict(first, detection_id="d-recon-b", timestamp="2026-07-05T10:00:20+00:00")
+
+        incidents = correlate_detections([first, second])
+
+        self.assertEqual(len(incidents), 1)
+        self.assertEqual(incidents[0]["detection_count"], 2)
+
     def test_incident_dedup_does_not_count_duplicate_detections_again(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = EventStore(Path(tmp) / "pondsec-ndr.db")

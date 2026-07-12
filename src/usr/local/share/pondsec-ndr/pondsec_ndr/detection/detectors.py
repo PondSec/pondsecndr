@@ -235,6 +235,11 @@ class PortScanDetector(Detector):
         for item in features:
             port_count = int(item.get("port_count") or 0)
             dest_count = int(item.get("destination_count") or 0)
+            sample_destinations = [
+                str(value)
+                for value in (item.get("sample_destinations") or [])
+                if value
+            ][:20]
             failed = int(item.get("failed_connections") or 0)
             blocked = int(item.get("firewall_blocked_connections") or 0)
             suspicious_pass = int(item.get("firewall_suspicious_pass_connections") or 0)
@@ -254,6 +259,7 @@ class PortScanDetector(Detector):
                     {
                         "unique_ports": port_count,
                         "unique_destinations": dest_count,
+                        "sample_destinations": sample_destinations,
                         "failed_connections": failed,
                         "firewall_blocked_connections": blocked,
                         "thresholds": [

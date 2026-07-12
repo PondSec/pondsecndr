@@ -635,6 +635,7 @@ def _new_case(detection: dict[str, Any]) -> dict[str, Any]:
         "source_ips": set(),
         "destination_ips": set(),
         "pairs": set(),
+        "target_ips": set(),
         "internal_hosts": set(),
         "external_sources": set(),
     }
@@ -657,6 +658,7 @@ def _update_case_indexes(case: dict[str, Any], detection: dict[str, Any]) -> Non
             case["internal_hosts"].add(dst)
     if src and dst:
         case["pairs"].add((src, dst))
+    case["target_ips"].update(_detection_targets(detection))
 
 
 def _find_related_case(cases: list[dict[str, Any]], detection: dict[str, Any], window_seconds: int) -> dict[str, Any] | None:
@@ -676,9 +678,14 @@ def _within_window(case: dict[str, Any], detection: dict[str, Any], window_secon
 def _is_related(case: dict[str, Any], detection: dict[str, Any]) -> bool:
     src = _text_or_none(detection.get("source_ip"))
     dst = _text_or_none(detection.get("destination_ip"))
+    targets = _detection_targets(detection)
     if src and src in case["source_ips"]:
+        if _has_disjoint_concrete_targets(case, detection, targets):
+            return False
         return True
     if src and src in case["internal_hosts"]:
+        if _has_disjoint_concrete_targets(case, detection, targets):
+            return False
         return True
     if dst and dst in case["source_ips"]:
         return True
@@ -687,6 +694,49 @@ def _is_related(case: dict[str, Any], detection: dict[str, Any]) -> bool:
     if src and dst and src in case["external_sources"] and dst in case["internal_hosts"]:
         return True
     return False
+
+
+def _has_disjoint_concrete_targets(case: dict[str, Any], detection: dict[str, Any], targets: set[str]) -> bool:
+    case_targets = case.get("target_ips") if isinstance(case.get("target_ips"), set) else set()
+    if not case_targets or not targets:
+        return False
+    if case_targets & targets:
+        return False
+    detector_id = str(detection.get("detector_id") or "")
+    if detector_id in {"pondsec.portscan", "pondsec.horizontal_scan", "pondsec.vertical_scan", "pondsec.auth_service_pressure"}:
+        return True
+    case_detector_ids = {
+        str(item.get("detector_id") or "")
+        for item in case.get("detections", [])
+        if isinstance(item, dict)
+    }
+    reconnaissance_ids = {"pondsec.portscan", "pondsec.horizontal_scan", "pondsec.vertical_scan", "pondsec.auth_service_pressure"}
+    return bool(detector_id in reconnaissance_ids and case_detector_ids & reconnaissance_ids)
+
+
+def _detection_targets(detection: dict[str, Any]) -> set[str]:
+    targets: set[str] = set()
+    destination = _text_or_none(detection.get("destination_ip"))
+    _add_target_ip(targets, destination)
+    evidence = detection.get("evidence") if isinstance(detection.get("evidence"), dict) else {}
+    for key in ("sample_destinations", "destination_ips", "destinations", "affected_targets"):
+        value = evidence.get(key)
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                _add_target_ip(targets, _text_or_none(item))
+        else:
+            _add_target_ip(targets, _text_or_none(value))
+    return targets
+
+
+def _add_target_ip(targets: set[str], value: str | None) -> None:
+    if not value or value.startswith("port:"):
+        return
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        return
+    targets.add(value)
 
 
 def _entity_roles(detections: list[dict[str, Any]]) -> dict[str, Any]:

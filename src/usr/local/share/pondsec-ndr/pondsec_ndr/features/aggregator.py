@@ -79,6 +79,7 @@ def _base_feature(source_ip: str) -> dict[str, Any]:
         "applications": [],
         "domains": [],
         "provider_decisions": {},
+        "sample_destinations": [],
         "suricata_alert_count": 0,
         "periodicity_score": 0.0,
         "beaconing_score": 0.0,
@@ -227,6 +228,7 @@ def aggregate_features(
         item["unique_ports_60s"] = len(ports)
         item["unique_ports_5m"] = len(ports)
         item["destination_count"] = len(destinations)
+        item["sample_destinations"] = sorted(destinations)[:20]
         item["port_count"] = len(ports)
         item["firewall_blocked_only"] = bool(source_events) and item["firewall_blocked_connections"] == len(source_events)
         if port_counter:
