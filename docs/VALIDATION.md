@@ -44,8 +44,9 @@ Firewall integration validation:
   path after the Zenarmor license check returned allowed.
 - Enabled Zenarmor stream indexes: `conn`, `http`, `dns`, `tls`, `alert`.
 - `ipdrstreamer` observed sending UDP to `127.0.0.1:5514`.
-- PondSec service observed listening on `127.0.0.1:5514` and NetFlow on
-  `127.0.0.1:2055`.
+- PondSec service observed listening on `127.0.0.1:5514`; NetFlow is configured
+  on a dedicated local collector port separate from the firewall's internal
+  NetFlow relay port.
 - Controlled local Zenarmor-style UDP event was persisted in SQLite with
   `raw_source=zenarmor`, TLS metadata, application, SNI and policy context.
 - Real Zenarmor stream payloads were parsed after adding support for

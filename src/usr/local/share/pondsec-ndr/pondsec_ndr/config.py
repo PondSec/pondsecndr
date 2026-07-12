@@ -27,6 +27,7 @@ SANDBOX_MODES = {"metadata", "local_static", "external_result"}
 DEFAULT_SANDBOX_RESULTS_DIR = "/var/db/pondsec-ndr/sandbox/results"
 DEFAULT_SANDBOX_PENDING_DIR = "/var/db/pondsec-ndr/sandbox/pending"
 DEFAULT_SANDBOX_ARTIFACT_DIR = "/var/db/pondsec-ndr/sandbox/artifacts"
+DEFAULT_NETFLOW_PORT = 2057
 
 
 def _bool(value: Any, default: bool = False) -> bool:
@@ -295,7 +296,7 @@ class ZenarmorConfig:
 class NetFlowConfig:
     enabled: bool = False
     listen_address: str = "127.0.0.1"
-    port: int = 2055
+    port: int = DEFAULT_NETFLOW_PORT
     allowed_exporters: list[str] = field(default_factory=list)
     sampling_rate: int = 1
     template_ttl_seconds: int = 3600
@@ -639,7 +640,7 @@ def load_config(path: Path | None = None) -> PondSecConfig:
         netflow=NetFlowConfig(
             enabled=_bool(netflow.get("enabled"), False),
             listen_address=str(netflow.get("listen_address") or "127.0.0.1"),
-            port=_int(netflow.get("port"), 2055, 1, 65535),
+            port=_int(netflow.get("port"), DEFAULT_NETFLOW_PORT, 1, 65535),
             allowed_exporters=_csv(netflow.get("allowed_exporters")),
             sampling_rate=_int(netflow.get("sampling_rate"), 1, 1, 1000000),
             template_ttl_seconds=_int(netflow.get("template_ttl_seconds"), 3600, 60, 86400),

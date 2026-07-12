@@ -522,7 +522,7 @@
                 <Required>Y</Required>
             </listen_address>
             <port type="IntegerField">
-                <default>2055</default>
+                <default>2057</default>
                 <MinimumValue>1</MinimumValue>
                 <MaximumValue>65535</MaximumValue>
                 <Required>Y</Required>

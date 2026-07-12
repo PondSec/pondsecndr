@@ -131,7 +131,7 @@
   "netflow": {
     "enabled": "{{ netflow.enabled|default("0") }}",
     "listen_address": "{{ netflow.listen_address|default("127.0.0.1") }}",
-    "port": "{{ netflow.port|default("2055") }}",
+    "port": "{{ netflow.port|default("2057") }}",
     "allowed_exporters": "{{ netflow.allowed_exporters|default("") }}",
     "sampling_rate": "{{ netflow.sampling_rate|default("1") }}",
     "template_ttl_seconds": "{{ netflow.template_ttl_seconds|default("3600") }}",

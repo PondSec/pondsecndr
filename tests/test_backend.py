@@ -2922,6 +2922,15 @@ igb0_vlan10: flags=1008943<UP,BROADCAST,RUNNING>
         self.assertEqual(config.sandbox.pending_dir, "/var/db/pondsec-ndr/sandbox/pending")
         self.assertEqual(config.sandbox.artifact_dir, "/var/db/pondsec-ndr/sandbox/artifacts")
 
+    def test_config_sets_netflow_default_port_away_from_firewall_relay(self) -> None:
+        config = PondSecConfig()
+        self.assertEqual(config.netflow.port, 2057)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "pondsec-ndr.json"
+            path.write_text(json.dumps({"netflow": {"enabled": True}}), encoding="utf-8")
+            loaded = load_config(path)
+        self.assertEqual(loaded.netflow.port, 2057)
+
     def test_diagnostics_exposes_response_readiness(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
