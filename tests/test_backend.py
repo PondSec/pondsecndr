@@ -3001,6 +3001,52 @@ igb0_vlan10: flags=1008943<UP,BROADCAST,RUNNING>
         self.assertLess(promotion["promotion_score"], promotion["promotion_threshold"])
         self.assertTrue(any(item["name"] == "normal_https_fanout" for item in promotion["negative_evidence"]))
 
+    def test_correlation_suppresses_firewall_blocked_edge_reconnaissance(self) -> None:
+        detections = [
+            {
+                "detection_id": "d-edge-portscan",
+                "detector_id": "pondsec.portscan",
+                "detector_version": "1",
+                "category": "reconnaissance",
+                "title": "Possible port scan",
+                "description": "Host contacted an unusual number of ports with failed connections.",
+                "timestamp": "2026-07-05T10:00:00+00:00",
+                "source_ip": "198.51.100.77",
+                "destination_ip": None,
+                "severity": 7,
+                "confidence": 0.98,
+                "anomaly_score": 0.7,
+                "evidence": {
+                    "unique_ports": 34,
+                    "failed_connections": 58,
+                    "firewall_blocked_connections": 58,
+                },
+                "recommended_action": "investigate",
+            },
+            {
+                "detection_id": "d-edge-vertical",
+                "detector_id": "pondsec.vertical_scan",
+                "detector_version": "1",
+                "category": "reconnaissance",
+                "title": "Possible vertical scan",
+                "description": "Host contacted many ports on one destination.",
+                "timestamp": "2026-07-05T10:00:01+00:00",
+                "source_ip": "198.51.100.77",
+                "destination_ip": "203.0.113.10",
+                "severity": 7,
+                "confidence": 0.95,
+                "anomaly_score": 0.85,
+                "evidence": {"unique_ports": 34},
+                "recommended_action": "investigate",
+            },
+        ]
+
+        self.assertEqual(correlate_detections(detections), [])
+        self.assertEqual(detections[0]["evidence"]["detection_state"], "suppressed")
+        promotion = detections[0]["evidence"]["promotion"]
+        self.assertEqual(promotion["reason"], "blocked_edge_reconnaissance")
+        self.assertLess(promotion["promotion_score"], promotion["promotion_threshold"])
+
     def test_correlation_keeps_https_fanout_out_of_dns_tunnel_incident(self) -> None:
         detections = [
             {

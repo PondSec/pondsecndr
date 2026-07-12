@@ -202,7 +202,11 @@ def _promotion_score(
     marker_supply_chain = _has_marker_supply_chain(detections)
     high_confidence_signature = _has_high_confidence_signature(detections)
     high_confidence_ml = _has_high_confidence_ml(detections)
-    actionable_reconnaissance = _has_actionable_reconnaissance(detections, roles)
+    blocked_edge_reconnaissance = _is_blocked_edge_reconnaissance(detections, roles)
+    actionable_reconnaissance = (
+        _has_actionable_reconnaissance(detections, roles)
+        and not blocked_edge_reconnaissance
+    )
     if strong_detectors:
         score += _add_factor(positive, "strong_detector", 35, {"detectors": strong_detectors})
     if marker_supply_chain:
@@ -246,6 +250,8 @@ def _promotion_score(
         score -= _add_factor(negative, "known_benign_application_context", 25, {"context": benign_context})
     if _is_allowed_known_service_exfiltration_only(detections):
         score -= _add_factor(negative, "allowed_known_service_transfer", 35, {})
+    if blocked_edge_reconnaissance and not (marker_supply_chain or high_confidence_signature or strong_detectors):
+        score -= _add_factor(negative, "blocked_edge_reconnaissance", 55, {})
     if not _has_reputation_or_signature_context(detections) and not actionable_reconnaissance:
         score -= _add_factor(negative, "missing_reputation_or_signature_context", 5, {})
 
@@ -489,6 +495,31 @@ def _is_allowed_known_service_exfiltration_only(detections: list[dict[str, Any]]
         if has_allowed_context and any(term in text for term in known_terms):
             return True
     return False
+
+
+def _is_blocked_edge_reconnaissance(detections: list[dict[str, Any]], roles: dict[str, Any]) -> bool:
+    if not detections or any(str(item.get("category") or "") != "reconnaissance" for item in detections):
+        return False
+    if not roles.get("external_actor") or roles.get("victim"):
+        return False
+    if _has_reputation_or_signature_context(detections):
+        return False
+
+    blocked_evidence = False
+    for detection in detections:
+        evidence = detection.get("evidence") if isinstance(detection.get("evidence"), dict) else {}
+        destination = _text_or_none(detection.get("destination_ip"))
+        if destination and not destination.startswith("port:") and _is_internal_address(destination):
+            return False
+        if _safe_int(evidence.get("firewall_suspicious_pass_connections") or 0):
+            return False
+        if str(evidence.get("filter_action") or "").lower() == "pass":
+            return False
+        blocked = _safe_int(evidence.get("firewall_blocked_connections") or 0) or 0
+        failed = _safe_int(evidence.get("failed_connections") or 0) or 0
+        if evidence.get("firewall_blocked_only") or (blocked > 0 and failed > 0 and blocked >= failed):
+            blocked_evidence = True
+    return blocked_evidence
 
 
 def _has_reputation_or_signature_context(detections: list[dict[str, Any]]) -> bool:
