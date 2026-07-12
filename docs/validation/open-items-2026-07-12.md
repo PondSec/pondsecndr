@@ -5,17 +5,23 @@ validation reporting, and production readiness.
 
 ## Active security fixes
 
-- Active PF blocks must be rehydrated from `block_entries` after service,
+- Completed: active PF blocks are rehydrated from `block_entries` after service,
   firewall, or deployment reloads.
-- Traffic that is already blocked by OPNsense filterlog must be treated as
-  prevention evidence and must not keep opening new reconnaissance incidents.
-- Verify `51.159.110.167` remains present in the `virusprot` PF table while the
-  active block entry is valid.
+- Completed: traffic that is already blocked by OPNsense filterlog is treated as
+  prevention evidence and no longer opens fresh reconnaissance incidents by
+  itself.
+- Verified on the target box: `51.159.110.167`, `107.180.212.85`, and
+  `176.65.148.230` were present in the `virusprot` PF table after redeploy.
 
 ## Data source coverage
 
-- Diagnostics browser view currently remains on `Loading`; identify whether the
-  failure is JavaScript, API response, timeout, or backend JSON handling.
+- Completed: diagnostics backend response time was reduced on the target box
+  from roughly 16 seconds to roughly 5 seconds by avoiding a full SQLite
+  integrity check on normal status/diagnostics views. The full check remains
+  available in self-test and database check workflows.
+- Completed: diagnostics browser view now renders a concrete backend error when
+  the API fails or exceeds the UI timeout instead of leaving every panel on
+  `Loading`.
 - Zeek is not installed as a running service on the target box yet; install,
   configure, and connect its logs to PondSec NDR.
 - Suricata EVE currently does not emit `fileinfo`; enable and validate file
