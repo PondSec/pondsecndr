@@ -2835,6 +2835,23 @@ igb0_vlan10: flags=1008943<UP,BROADCAST,RUNNING>
             self.assertEqual(providers["netflow"]["health_status"], "healthy")
             self.assertEqual(providers["netflow"]["statistics"]["events_24h"], 1)
 
+            store.set_health("healthy", 124, {
+                "collector_sources": {
+                    "netflow": {
+                        "read_datagrams": 1,
+                        "accepted_events": 0,
+                        "parser_errors": 0,
+                        "normalization_errors": 0,
+                        "queue_drops": 0,
+                        "last_error": "flow data set has no known template: 256",
+                    },
+                }
+            })
+            payload = diagnostics_payload(PondSecConfig(data_dir=root, netflow=NetFlowConfig(enabled=True)), store)
+            providers = {item["provider_id"]: item for item in payload["providers"]}
+            self.assertEqual(providers["netflow"]["health_status"], "healthy")
+            self.assertIsNone(providers["netflow"]["last_error"])
+
     def test_diagnostics_sandbox_provider_health_uses_verdict_coverage(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

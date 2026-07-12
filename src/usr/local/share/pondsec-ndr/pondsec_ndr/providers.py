@@ -158,6 +158,8 @@ def _zeek_provider(config: PondSecConfig, stats: dict[str, Any], updated_at: str
 def _netflow_provider(config: PondSecConfig, stats: dict[str, Any], updated_at: str | None, coverage: dict[str, Any]) -> DataSourceProvider:
     enabled = bool(config.netflow.enabled)
     last_error = stats.get("last_error")
+    if last_error and "no known template" in str(last_error).lower() and _coverage_total(coverage, "24h") > 0:
+        last_error = None
     return DataSourceProvider(
         provider_id="netflow",
         display_name="NetFlow / IPFIX",
