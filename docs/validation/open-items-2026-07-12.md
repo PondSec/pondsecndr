@@ -10,8 +10,8 @@ validation reporting, and production readiness.
 - Completed: traffic that is already blocked by OPNsense filterlog is treated as
   prevention evidence and no longer opens fresh reconnaissance incidents by
   itself.
-- Verified on the target box: `51.159.110.167`, `107.180.212.85`, and
-  `176.65.148.230` were present in the `virusprot` PF table after redeploy.
+- Verified on the target box: `<external-blocked-ip-1>`, `<external-blocked-ip-2>`, and
+  `<external-blocked-ip-3>` were present in the `virusprot` PF table after redeploy.
 
 ## Data source coverage
 

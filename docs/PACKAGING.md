@@ -71,7 +71,7 @@ pondsec-ndrctl model fetch saidimn-ids-cnn-cicids2017
 ```
 
 The preferred model artifacts are MIT-licensed. The production inference path
-validated on `HWFirewall01.internal` is the package-shipped NumPy export with
+validated on `<firewall-hostname>` is the package-shipped NumPy export with
 SHA-256 and manifest verification, not an in-process PyTorch worker.
 
 ## Publication Paths

@@ -12,7 +12,7 @@ OPNsense-installable `os-pondsec-ndr` package.
   `pkg-install`.
 - The verified pretrained NumPy model runtime artifact is included in `src/`.
 - The plugin has been development-deployed and validated on
-  `HWFirewall01.internal` / `192.168.99.2`.
+  `<firewall-hostname>` / `<management-box-ip>`.
 - Conservative deinstall prompts are implemented for configuration, database,
   model artifacts, and PF block cleanup.
 - The signed community repository workflow is documented and a helper script is

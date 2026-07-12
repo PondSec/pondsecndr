@@ -4,7 +4,7 @@
 
 Target firewall:
 
-- Address: `192.168.99.2`
+- Address: `<management-box-ip>`
 - OPNsense: `26.1.11_6`
 - FreeBSD: `14.3-RELEASE-p16`
 - Active repositories checked: OPNsense, SunnyValley
@@ -159,8 +159,8 @@ Implementation validation:
 
 Target:
 
-- Host: `HWFirewall01.internal`
-- Address: `192.168.99.2`
+- Host: `<firewall-hostname>`
+- Address: `<management-box-ip>`
 - User used for deployment: `pondadmin`
 - OS: FreeBSD 14.3 / OPNsense stable/26.1 base
 
@@ -264,8 +264,8 @@ Follow-up validation target:
 
 Target firewall:
 
-- Host: `HWFirewall01.internal`
-- Address: `192.168.99.2`
+- Host: `<firewall-hostname>`
+- Address: `<management-box-ip>`
 - OPNsense mode after validation: `prevent`
 - PondSec response mode after validation: `automatic_blocking=1`, `manual_confirmation=0`
 - Response thresholds after validation: `minimum_risk_score=70`, `minimum_confidence=75`
@@ -300,8 +300,8 @@ Authenticated WebGUI route validation:
 
 Target firewall:
 
-- Host: `HWFirewall01.internal`
-- Address: `192.168.99.2`
+- Host: `<firewall-hostname>`
+- Address: `<management-box-ip>`
 - Evidence directory on firewall: `/tmp/pondsec-ai-e2e-20260705T212826Z`
 - Monitor-mode API proof directory on firewall: `/tmp/pondsec-monitor-api-proof-20260705T212938Z`
 
@@ -365,13 +365,13 @@ Scenario coverage:
 
 | Scenario | Expected behavior | Detector proof | Source | Risk | PF verified | Cleanup |
 |---|---|---|---|---:|---|---|
-| `pretrained_ai_model_inference_vlan10` | Synthetic AI validation vector classified as attack | `pondsec.pretrained_ids_model` | `192.168.10.243` | 86 | yes | removed |
+| `pretrained_ai_model_inference_vlan10` | Synthetic AI validation vector classified as attack | `pondsec.pretrained_ids_model` | `<validation-host-c>` | 86 | yes | removed |
 | `wan_attack_prevention` | WAN reconnaissance/port scan against DMZ | `pondsec.portscan`, `pondsec.vertical_scan` | `203.0.113.241` | 75 | yes | removed |
-| `beaconing_vlan10` | Periodic C2-style beaconing from VLAN10 | `pondsec.beaconing` | `192.168.10.241` | 81 | yes | removed |
-| `lateral_movement_vlan20` | Internal SMB/RDP fan-out from VLAN20 | `pondsec.lateral_movement` | `192.168.20.241` | 87 | yes | removed |
-| `dns_tunneling_dmz` | High-entropy NXDOMAIN DNS tunneling from DMZ | `pondsec.dns_tunneling` | `192.168.30.241` | 82 | yes | removed |
-| `data_exfiltration_vlan10` | Large asymmetric upload from VLAN10 | `pondsec.data_exfiltration` | `192.168.10.242` | 97 | yes | removed |
-| `unknown_zero_day_baseline_anomaly` | Baseline anomaly without a signature | `pondsec.host_baseline_anomaly` | `192.168.20.242` | 81 | yes | removed |
+| `beaconing_vlan10` | Periodic C2-style beaconing from VLAN10 | `pondsec.beaconing` | `<validation-host-d>` | 81 | yes | removed |
+| `lateral_movement_vlan20` | Internal SMB/RDP fan-out from VLAN20 | `pondsec.lateral_movement` | `<validation-host-e>` | 87 | yes | removed |
+| `dns_tunneling_dmz` | High-entropy NXDOMAIN DNS tunneling from DMZ | `pondsec.dns_tunneling` | `<validation-host-f>` | 82 | yes | removed |
+| `data_exfiltration_vlan10` | Large asymmetric upload from VLAN10 | `pondsec.data_exfiltration` | `<validation-host-g>` | 97 | yes | removed |
+| `unknown_zero_day_baseline_anomaly` | Baseline anomaly without a signature | `pondsec.host_baseline_anomaly` | `<validation-host-b>` | 81 | yes | removed |
 
 Important scope:
 
@@ -383,11 +383,11 @@ Important scope:
 
 Target firewall:
 
-- Host: `HWFirewall01.internal`
-- Address: `192.168.99.2`
+- Host: `<firewall-hostname>`
+- Address: `<management-box-ip>`
 - Mode: `prevent`
 - Monitored devices: `re0`, `igb0_vlan10`, `igb0_vlan20`, `pppoe0`
-- Admin protection: `192.168.10.20` and `10.66.66.2` were allowlisted/protected before live testing.
+- Admin protection: `<test-client-ip>` and `<vpn-client-ip>` were allowlisted/protected before live testing.
 
 Why this change was required:
 
@@ -412,34 +412,34 @@ Validated results:
 | Live PF block events ingested | passed (`raw_source=opnsense_filterlog`) |
 | Port scan detection created | passed (`pondsec.portscan`) |
 | Vertical scan detection created | passed (`pondsec.vertical_scan`) |
-| Incident created for live VLAN10 scan | passed (`source_ip=192.168.10.20`, `destination_ip=192.168.30.3`) |
+| Incident created for live VLAN10 scan | passed (`source_ip=<test-client-ip>`, `destination_ip=<internal-target-ip>`) |
 | Admin Mac not blocked by PF | passed |
 | Admin VPN IP not blocked by PF | passed |
 | CrowdSec admin allowlist intact | passed |
 | PF add/test/delete works through configd fallback | passed as unprivileged `pondsecndr` |
 | `configctl Execute error` on negative PF test handled as failure | passed |
 | Baseline-only anomaly does not auto-block | passed |
-| Self-WAN false-positive block removed | passed (`80.153.171.185` not in `virusprot`) |
-| Nextcloud false-positive block removed | passed (`192.168.20.115` not in `virusprot`) |
+| Self-WAN false-positive block removed | passed (`<wan-address>` not in `virusprot`) |
+| Nextcloud false-positive block removed | passed (`<internal-client-d>` not in `virusprot`) |
 | Service health after fixes | passed (`healthy`, no collector or response errors) |
 
 Live detection examples from the block-only proof:
 
-- `pondsec.portscan`: `source_ip=192.168.10.20`, `failed_connections=146`, `unique_ports=76`
-- `pondsec.vertical_scan`: `source_ip=192.168.10.20`, `destination_ip=192.168.30.3`, `unique_ports=76`
-- Fresh live incident: `Reconnaissance from 192.168.10.20`, `risk_score=85`, `confidence=0.98`
+- `pondsec.portscan`: `source_ip=<test-client-ip>`, `failed_connections=146`, `unique_ports=76`
+- `pondsec.vertical_scan`: `source_ip=<test-client-ip>`, `destination_ip=<internal-target-ip>`, `unique_ports=76`
+- Fresh live incident: `Reconnaissance from <test-client-ip>`, `risk_score=85`, `confidence=0.98`
 
 Auto-prevent proof after PF fallback hardening:
 
 - Active PF table: `virusprot`
 - Active external auto-blocks after validation:
-  - `172.236.201.181`, incident `08bb4703-4031-5ed7-9386-e7d78fe3ba10`, category `reconnaissance`
-  - `23.94.252.207`, incident `5b695cbd-b33a-5eb3-921a-89b1feff7c07`, category `signature`
+  - `<external-auto-block-ip-1>`, incident `08bb4703-4031-5ed7-9386-e7d78fe3ba10`, category `reconnaissance`
+  - `<external-auto-block-ip-2>`, incident `5b695cbd-b33a-5eb3-921a-89b1feff7c07`, category `signature`
 - Admin/self critical IPs verified not blocked:
-  - `192.168.10.20`
-  - `10.66.66.2`
-  - `80.153.171.185`
-  - `192.168.20.115`
+  - `<test-client-ip>`
+  - `<vpn-client-ip>`
+  - `<wan-address>`
+  - `<internal-client-d>`
 
 Safety changes made from the live findings:
 
@@ -464,8 +464,8 @@ System service registration proof after the production deploy:
 
 Target firewall:
 
-- Host: `HWFirewall01.internal`
-- Address: `192.168.99.2`
+- Host: `<firewall-hostname>`
+- Address: `<management-box-ip>`
 - Deployment backup: `/root/pondsec-ndr-backup-20260706113106`
 - Runtime commit deployed: `3fbed21`
 
