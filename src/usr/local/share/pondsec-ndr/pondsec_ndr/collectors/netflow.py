@@ -163,26 +163,48 @@ class NetFlowCollector:
             stats.parser_errors = 1
             stats.last_error = "NetFlow v9 header is incomplete"
             return [], stats
-        _, count, _, _, sequence, source_id = NETFLOW_V9_HEADER.unpack_from(payload)
+        _, count, sys_uptime, unix_secs, sequence, source_id = NETFLOW_V9_HEADER.unpack_from(payload)
         self._track_sequence(exporter_ip, sequence, count, stats)
-        self._inspect_template_sets(payload[NETFLOW_V9_HEADER.size :], exporter_ip, source_id, stats, version=9)
-        return [], stats
+        timestamp = datetime.fromtimestamp(unix_secs, tz=timezone.utc).isoformat()
+        events = self._parse_flow_sets(
+            payload[NETFLOW_V9_HEADER.size :],
+            exporter_ip,
+            source_id,
+            stats,
+            version=9,
+            sequence=sequence,
+            timestamp=timestamp,
+            export_time=unix_secs,
+            sys_uptime=sys_uptime,
+        )
+        return events, stats
 
     def _parse_ipfix(self, payload: bytes, exporter_ip: str, stats: NetFlowStats) -> tuple[list[dict[str, Any]], NetFlowStats]:
         if len(payload) < IPFIX_HEADER.size:
             stats.parser_errors = 1
             stats.last_error = "IPFIX header is incomplete"
             return [], stats
-        _, length, _, sequence, domain_id = IPFIX_HEADER.unpack_from(payload)
+        _, length, export_time, sequence, domain_id = IPFIX_HEADER.unpack_from(payload)
         if len(payload) < length:
             stats.parser_errors = 1
             stats.last_error = "IPFIX datagram is shorter than declared length"
             return [], stats
         self._track_sequence(exporter_ip, sequence, 0, stats)
-        self._inspect_template_sets(payload[IPFIX_HEADER.size : length], exporter_ip, domain_id, stats, version=10)
-        return [], stats
+        timestamp = datetime.fromtimestamp(export_time, tz=timezone.utc).isoformat()
+        events = self._parse_flow_sets(
+            payload[IPFIX_HEADER.size : length],
+            exporter_ip,
+            domain_id,
+            stats,
+            version=10,
+            sequence=sequence,
+            timestamp=timestamp,
+            export_time=export_time,
+            sys_uptime=None,
+        )
+        return events, stats
 
-    def _inspect_template_sets(
+    def _parse_flow_sets(
         self,
         payload: bytes,
         exporter_ip: str,
@@ -190,25 +212,46 @@ class NetFlowCollector:
         stats: NetFlowStats,
         *,
         version: int,
-    ) -> None:
+        sequence: int,
+        timestamp: str,
+        export_time: int,
+        sys_uptime: int | None,
+    ) -> list[dict[str, Any]]:
         offset = 0
+        events: list[dict[str, Any]] = []
         template_set_ids = {0, 1} if version == 9 else {2, 3}
         while offset + 4 <= len(payload):
             set_id, length = struct.unpack_from("!HH", payload, offset)
             if length < 4 or offset + length > len(payload):
                 stats.template_errors += 1
                 stats.last_error = "flow template set has invalid length"
-                return
+                return events
             body = payload[offset + 4 : offset + length]
             if set_id in template_set_ids:
                 seen = self._store_template_records(body, exporter_ip, observation_domain, stats)
                 stats.templates_seen += seen
             elif set_id > 255:
                 key = (exporter_ip, observation_domain, set_id)
-                if key not in self.templates:
+                template = self.templates.get(key)
+                if template is None:
                     stats.template_errors += 1
                     stats.last_error = f"flow data set has no known template: {set_id}"
+                else:
+                    events.extend(
+                        self._events_from_template_set(
+                            body,
+                            template,
+                            exporter_ip,
+                            sequence,
+                            timestamp,
+                            export_time,
+                            sys_uptime,
+                            stats,
+                            version=version,
+                        )
+                    )
             offset += length
+        return events
 
     def _store_template_records(self, body: bytes, exporter_ip: str, observation_domain: int, stats: NetFlowStats) -> int:
         offset = 0
@@ -222,13 +265,179 @@ class NetFlowCollector:
                 stats.last_error = "flow template record is incomplete"
                 return seen
             fields = []
+            record_length = 0
             for _ in range(field_count):
                 field_type, field_length = struct.unpack_from("!HH", body, offset)
                 fields.append({"type": field_type, "length": field_length})
+                record_length += field_length
                 offset += 4
-            self.templates[(exporter_ip, observation_domain, template_id)] = {"fields": fields}
+            self.templates[(exporter_ip, observation_domain, template_id)] = {"fields": fields, "record_length": record_length}
             seen += 1
         return seen
+
+    def _events_from_template_set(
+        self,
+        body: bytes,
+        template: dict[str, Any],
+        exporter_ip: str,
+        sequence: int,
+        timestamp: str,
+        export_time: int,
+        sys_uptime: int | None,
+        stats: NetFlowStats,
+        *,
+        version: int,
+    ) -> list[dict[str, Any]]:
+        fields = template.get("fields") or []
+        record_length = int(template.get("record_length") or 0)
+        if not fields or record_length < 1:
+            stats.template_errors += 1
+            stats.last_error = "flow data set references an unusable template"
+            return []
+        events: list[dict[str, Any]] = []
+        offset = 0
+        record_index = 0
+        while offset + record_length <= len(body):
+            record = body[offset : offset + record_length]
+            offset += record_length
+            if not any(record):
+                break
+            decoded = self._decode_template_record(record, fields)
+            event = self._event_from_template_record(
+                decoded,
+                exporter_ip,
+                sequence,
+                record_index,
+                timestamp,
+                export_time,
+                sys_uptime,
+                version,
+            )
+            record_index += 1
+            if event is None:
+                continue
+            flow_id = event["event_id"]
+            if flow_id in self.seen_flow_ids:
+                stats.duplicates += 1
+                continue
+            self.seen_flow_ids.add(flow_id)
+            if len(self.seen_flow_ids) > 50000:
+                self.seen_flow_ids = set(list(self.seen_flow_ids)[-25000:])
+            events.append(event)
+            stats.accepted_events += 1
+        if offset < len(body) and any(body[offset:]):
+            stats.template_errors += 1
+            stats.last_error = "flow data set ended with a partial non-padding record"
+        return events
+
+    def _decode_template_record(self, record: bytes, fields: list[dict[str, int]]) -> dict[str, Any]:
+        decoded: dict[str, Any] = {}
+        offset = 0
+        for field in fields:
+            field_type = int(field.get("type") or 0)
+            field_length = int(field.get("length") or 0)
+            raw = record[offset : offset + field_length]
+            offset += field_length
+            if field_length < 1:
+                continue
+            if field_type == 1:
+                decoded["byte_count"] = _field_int(raw)
+            elif field_type == 2:
+                decoded["packet_count"] = _field_int(raw)
+            elif field_type == 4:
+                decoded["protocol_number"] = _field_int(raw)
+            elif field_type == 5:
+                decoded["tos"] = _field_int(raw)
+            elif field_type == 6:
+                decoded["tcp_flags"] = _field_int(raw)
+            elif field_type == 7:
+                decoded["source_port"] = _field_int(raw)
+            elif field_type == 8 and field_length == 4:
+                decoded["source_ip"] = str(ipaddress.ip_address(raw))
+            elif field_type == 9:
+                decoded["src_mask"] = _field_int(raw)
+            elif field_type == 10:
+                decoded["input_snmp"] = _field_int(raw)
+            elif field_type == 11:
+                decoded["destination_port"] = _field_int(raw)
+            elif field_type == 12 and field_length == 4:
+                decoded["destination_ip"] = str(ipaddress.ip_address(raw))
+            elif field_type == 13:
+                decoded["dst_mask"] = _field_int(raw)
+            elif field_type == 14:
+                decoded["output_snmp"] = _field_int(raw)
+            elif field_type == 16:
+                decoded["src_as"] = _field_int(raw)
+            elif field_type == 17:
+                decoded["dst_as"] = _field_int(raw)
+            elif field_type == 21:
+                decoded["last_switched"] = _field_int(raw)
+            elif field_type == 22:
+                decoded["first_switched"] = _field_int(raw)
+            elif field_type == 27 and field_length == 16:
+                decoded["source_ip"] = str(ipaddress.ip_address(raw))
+            elif field_type == 28 and field_length == 16:
+                decoded["destination_ip"] = str(ipaddress.ip_address(raw))
+        return decoded
+
+    def _event_from_template_record(
+        self,
+        decoded: dict[str, Any],
+        exporter_ip: str,
+        sequence: int,
+        record_index: int,
+        timestamp: str,
+        export_time: int,
+        sys_uptime: int | None,
+        version: int,
+    ) -> dict[str, Any] | None:
+        source_ip = decoded.get("source_ip")
+        destination_ip = decoded.get("destination_ip")
+        if not source_ip or not destination_ip:
+            return None
+        byte_count = int(decoded.get("byte_count") or 0) * self.sampling_rate
+        packet_count = int(decoded.get("packet_count") or 0) * self.sampling_rate
+        protocol_number = int(decoded.get("protocol_number") or 0)
+        input_snmp = decoded.get("input_snmp")
+        metadata = {
+            "event_source": "netflow",
+            "flow_version": version,
+            "exporter_ip": exporter_ip,
+            "sequence": sequence,
+            "record_index": record_index,
+            "input_snmp": input_snmp,
+            "output_snmp": decoded.get("output_snmp"),
+            "packet_count": packet_count,
+            "byte_count": byte_count,
+            "bytes_out": byte_count if is_private_to_external(str(source_ip), str(destination_ip)) else 0,
+            "bytes_in": byte_count if is_external_to_private(str(source_ip), str(destination_ip)) else 0,
+            "tcp_flags": decoded.get("tcp_flags"),
+            "protocol_number": protocol_number,
+            "tos": decoded.get("tos"),
+            "src_as": decoded.get("src_as"),
+            "dst_as": decoded.get("dst_as"),
+            "src_mask": decoded.get("src_mask"),
+            "dst_mask": decoded.get("dst_mask"),
+            "first_switched": decoded.get("first_switched"),
+            "last_switched": decoded.get("last_switched"),
+            "export_time": export_time,
+            "sys_uptime": sys_uptime,
+            "sampling_rate": self.sampling_rate,
+        }
+        event = {
+            "schema_version": EVENT_SCHEMA_VERSION,
+            "event_id": "",
+            "event_type": "flow",
+            "timestamp": timestamp,
+            "source": {"ip": str(source_ip), "port": int(decoded.get("source_port") or 0), "interface": str(input_snmp) if input_snmp else None},
+            "destination": {"ip": str(destination_ip), "port": int(decoded.get("destination_port") or 0)},
+            "protocol": protocol_name(protocol_number),
+            "direction": traffic_direction(str(source_ip), str(destination_ip)),
+            "metadata": metadata,
+            "raw_source": "netflow",
+        }
+        event["event_id"] = event_id_from(event)
+        return event
 
     def _event_from_v5_record(
         self,
@@ -384,3 +593,7 @@ def _is_private(value: str | None) -> bool:
 
 def protocol_name(number: int) -> str | None:
     return {1: "ICMP", 6: "TCP", 17: "UDP"}.get(int(number), str(number) if number else None)
+
+
+def _field_int(raw: bytes) -> int:
+    return int.from_bytes(raw, "big")

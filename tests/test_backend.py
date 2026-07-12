@@ -19,7 +19,7 @@ from pondsec_ndr.cli import _incident_analysis, main as cli_main, replay_file, r
 from pondsec_ndr.collectors.dnsmasq import DnsmasqCollector, normalize_dnsmasq_lease, normalize_dnsmasq_line
 from pondsec_ndr.collectors.eve import EveCollector
 from pondsec_ndr.collectors.filterlog import FilterLogCollector, FilterLogStats, normalize_filterlog_line
-from pondsec_ndr.collectors.netflow import NETFLOW_V5_HEADER, NETFLOW_V5_RECORD, NetFlowCollector
+from pondsec_ndr.collectors.netflow import IPFIX_HEADER, NETFLOW_V5_HEADER, NETFLOW_V5_RECORD, NETFLOW_V9_HEADER, NetFlowCollector
 from pondsec_ndr.collectors.zeek import ZeekLogCollector, normalize_zeek_row
 from pondsec_ndr.collectors.zenarmor import ZenarmorCollector, ZenarmorSyslogCollector, normalize_zenarmor_event, parse_zenarmor_line
 from pondsec_ndr.config import DetectionConfig, DnsmasqConfig, InterfaceConfig, NetFlowConfig, PondSecConfig, ResponseConfig, SandboxConfig, ThreatIntelConfig, ZeekConfig, ZenarmorConfig, load_config
@@ -132,6 +132,61 @@ def netflow_v5_datagram(sequence: int = 100) -> bytes:
         0,
     )
     return header + record
+
+
+NETFLOW_TEMPLATE_FIELDS = (
+    (8, 4),
+    (12, 4),
+    (7, 2),
+    (11, 2),
+    (4, 1),
+    (6, 1),
+    (1, 4),
+    (2, 4),
+    (10, 2),
+    (14, 2),
+)
+
+
+def netflow_template_body(template_id: int = 256) -> bytes:
+    fields = b"".join(struct.pack("!HH", field_type, field_length) for field_type, field_length in NETFLOW_TEMPLATE_FIELDS)
+    return struct.pack("!HH", template_id, len(NETFLOW_TEMPLATE_FIELDS)) + fields
+
+
+def netflow_data_record() -> bytes:
+    return (
+        ipv4_int("10.10.10.21").to_bytes(4, "big")
+        + ipv4_int("198.51.100.21").to_bytes(4, "big")
+        + struct.pack("!HHBBIIHH", 53000, 443, 6, 0x18, 4096, 20, 12, 34)
+    )
+
+
+def netflow_v9_template_datagram(sequence: int = 200) -> bytes:
+    body = netflow_template_body()
+    flowset = struct.pack("!HH", 0, len(body) + 4) + body
+    return NETFLOW_V9_HEADER.pack(9, 1, 1234, 1783260000, sequence, 7) + flowset
+
+
+def netflow_v9_data_datagram(sequence: int = 201) -> bytes:
+    record = netflow_data_record()
+    padding = b"\x00" * ((4 - len(record) % 4) % 4)
+    flowset = struct.pack("!HH", 256, len(record) + len(padding) + 4) + record + padding
+    return NETFLOW_V9_HEADER.pack(9, 1, 1234, 1783260001, sequence, 7) + flowset
+
+
+def ipfix_template_datagram(sequence: int = 300) -> bytes:
+    body = netflow_template_body()
+    set_payload = struct.pack("!HH", 2, len(body) + 4) + body
+    length = IPFIX_HEADER.size + len(set_payload)
+    return IPFIX_HEADER.pack(10, length, 1783260000, sequence, 7) + set_payload
+
+
+def ipfix_data_datagram(sequence: int = 301) -> bytes:
+    record = netflow_data_record()
+    padding = b"\x00" * ((4 - len(record) % 4) % 4)
+    set_payload = struct.pack("!HH", 256, len(record) + len(padding) + 4) + record + padding
+    length = IPFIX_HEADER.size + len(set_payload)
+    return IPFIX_HEADER.pack(10, length, 1783260001, sequence, 7) + set_payload
 
 
 def seed_host_baseline(store: EventStore, host_ip: str, observations: int = 100) -> None:
@@ -949,6 +1004,39 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(event["protocol"], "TCP")
         self.assertEqual(event["metadata"]["byte_count"], 2400)
         self.assertEqual(event["metadata"]["packet_count"], 12)
+
+    def test_netflow_v9_data_records_normalize_to_flow_event(self) -> None:
+        collector = NetFlowCollector("127.0.0.1", 2055, allowed_exporters=["192.0.2.10"])
+        _, template_stats = collector.parse_datagram(netflow_v9_template_datagram(), "192.0.2.10")
+        self.assertEqual(template_stats.templates_seen, 1)
+        events, data_stats = collector.parse_datagram(netflow_v9_data_datagram(), "192.0.2.10")
+        self.assertEqual(data_stats.parser_errors, 0)
+        self.assertEqual(data_stats.template_errors, 0)
+        self.assertEqual(data_stats.accepted_events, 1)
+        self.assertEqual(len(events), 1)
+        event = events[0]
+        self.assertEqual(event["raw_source"], "netflow")
+        self.assertEqual(event["metadata"]["flow_version"], 9)
+        self.assertEqual(event["source"]["ip"], "10.10.10.21")
+        self.assertEqual(event["destination"]["ip"], "198.51.100.21")
+        self.assertEqual(event["source"]["port"], 53000)
+        self.assertEqual(event["destination"]["port"], 443)
+        self.assertEqual(event["protocol"], "TCP")
+        self.assertEqual(event["metadata"]["byte_count"], 4096)
+        self.assertEqual(event["metadata"]["packet_count"], 20)
+
+    def test_ipfix_data_records_normalize_to_flow_event(self) -> None:
+        collector = NetFlowCollector("127.0.0.1", 2055, allowed_exporters=["192.0.2.10"])
+        _, template_stats = collector.parse_datagram(ipfix_template_datagram(), "192.0.2.10")
+        self.assertEqual(template_stats.templates_seen, 1)
+        events, data_stats = collector.parse_datagram(ipfix_data_datagram(), "192.0.2.10")
+        self.assertEqual(data_stats.parser_errors, 0)
+        self.assertEqual(data_stats.template_errors, 0)
+        self.assertEqual(data_stats.accepted_events, 1)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["metadata"]["flow_version"], 10)
+        self.assertEqual(events[0]["source"]["ip"], "10.10.10.21")
+        self.assertEqual(events[0]["destination"]["ip"], "198.51.100.21")
 
     def test_netflow_tracks_exporter_and_template_health(self) -> None:
         collector = NetFlowCollector("127.0.0.1", 2055, allowed_exporters=["192.0.2.10"])
