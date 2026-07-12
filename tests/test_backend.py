@@ -964,6 +964,69 @@ class BackendTests(unittest.TestCase):
             self.assertIn("filter log is not readable", result["collector"]["opnsense_filterlog"]["last_error"])
             self.assertIn("filter log is not readable", result["optional_collector_warnings"][0])
 
+    def test_service_run_forever_syncs_active_blocks_before_first_loop(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            eve = root / "eve.json"
+            eve.write_text("", encoding="utf-8")
+            config = PondSecConfig(
+                enabled=True,
+                suricata_eve_path=str(eve),
+                data_dir=root / "data",
+                log_dir=root / "log",
+                run_dir=root / "run",
+                detection=DetectionConfig(machine_learning=False),
+            )
+            service = PondSecService(config)
+            sync_calls = []
+
+            def fake_sync() -> dict[str, object]:
+                sync_calls.append("sync")
+                return {"status": "ok", "active_sources": ["203.0.113.20"], "active_count": 1}
+
+            def stop_after_start(max_lines: int = 1000) -> dict[str, object]:
+                del max_lines
+                service.stop_requested = True
+                return {"status": "healthy"}
+
+            service.install_signal_handlers = lambda: None  # type: ignore[method-assign]
+            service._sync_active_blocks = fake_sync  # type: ignore[method-assign]
+            service.run_once = stop_after_start  # type: ignore[method-assign]
+
+            service.run_forever(interval=0)
+
+            self.assertGreaterEqual(len(sync_calls), 1)
+
+    def test_service_database_limit_still_syncs_active_blocks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            eve = root / "eve.json"
+            eve.write_text("", encoding="utf-8")
+            config = PondSecConfig(
+                enabled=True,
+                suricata_eve_path=str(eve),
+                data_dir=root / "data",
+                log_dir=root / "log",
+                run_dir=root / "run",
+                max_database_mb=0,
+                detection=DetectionConfig(machine_learning=False),
+            )
+            service = PondSecService(config)
+            sync_calls = []
+
+            def fake_sync() -> dict[str, object]:
+                sync_calls.append("sync")
+                return {"status": "ok", "active_sources": ["203.0.113.20"], "active_count": 1}
+
+            service._sync_active_blocks = fake_sync  # type: ignore[method-assign]
+
+            result = service.run_once(max_lines=100)
+
+            self.assertEqual(result["status"], "degraded")
+            self.assertEqual(result["reason"], "database_size_limit")
+            self.assertEqual(sync_calls, ["sync"])
+            self.assertEqual(result["block_sync"]["active_count"], 1)
+
     def test_filterlog_short_lines_are_ignored_without_parser_error(self) -> None:
         line = (
             "<134>1 2026-07-05T23:35:53+02:00 HWFirewall01.internal filterlog 92957 - "

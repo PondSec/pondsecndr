@@ -121,7 +121,9 @@ class PondSecService:
 
     def run_forever(self, interval: float = 2.0) -> None:
         self.install_signal_handlers()
-        self._write_health("healthy")
+        startup_block_sync = self._sync_active_blocks()
+        startup_status = "healthy" if startup_block_sync.get("status") == "ok" else "degraded"
+        self._write_health(startup_status, {"block_sync": startup_block_sync})
         while not self.stop_requested:
             try:
                 self.run_once()
@@ -295,12 +297,14 @@ class PondSecService:
         if self._database_over_limit():
             cleaned = self.store.cleanup(self.config.retention_days)
             if self._database_over_limit():
+                block_sync = self._sync_active_blocks()
                 self.counters["queue_drops"] += len(events)
                 resource_usage = self._resource_usage(started_wall, started_cpu)
                 self._write_health("degraded", {
                     "backpressure": "database_size_limit",
                     "dropped_events": len(events),
                     "cleanup_deleted": cleaned,
+                    "block_sync": block_sync,
                     "queue_size": len(events),
                     "resource_usage": resource_usage,
                     "resource_warnings": self._resource_warnings(resource_usage),
@@ -310,6 +314,7 @@ class PondSecService:
                     "reason": "database_size_limit",
                     "dropped_events": len(events),
                     "cleanup_deleted": cleaned,
+                    "block_sync": block_sync,
                 }
 
         excluded_hosts, excluded_networks = self._analysis_exclusions()
