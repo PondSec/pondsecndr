@@ -542,6 +542,60 @@ def activate_block(
     }
 
 
+def sync_active_blocks(
+    store: EventStore,
+    config: PondSecConfig,
+    actor: str = "system",
+    enforcer: PFTableEnforcer | None = None,
+) -> dict[str, Any]:
+    """Reconcile active response blocks with the runtime PF table."""
+    pf = enforcer or PFTableEnforcer()
+    expired_sources = store.expired_active_block_sources()
+    expired = store.expire_block_entries(actor=actor)
+    active_sources = store.active_block_sources()
+    active_set = set(active_sources)
+    removed = []
+    added = []
+    skipped = []
+    for source_ip in expired_sources:
+        if source_ip in active_set:
+            continue
+        result = pf.delete(source_ip)
+        removed.append(result.as_dict())
+    for source_ip in active_sources:
+        try:
+            source_ip = validate_ip_or_network(source_ip)
+            if is_protected_target(source_ip, config):
+                skipped.append({"source_ip": source_ip, "reason": "protected"})
+                continue
+            if config.response.enforce_allowlist and is_allowlisted(source_ip, store.allowlist_values()):
+                skipped.append({"source_ip": source_ip, "reason": "allowlisted"})
+                continue
+        except ResponseDenied as exc:
+            skipped.append({"source_ip": source_ip, "reason": str(exc)})
+            continue
+        add_result = pf.add(source_ip)
+        verify = pf.test(source_ip)
+        added.append({
+            "source_ip": source_ip,
+            "pf_add": add_result.as_dict(),
+            "pf_verify": verify.as_dict(),
+            "ok": bool(add_result.ok and verify.ok),
+        })
+    failures = [item for item in added if not item.get("ok")] + [item for item in removed if not item.get("ok")]
+    return {
+        "status": "ok" if not failures else "partial",
+        "pf_table": pf.table,
+        "pf_rule_present": pf.rule_present(),
+        "active_sources": active_sources,
+        "active_count": len(active_sources),
+        "expired_entries": expired,
+        "pf_added": added,
+        "pf_removed": removed,
+        "skipped": skipped,
+    }
+
+
 def remove_block(
     store: EventStore,
     block_id: str,

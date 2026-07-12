@@ -25,7 +25,7 @@ from pondsec_ndr.detection.detectors import default_detectors
 from pondsec_ndr.features.aggregator import aggregate_features
 from pondsec_ndr.intel.ioc import enrich_events_with_local_iocs
 from pondsec_ndr.logging_json import configure_logging
-from pondsec_ndr.response.engine import ResponseDenied, activate_block, propose_block_for_incident
+from pondsec_ndr.response.engine import ResponseDenied, activate_block, propose_block_for_incident, sync_active_blocks
 from pondsec_ndr.sandbox import enrich_events_with_sandbox
 from pondsec_ndr.storage.database import EventStore
 
@@ -54,6 +54,7 @@ class PondSecService:
             "last_response_errors": [],
             "incident_rate_timestamps": [],
             "pf_action_rate_timestamps": [],
+            "last_block_sync": {},
         }
 
     def _ensure_learning_started_at(self) -> None:
@@ -353,6 +354,7 @@ class PondSecService:
             minimum_observations=self.config.detection.minimum_observations,
         )
         response_actions = self._auto_response(incidents, effective_config)
+        block_sync = self._sync_active_blocks()
         cleaned = self.store.cleanup(self.config.retention_days)
         resource_usage = self._resource_usage(started_wall, started_cpu)
         resource_warnings = self._resource_warnings(resource_usage)
@@ -387,6 +389,7 @@ class PondSecService:
             "inserted_incidents": inserted_incidents,
             "suppressed_incidents": suppressed_incidents,
             "response_actions": response_actions,
+            "block_sync": block_sync,
             "baseline_updates": baseline_updates,
             "cleanup_deleted": cleaned,
             "parser_errors": self.counters["parser_errors"],
@@ -456,6 +459,7 @@ class PondSecService:
             "incidents": inserted_incidents,
             "suppressed_incidents": suppressed_incidents,
             "response_actions": response_actions,
+            "block_sync": block_sync,
             "baseline_updates": baseline_updates,
             "resource_warnings": resource_warnings,
             "learning_status": learning_status,
@@ -564,6 +568,16 @@ class PondSecService:
                 continue
             filtered.append(event)
         return filtered
+
+    def _sync_active_blocks(self) -> dict[str, Any]:
+        try:
+            result = sync_active_blocks(self.store, self.config, actor="service-sync")
+        except Exception as exc:
+            message = f"active block PF sync failed: {exc}"
+            self.counters["last_response_errors"] = ([message] + self.counters["last_response_errors"])[:5]
+            result = {"status": "error", "reason": str(exc)}
+        self.counters["last_block_sync"] = result
+        return result
 
     def _auto_response(self, incidents: list[dict[str, Any]], config: PondSecConfig | None = None) -> list[dict[str, Any]]:
         config = config or self.config
@@ -707,6 +721,7 @@ class PondSecService:
             "last_optional_collector_errors": self.counters["last_optional_collector_errors"],
             "last_ml_errors": self.counters["last_ml_errors"],
             "last_response_errors": self.counters["last_response_errors"],
+            "block_sync": self.counters.get("last_block_sync") or {},
         }
         if detail:
             payload.update(detail)

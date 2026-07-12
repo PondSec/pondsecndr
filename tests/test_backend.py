@@ -68,6 +68,7 @@ from pondsec_ndr.response.engine import (
     propose_sinkhole_for_incident,
     remove_block,
     remove_sinkhole,
+    sync_active_blocks,
 )
 from pondsec_ndr.response.pf import PFTableEnforcer
 from pondsec_ndr.sandbox import enrich_events_with_sandbox
@@ -367,7 +368,7 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(recent[0]["destination"]["port"], 22)
             self.assertEqual(recent[0]["metadata"]["flow_reason"], "timeout")
 
-    def test_filterlog_block_lines_feed_portscan_detection(self) -> None:
+    def test_filterlog_block_lines_are_not_promoted_to_portscan(self) -> None:
         def filterlog_line(port: int) -> str:
             return (
                 "<134>1 2026-07-05T23:35:53+02:00 HWFirewall01.internal filterlog 92957 - "
@@ -388,7 +389,9 @@ class BackendTests(unittest.TestCase):
         normalized = [event for event in events if event is not None]
         features = aggregate_features(normalized)
         detections = PortScanDetector().detect(normalized, features)
-        self.assertTrue(any(item["detector_id"] == "pondsec.portscan" for item in detections))
+        self.assertEqual(features[0]["firewall_blocked_connections"], 15)
+        self.assertTrue(features[0]["firewall_blocked_only"])
+        self.assertEqual(detections, [])
 
     def test_filterlog_collector_starts_at_end_and_tracks_new_lines(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -972,6 +975,25 @@ class BackendTests(unittest.TestCase):
         self.assertTrue(event["metadata"]["filter_suspicious_pass"])
         self.assertEqual(event["metadata"]["filter_suspicious_reason"], "nat_private_destination_admin_service")
         self.assertEqual(event["metadata"]["flow_reason"], "attempt")
+
+    def test_filterlog_blocked_scanner_is_prevention_evidence_not_new_recon(self) -> None:
+        def blocked_line(index: int, port: int) -> str:
+            return (
+                f"<134>1 2026-07-12T10:12:{index:02d}+02:00 HWFirewall01.internal filterlog 46079 - "
+                f"[meta sequenceId=\"{251000 + index}\"] "
+                "57,,,tracker,pppoe0,match,block,in,4,0x0,,63,0,0,DF,6,tcp,48,"
+                f"51.159.110.167,80.153.171.185,{25000 + index},{port},0,S"
+            )
+
+        events = [normalize_filterlog_line(blocked_line(i, 22000 + i)) for i in range(15)]
+        normalized = [event for event in events if event is not None]
+        features = aggregate_features(normalized)
+
+        self.assertEqual(len(normalized), 15)
+        self.assertEqual(features[0]["firewall_blocked_connections"], 15)
+        self.assertTrue(features[0]["firewall_blocked_only"])
+        self.assertEqual(PortScanDetector().detect(normalized, features), [])
+        self.assertEqual(VerticalScanDetector().detect(normalized, features), [])
 
     def test_worm_like_propagation_detector_finds_private_admin_fanout(self) -> None:
         def filterlog_line(index: int, target: str, port: int) -> str:
@@ -4501,6 +4523,62 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(activation["status"], "ok")
             self.assertEqual(store.get_block_entry(proposal["block_id"])["status"], "active")
             self.assertIn(["/sbin/pfctl", "-t", "virusprot", "-T", "add", "203.0.113.88"], commands)
+
+    def test_response_engine_syncs_active_blocks_to_pf_and_expires_stale_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            now = datetime.now(timezone.utc)
+            store.add_block_entry({
+                "block_id": "active-sync-block",
+                "incident_id": None,
+                "source_ip": "203.0.113.90",
+                "destination": None,
+                "reason": "active sync test",
+                "risk_score": 90,
+                "confidence": 0.99,
+                "policy_id": "test",
+                "created_at": now.isoformat(),
+                "expires_at": (now + timedelta(hours=1)).isoformat(),
+                "created_by": "test",
+                "automatic": False,
+                "status": "active",
+            }, actor="test")
+            store.add_block_entry({
+                "block_id": "expired-sync-block",
+                "incident_id": None,
+                "source_ip": "203.0.113.91",
+                "destination": None,
+                "reason": "expired sync test",
+                "risk_score": 90,
+                "confidence": 0.99,
+                "policy_id": "test",
+                "created_at": (now - timedelta(hours=2)).isoformat(),
+                "expires_at": (now - timedelta(hours=1)).isoformat(),
+                "created_by": "test",
+                "automatic": False,
+                "status": "active",
+            }, actor="test")
+            commands: list[list[str]] = []
+
+            def fake_runner(command: list[str]) -> subprocess.CompletedProcess[str]:
+                commands.append(command)
+                if command == ["/sbin/pfctl", "-sr"]:
+                    return subprocess.CompletedProcess(command, 0, "block drop in quick from <virusprot> to any", "")
+                return subprocess.CompletedProcess(command, 0, "ok", "")
+
+            result = sync_active_blocks(
+                store,
+                PondSecConfig(),
+                actor="test",
+                enforcer=PFTableEnforcer(runner=fake_runner, allow_configctl=False),
+            )
+
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(result["active_sources"], ["203.0.113.90"])
+            self.assertEqual(store.get_block_entry("expired-sync-block")["status"], "expired")
+            self.assertIn(["/sbin/pfctl", "-t", "virusprot", "-T", "add", "203.0.113.90"], commands)
+            self.assertIn(["/sbin/pfctl", "-t", "virusprot", "-T", "delete", "203.0.113.91"], commands)
 
     def test_response_engine_reuses_existing_active_source_block(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

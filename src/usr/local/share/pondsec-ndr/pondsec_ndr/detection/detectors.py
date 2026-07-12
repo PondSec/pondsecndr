@@ -189,6 +189,14 @@ def _boolish(value: Any) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on", "enabled", "blocked", "sinkhole"}
 
 
+def _is_opnsense_block_event(event: dict[str, Any]) -> bool:
+    metadata = _metadata(event)
+    return (
+        str(metadata.get("event_source") or event.get("raw_source") or "").lower() == "opnsense_filterlog"
+        and str(metadata.get("filter_action") or "").lower() == "block"
+    )
+
+
 class PortScanDetector(Detector):
     detector_id = "pondsec.portscan"
 
@@ -198,6 +206,10 @@ class PortScanDetector(Detector):
             port_count = int(item.get("port_count") or 0)
             dest_count = int(item.get("destination_count") or 0)
             failed = int(item.get("failed_connections") or 0)
+            blocked = int(item.get("firewall_blocked_connections") or 0)
+            suspicious_pass = int(item.get("firewall_suspicious_pass_connections") or 0)
+            if item.get("firewall_blocked_only") and blocked >= failed and suspicious_pass == 0:
+                continue
             if port_count >= 12 and failed >= 3:
                 detections.append(make_detection(
                     self.detector_id,
@@ -213,6 +225,7 @@ class PortScanDetector(Detector):
                         "unique_ports": port_count,
                         "unique_destinations": dest_count,
                         "failed_connections": failed,
+                        "firewall_blocked_connections": blocked,
                         "thresholds": [
                             {"feature": "unique_ports", "operator": ">=", "threshold": 12, "observed": port_count},
                             {"feature": "failed_connections", "operator": ">=", "threshold": 3, "observed": failed},
@@ -229,6 +242,8 @@ class VerticalScanDetector(Detector):
         by_pair: dict[tuple[str, str], set[int]] = defaultdict(set)
         for event in events:
             if is_infrastructure_response_event(event):
+                continue
+            if _is_opnsense_block_event(event):
                 continue
             src = event.get("source", {}).get("ip")
             dst = event.get("destination", {}).get("ip")
@@ -266,6 +281,8 @@ class HorizontalScanDetector(Detector):
         by_source_port: dict[tuple[str, int], set[str]] = defaultdict(set)
         for event in events:
             if is_infrastructure_response_event(event):
+                continue
+            if _is_opnsense_block_event(event):
                 continue
             src = event.get("source", {}).get("ip")
             dst = event.get("destination", {}).get("ip")

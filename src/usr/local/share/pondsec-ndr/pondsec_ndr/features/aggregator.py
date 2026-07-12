@@ -47,6 +47,9 @@ def _base_feature(source_ip: str) -> dict[str, Any]:
         "unique_ports_60s": 0,
         "unique_ports_5m": 0,
         "failed_connections": 0,
+        "firewall_blocked_connections": 0,
+        "firewall_suspicious_pass_connections": 0,
+        "firewall_blocked_only": False,
         "internal_connections": 0,
         "external_connections": 0,
         "new_destination_score": 0.0,
@@ -107,6 +110,14 @@ def aggregate_features(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
             metadata = event.get("metadata", {})
             dst = event.get("destination", {}).get("ip")
             dst_port = event.get("destination", {}).get("port")
+            firewall_blocked = (
+                str(metadata.get("event_source") or "") == "opnsense_filterlog"
+                and str(metadata.get("filter_action") or "").lower() == "block"
+            )
+            if firewall_blocked:
+                item["firewall_blocked_connections"] += 1
+            if not firewall_blocked and metadata.get("filter_suspicious_pass"):
+                item["firewall_suspicious_pass_connections"] += 1
             if dst:
                 destinations.add(dst)
             if dst_port is not None:
@@ -155,6 +166,7 @@ def aggregate_features(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         item["unique_ports_5m"] = len(ports)
         item["destination_count"] = len(destinations)
         item["port_count"] = len(ports)
+        item["firewall_blocked_only"] = bool(source_events) and item["firewall_blocked_connections"] == len(source_events)
         if port_counter:
             item["dominant_destination_port"] = port_counter.most_common(1)[0][0]
         if dns_port_counter:
