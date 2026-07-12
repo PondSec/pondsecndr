@@ -24,6 +24,11 @@ $(function() {
             title: 'Threat intelligence',
             description: 'Local enrichment and opt-in external refresh behavior for intelligence data.'
         },
+        sandbox: {
+            icon: 'fa-flask',
+            title: 'File sandbox',
+            description: 'File hash, provider verdict and external sandbox-result handling without local artifact execution.'
+        },
         zeek: {
             icon: 'fa-search',
             title: 'Zeek telemetry',
@@ -61,6 +66,7 @@ $(function() {
         'Interfaces': 'interfaces',
         'Detection': 'detection',
         'Threat intelligence enrichment': 'intel',
+        'File sandbox': 'sandbox',
         'Zeek telemetry': 'zeek',
         'Zenarmor telemetry': 'zenarmor',
         'NetFlow and IPFIX': 'netflow',
@@ -171,9 +177,24 @@ $(function() {
             'Case correlation window': 'Korrelationsfenster',
             'Threat intelligence enrichment': 'Threat-Intelligence-Anreicherung',
             'CVE enrichment': 'CVE-Anreicherung',
+            'Local IOC enrichment': 'Lokale IOC-Anreicherung',
             'External CVE lookups': 'Externe CVE-Abfragen',
             'Threat intel cache TTL': 'Threat-Intel-Cache-TTL',
             'Threat intel API timeout': 'Threat-Intel-API-Timeout',
+            'IOC feed TTL hours': 'IOC-Feed-TTL in Stunden',
+            'File sandbox': 'Datei-Sandbox',
+            'File sandbox enrichment': 'Datei-Sandbox-Anreicherung',
+            'Sandbox mode': 'Sandbox-Modus',
+            'Metadata only': 'Nur Metadaten',
+            'Local static checks': 'Lokale statische Pruefungen',
+            'External result import': 'Externer Ergebnisimport',
+            'Sandbox results directory': 'Sandbox-Ergebnisverzeichnis',
+            'Sandbox pending directory': 'Sandbox-Pending-Verzeichnis',
+            'Sandbox artifact directory': 'Sandbox-Artefaktverzeichnis',
+            'Sandbox request timeout': 'Sandbox-Request-Timeout',
+            'Sandbox result TTL': 'Sandbox-Ergebnis-TTL',
+            'Sandbox queue limit': 'Sandbox-Queue-Limit',
+            'Sandbox privacy mode': 'Sandbox-Datenschutzmodus',
             'Zeek telemetry': 'Zeek-Telemetrie',
             'Enable Zeek provider': 'Zeek-Provider aktivieren',
             'Zeek mode': 'Zeek-Modus',
@@ -317,6 +338,7 @@ $(function() {
             interfaces: ['Schnittstellen', 'Netzwerkrollen, geschuetzte Managementbereiche und Traffic-Richtung fuer Erkennung und Response.'],
             detection: ['Erkennung', 'Deterministische Detections, Lernmodus, KI-Aktivierung und Korrelationsfenster.'],
             intel: ['Threat Intelligence', 'Lokale Anreicherung und optionale externe Aktualisierung fuer Intelligence-Daten.'],
+            sandbox: ['Datei-Sandbox', 'Hash-, Provider-Verdict- und externe Sandbox-Ergebnisverarbeitung ohne lokale Ausfuehrung.'],
             zeek: ['Zeek-Telemetrie', 'Lokale oder externe Zeek-Logpfade fuer Flow, DNS, TLS, HTTP, File, Notice und Weird.'],
             zenarmor: ['Zenarmor-Telemetrie', 'Dokumentierte Zenarmor-Reporting-Exporte ohne Aenderungen an Policies, Lizenzierung oder TLS-Inspection.'],
             netflow: ['NetFlow und IPFIX', 'UDP-Flow-Collector, Exporter-Allowlist, Template-Health und begrenzter Ingest.'],
@@ -418,6 +440,9 @@ $(function() {
         }
         if (fieldId.indexOf('pondsecndr.threat_intel.') === 0) {
             return 'intel';
+        }
+        if (fieldId.indexOf('pondsecndr.sandbox.') === 0) {
+            return 'sandbox';
         }
         if (fieldId.indexOf('pondsecndr.zeek.') === 0) {
             return 'zeek';
@@ -944,6 +969,7 @@ $(function() {
             <button type="button" data-section="interfaces"><i class="fa fa-sitemap"></i><span>Interfaces</span><em class="pondsec-nav-count"></em></button>
             <button type="button" data-section="detection"><i class="fa fa-shield"></i><span>Detection</span><em class="pondsec-nav-count"></em></button>
             <button type="button" data-section="intel"><i class="fa fa-crosshairs"></i><span>Threat intelligence</span><em class="pondsec-nav-count"></em></button>
+            <button type="button" data-section="sandbox"><i class="fa fa-flask"></i><span>File sandbox</span><em class="pondsec-nav-count"></em></button>
             <button type="button" data-section="zeek"><i class="fa fa-search"></i><span>Zeek telemetry</span><em class="pondsec-nav-count"></em></button>
             <button type="button" data-section="zenarmor"><i class="fa fa-eye"></i><span>Zenarmor telemetry</span><em class="pondsec-nav-count"></em></button>
             <button type="button" data-section="netflow"><i class="fa fa-random"></i><span>NetFlow and IPFIX</span><em class="pondsec-nav-count"></em></button>

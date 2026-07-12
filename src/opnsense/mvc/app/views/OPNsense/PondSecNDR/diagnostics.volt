@@ -97,6 +97,7 @@ $(function() {
         var pf = data.pf_blocking || {};
         var baselines = data.host_baselines || {};
         var learning = data.learning_status || (ml.learning_status || {});
+        var coverage = ((data.telemetry_coverage || {}).coverage) || {};
         $('#runtime_grid').html([
             {label: 'EVE telemetry', value: eve.status || 'unknown', detail: eve.path || data.suricata_eve_path || '-'},
             {label: 'AI model', value: ml.external_model_status || 'unknown', detail: ml.external_model_id || 'No model selected'},
@@ -104,6 +105,7 @@ $(function() {
             {label: 'Model runtime', value: ml.external_model_runtime || ml.numpy_status || 'unknown', detail: 'NumPy ' + (ml.numpy_version || ml.numpy_status || '-') + ' · PyTorch optional ' + (ml.pytorch_status || 'unknown')},
             {label: 'PF blocking', value: pf.rule_present ? 'active' : 'missing', detail: pf.table || '-'},
             {label: 'TLS visibility', value: tls.status || 'unknown', detail: 'HTTP ' + numberValue(tls.http_events_24h) + ' / TLS ' + numberValue(tls.tls_events_24h) + ' events in 24h'},
+            {label: 'File sandbox', value: numberValue(coverage.sandbox_verdict) > 0 ? 'verdicts seen' : 'waiting', detail: numberValue(coverage.fileinfo).toLocaleString() + ' file events · ' + numberValue(coverage.sandbox_verdict).toLocaleString() + ' sandbox verdicts in 24h'},
             {label: 'Host baselines', value: baselines.established_hosts + '/' + baselines.total_hosts, detail: baselines.learning_hosts + ' learning hosts'}
         ].map(function(item) {
             return '<div class="pondsec-runtime-card">' +
@@ -160,11 +162,99 @@ $(function() {
         }).join('') || '<tr><td colspan="5" class="pondsec-empty">No providers reported.</td></tr>');
     }
 
+    function renderTelemetryCoverage(data) {
+        var coverage = data.telemetry_coverage || {};
+        var byProvider = coverage.by_provider || {};
+        var runtime = coverage.collector_runtime || {};
+        var aliases = {
+            suricata: 'suricata_eve'
+        };
+        var providers = {};
+        Object.keys(byProvider).forEach(function(key) { providers[key] = true; });
+        Object.keys(runtime).forEach(function(key) { providers[key] = true; });
+
+        function countsFor(provider, windowName) {
+            return (((byProvider[provider] || {}).windows || {})[windowName]) || {};
+        }
+        function runtimeFor(provider) {
+            return runtime[provider] || runtime[aliases[provider]] || {};
+        }
+        function typeDetail(counts) {
+            counts = counts || {};
+            var pieces = [
+                ['Flow', counts.flow],
+                ['DNS', counts.dns],
+                ['TLS', counts.tls],
+                ['HTTP', counts.http],
+                ['File', counts.fileinfo],
+                ['Auth', counts.authentication],
+                ['Sandbox', counts.sandbox_verdict],
+                ['Incomplete', counts.incomplete]
+            ].filter(function(item) {
+                return numberValue(item[1]) > 0;
+            });
+            return pieces.length ? pieces.map(function(item) {
+                return item[0] + ' ' + numberValue(item[1]).toLocaleString();
+            }).join(' · ') : '-';
+        }
+        function providerStatus(provider) {
+            var c24 = countsFor(provider, '24h');
+            var stats = runtimeFor(provider);
+            if (numberValue(c24.total) > 0 || numberValue(stats.matched_results) > 0 || numberValue(stats.accepted_events) > 0) {
+                return 'active';
+            }
+            if (numberValue(stats.parser_errors) > 0 || numberValue(stats.normalization_errors) > 0 || numberValue(stats.queue_drops) > 0) {
+                return 'warning';
+            }
+            return 'idle';
+        }
+
+        var rows = Object.keys(providers).sort().map(function(provider) {
+            var item = byProvider[provider] || {};
+            var c1 = countsFor(provider, '1h');
+            var c6 = countsFor(provider, '6h');
+            var c24 = countsFor(provider, '24h');
+            var stats = runtimeFor(provider);
+            var errors = numberValue(stats.parser_errors) + numberValue(stats.normalization_errors);
+            var collectorDetail = [
+                'accepted ' + numberValue(stats.accepted_events).toLocaleString(),
+                'errors ' + errors.toLocaleString(),
+                'drops ' + numberValue(stats.queue_drops).toLocaleString()
+            ];
+            if (numberValue(stats.pending_requests) > 0 || numberValue(stats.matched_results) > 0) {
+                collectorDetail.push('pending ' + numberValue(stats.pending_requests).toLocaleString());
+                collectorDetail.push('matched ' + numberValue(stats.matched_results).toLocaleString());
+            }
+            return '<tr>' +
+                '<td><strong>' + escapeHtml(provider) + '</strong><div class="pondsec-muted">last ' + escapeHtml(item.last_event_at || '-') + '</div></td>' +
+                '<td>' + badge(providerStatus(provider)) + '</td>' +
+                '<td>' + numberValue(c1.total).toLocaleString() + '</td>' +
+                '<td>' + numberValue(c6.total).toLocaleString() + '</td>' +
+                '<td><strong>' + numberValue(c24.total).toLocaleString() + '</strong><div class="pondsec-muted">' + escapeHtml(typeDetail(c24)) + '</div></td>' +
+                '<td>' + escapeHtml(collectorDetail.join(' · ')) + (stats.last_error ? '<div class="pondsec-error-text">' + escapeHtml(stats.last_error) + '</div>' : '') + '</td>' +
+            '</tr>';
+        }).join('');
+
+        var ready = coverage.email_url_file_ready || {};
+        $('#coverage_readiness').html([
+            ['DNS', ready.dns_metadata],
+            ['TLS', ready.tls_metadata],
+            ['HTTP', ready.http_metadata],
+            ['Fileinfo', ready.file_metadata],
+            ['Signatures/drops', ready.signature_or_drop_metadata],
+            ['Sandbox verdicts', ready.sandbox_verdict_metadata]
+        ].map(function(item) {
+            return '<span class="pondsec-badge ' + (item[1] ? 'good' : 'neutral') + '">' + escapeHtml(item[0]) + '</span>';
+        }).join(''));
+        $('#coverage_table tbody').html(rows || '<tr><td colspan="6" class="pondsec-empty">No provider telemetry was observed in the last 24 hours.</td></tr>');
+    }
+
     function renderRaw(data) {
         var compact = {
             status: data.status,
             readiness: data.readiness,
             providers: data.providers,
+            telemetry_coverage: data.telemetry_coverage,
             eve_access: data.eve_access,
             ml_runtime: data.ml_runtime,
             learning_status: data.learning_status,
@@ -185,6 +275,7 @@ $(function() {
             renderRuntime(data);
             renderHealth(data);
             renderProviders(data);
+            renderTelemetryCoverage(data);
             renderRaw(data);
         });
     }
@@ -335,6 +426,12 @@ $(function() {
     margin: 0;
     width: 100%;
 }
+.pondsec-coverage-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 7px;
+    margin: 0 0 12px;
+}
 .pondsec-table th,
 .pondsec-table td {
     border-bottom: 1px solid #2b3746;
@@ -471,6 +568,24 @@ $(function() {
                 </tr>
             </thead>
             <tbody><tr><td colspan="5" class="pondsec-empty">{{ lang._('Loading') }}</td></tr></tbody>
+        </table>
+    </section>
+
+    <section class="pondsec-panel">
+        <h3>{{ lang._('Telemetry coverage by provider') }}</h3>
+        <div id="coverage_readiness" class="pondsec-coverage-badges"></div>
+        <table id="coverage_table" class="pondsec-table">
+            <thead>
+                <tr>
+                    <th>{{ lang._('Provider') }}</th>
+                    <th>{{ lang._('State') }}</th>
+                    <th>{{ lang._('1 h') }}</th>
+                    <th>{{ lang._('6 h') }}</th>
+                    <th>{{ lang._('24 h detail') }}</th>
+                    <th>{{ lang._('Collector quality') }}</th>
+                </tr>
+            </thead>
+            <tbody><tr><td colspan="6" class="pondsec-empty">{{ lang._('Loading') }}</td></tr></tbody>
         </table>
     </section>
 

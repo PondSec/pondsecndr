@@ -97,6 +97,7 @@ $(function() {
         'Case overview': 'Case-Ueberblick',
         'Visual timeline': 'Visuelle Timeline',
         'Affected targets': 'Betroffene Ziele',
+        'File sandbox and file verdicts': 'Datei-Sandbox und Datei-Verdicts',
         'Confidence boundaries': 'Confidence-Grenzen',
         'Notable features': 'Auffaellige Merkmale',
         'Risk factors': 'Risikofaktoren',
@@ -155,6 +156,21 @@ $(function() {
         'No detection timeline recorded.': 'Keine Detection-Timeline aufgezeichnet.',
         'Select a graph node, relationship, phase, or timeline item.': 'Graph-Knoten, Beziehung, Phase oder Timeline-Eintrag auswaehlen.',
         'No target list recorded.': 'Keine Zielliste aufgezeichnet.',
+        'No file, AV or sandbox verdict evidence was recorded for this incident.': 'Fuer diesen Incident wurde keine Datei-, AV- oder Sandbox-Verdict-Evidenz aufgezeichnet.',
+        'File verdict evidence': 'Datei-Verdict-Evidenz',
+        'Provider': 'Provider',
+        'Sandbox status': 'Sandbox-Status',
+        'Sandbox confidence': 'Sandbox-Confidence',
+        'Detection confidence': 'Detection-Confidence',
+        'Threat name': 'Threat-Name',
+        'MIME type': 'MIME-Typ',
+        'File size': 'Dateigroesse',
+        'Analysis ID': 'Analyse-ID',
+        'Hashes': 'Hashes',
+        'Findings': 'Findings',
+        'No file hashes recorded.': 'Keine Datei-Hashes aufgezeichnet.',
+        'Safe test marker recorded.': 'Sicherer Testmarker aufgezeichnet.',
+        'No sandbox findings recorded.': 'Keine Sandbox-Findings aufgezeichnet.',
         'No guidance recorded.': 'Keine Hinweise aufgezeichnet.',
         'No notable feature list recorded.': 'Keine auffaelligen Merkmale aufgezeichnet.',
         'No risk factors recorded.': 'Keine Risikofaktoren aufgezeichnet.',
@@ -717,6 +733,55 @@ $(function() {
                 '<em>' + escapeHtml(cve.claim_limit || '') + '</em>' +
             '</div>';
         }).join(''));
+    }
+
+    function renderFileSandboxEvidence(items) {
+        items = items || [];
+        if (!items.length) {
+            return '<div class="pondsec-empty">No file, AV or sandbox verdict evidence was recorded for this incident.</div>';
+        }
+        function verdictBadge(value) {
+            var text = String(value || 'unrecorded').toLowerCase();
+            var cls = 'neutral';
+            if (['malicious', 'malware', 'blocked', 'infected', 'eicar'].indexOf(text) !== -1 || text.indexOf('mal') !== -1) {
+                cls = 'bad';
+            } else if (['suspicious', 'risky', 'timeout', 'pending'].indexOf(text) !== -1) {
+                cls = 'info';
+            } else if (['clean', 'benign', 'allowed'].indexOf(text) !== -1) {
+                cls = 'good';
+            }
+            return '<span class="pondsec-badge ' + cls + '">' + escapeHtml(value || 'unrecorded') + '</span>';
+        }
+        return items.map(function(item) {
+            var verdict = item.sandbox_verdict || item.file_verdict || item.av_verdict || (item.suspicious_extension ? 'suspicious' : 'unrecorded');
+            var hashes = [
+                item.sha256 ? 'sha256 ' + item.sha256 : null,
+                item.sha1 ? 'sha1 ' + item.sha1 : null,
+                item.md5 ? 'md5 ' + item.md5 : null
+            ].filter(hasValue);
+            var findings = Array.isArray(item.sandbox_findings) ? item.sandbox_findings : [];
+            return '<div class="pondsec-file-evidence">' +
+                '<div class="pondsec-file-evidence-head">' +
+                    verdictBadge(verdict) +
+                    '<strong>' + escapeHtml(item.filename || item.threat_name || item.title || 'File verdict evidence') + '</strong>' +
+                    '<span>' + escapeHtml(formatDate(item.timestamp)) + '</span>' +
+                '</div>' +
+                '<div class="pondsec-decision-grid">' +
+                    '<div><span>Provider</span><strong>' + compactValue(item.provider_id || item.sandbox_source || item.detector_id) + '</strong></div>' +
+                    '<div><span>Sandbox status</span><strong>' + compactValue(item.sandbox_status) + '</strong></div>' +
+                    '<div><span>Sandbox confidence</span><strong>' + (hasValue(item.sandbox_confidence) ? escapeHtml(formatPercent(item.sandbox_confidence)) : '-') + '</strong></div>' +
+                    '<div><span>Detection confidence</span><strong>' + escapeHtml(formatPercent(item.confidence || 0)) + '</strong></div>' +
+                    '<div><span>Threat name</span><strong>' + compactValue(item.threat_name) + '</strong></div>' +
+                    '<div><span>MIME type</span><strong>' + compactValue(item.mime_type) + '</strong></div>' +
+                    '<div><span>File size</span><strong>' + compactValue(item.file_size) + '</strong></div>' +
+                    '<div><span>Analysis ID</span><strong>' + compactValue(item.sandbox_analysis_id) + '</strong></div>' +
+                '</div>' +
+                '<div class="pondsec-file-evidence-extra">' +
+                    '<span>Hashes</span>' + tokens(hashes, 'No file hashes recorded.') +
+                    '<span>Findings</span>' + tokens(findings, item.safe_test_file ? 'Safe test marker recorded.' : 'No sandbox findings recorded.') +
+                '</div>' +
+            '</div>';
+        }).join('');
     }
 
     function renderGraphLegend(graph) {
@@ -1311,6 +1376,7 @@ $(function() {
         $('#incident_targets').html(targets.length ? targets.map(function(target) {
             return '<span class="pondsec-token">' + escapeHtml(target) + '</span>';
         }).join('') : '<span class="pondsec-empty-inline">No target list recorded.</span>');
+        $('#incident_file_sandbox_evidence').html(renderFileSandboxEvidence(analysis.file_sandbox_evidence || []));
         $('#incident_attack_graph').html(renderAttackGraph(analysis.attack_graph || {}));
         renderGraphLegend(analysis.attack_graph || {});
         $('#incident_attack_stages').html(renderAttackStages(analysis.attack_stages || []));
@@ -1649,10 +1715,10 @@ $(function() {
     max-width: none;
     overscroll-behavior: contain;
     overflow-y: auto;
-    padding: 20px 34px 34px;
+    padding: 24px 34px 34px;
     position: fixed;
     right: 0;
-    top: 70px;
+    top: 96px;
     transform: translateX(105%);
     transition: transform 0.22s ease;
     width: 100vw;
@@ -1679,11 +1745,16 @@ $(function() {
 }
 .pondsec-case-head-controls {
     align-items: center;
+    background: #151d26;
     display: flex;
     flex: 0 0 auto;
     gap: 10px;
     justify-content: flex-end;
     padding-top: 0;
+    position: sticky;
+    right: 0;
+    top: 0;
+    z-index: 25;
 }
 .pondsec-panel-back,
 .pondsec-panel-close {
@@ -1928,6 +1999,43 @@ $(function() {
     font-size: 11px;
     margin-bottom: 6px;
     text-transform: uppercase;
+}
+.pondsec-file-evidence {
+    background: #1b2430;
+    border: 1px solid #2a3544;
+    border-left: 4px solid #65b7ff;
+    border-radius: 6px;
+    margin-bottom: 10px;
+    padding: 12px;
+}
+.pondsec-file-evidence-head {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 9px;
+    margin-bottom: 10px;
+}
+.pondsec-file-evidence-head strong {
+    color: #edf3f8;
+}
+.pondsec-file-evidence-head span:last-child {
+    color: #8f9dac;
+    font-size: 12px;
+}
+.pondsec-file-evidence-extra {
+    border-top: 1px solid #2a3544;
+    margin-top: 10px;
+    padding-top: 10px;
+}
+.pondsec-file-evidence-extra > span {
+    color: #8f9dac;
+    display: block;
+    font-size: 11px;
+    margin: 0 0 6px;
+    text-transform: uppercase;
+}
+.pondsec-file-evidence-extra > span:not(:first-child) {
+    margin-top: 10px;
 }
 .pondsec-case-kv em,
 .pondsec-certainty {
@@ -2278,7 +2386,7 @@ $(function() {
     .pondsec-case-panel {
         bottom: 0;
         left: 0;
-        top: 58px;
+        top: 72px;
         padding: 16px;
         width: 100vw;
     }
@@ -2402,6 +2510,10 @@ $(function() {
         <section class="pondsec-case-section">
             <h4>Affected targets</h4>
             <div id="incident_targets"></div>
+        </section>
+        <section class="pondsec-case-section">
+            <h4>File sandbox and file verdicts</h4>
+            <div id="incident_file_sandbox_evidence"></div>
         </section>
         <section class="pondsec-case-section">
             <h4>Confidence boundaries</h4>

@@ -143,7 +143,8 @@ class PackagingTests(unittest.TestCase):
         self.assertIn('data-action="manual-block"', view)
         self.assertIn('data-action="propose-sinkhole"', view)
         self.assertIn("/api/pondsecndr/sinkhole/propose/", view)
-        self.assertIn("top: 70px;", view)
+        self.assertIn("top: 96px;", view)
+        self.assertIn("File sandbox and file verdicts", view)
         self.assertNotIn("padding-top: 48px;", view)
 
     def test_blocklist_view_exposes_dns_sinkhole_lifecycle(self) -> None:
