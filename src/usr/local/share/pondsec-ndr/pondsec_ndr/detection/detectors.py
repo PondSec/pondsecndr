@@ -99,6 +99,8 @@ BENIGN_WEB_TERMS = (
 BLOCK_DECISIONS = {"block", "blocked", "deny", "denied", "drop", "dropped", "sinkhole", "quarantine"}
 ALLOW_DECISIONS = {"allow", "allowed", "pass", "passed", "permit", "permitted"}
 MALICIOUS_VERDICTS = {"malicious", "infected", "malware", "blocked", "quarantine", "quarantined", "denied", "high"}
+EPHEMERAL_PORT_MIN = 49152
+COMMON_RESPONSE_SOURCE_PORTS = {53, 80, 123, 443, 853, 993, 995, 3478, 5349}
 SUSPICIOUS_FILE_EXTENSIONS = (
     ".ps1",
     ".vbs",
@@ -208,6 +210,23 @@ def _is_opnsense_block_event(event: dict[str, Any]) -> bool:
     )
 
 
+def _looks_like_client_service_response(event: dict[str, Any]) -> bool:
+    source = event.get("source") if isinstance(event.get("source"), dict) else {}
+    destination = event.get("destination") if isinstance(event.get("destination"), dict) else {}
+    src_port = _int_or_none(source.get("port"))
+    dst_port = _int_or_none(destination.get("port"))
+    if src_port is None or dst_port is None:
+        return False
+    return src_port in COMMON_RESPONSE_SOURCE_PORTS and dst_port >= EPHEMERAL_PORT_MIN
+
+
+def _int_or_none(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 class PortScanDetector(Detector):
     detector_id = "pondsec.portscan"
 
@@ -254,6 +273,8 @@ class VerticalScanDetector(Detector):
         for event in events:
             if is_infrastructure_response_event(event):
                 continue
+            if _looks_like_client_service_response(event):
+                continue
             if _is_opnsense_block_event(event):
                 continue
             src = event.get("source", {}).get("ip")
@@ -292,6 +313,8 @@ class HorizontalScanDetector(Detector):
         by_source_port: dict[tuple[str, int], set[str]] = defaultdict(set)
         for event in events:
             if is_infrastructure_response_event(event):
+                continue
+            if _looks_like_client_service_response(event):
                 continue
             if _is_opnsense_block_event(event):
                 continue
@@ -343,9 +366,9 @@ class DNSTunnelingDetector(Detector):
             dns_events_60s = int(item.get("dns_events_60s") or 0)
             dns_destination_count = int(item.get("dns_destination_count") or item.get("destination_count") or 0)
             dns_destination_port = int(item.get("dominant_dns_destination_port") or item.get("dominant_destination_port") or 0)
-            metadata_limited_burst = dns_events_10s >= 12 or dns_events_60s >= 18
+            metadata_limited_burst = dns_events_10s >= 80 or dns_events_60s >= 140
             enough_volume = event_count >= 8 or (event_count >= 4 and nxdomain >= 0.3)
-            if entropy >= 3.8 and name_length >= 45 and enough_volume and (query_rate >= 0.2 or nxdomain >= 0.3):
+            if entropy >= 3.8 and name_length >= 45 and enough_volume and (query_rate >= 2.0 or nxdomain >= 0.3):
                 detections.append(make_detection(
                     self.detector_id,
                     "command_and_control",
@@ -366,12 +389,12 @@ class DNSTunnelingDetector(Detector):
                             {"feature": "dns_entropy", "operator": ">=", "threshold": 3.8, "observed": entropy},
                             {"feature": "dns_name_length", "operator": ">=", "threshold": 45, "observed": name_length},
                             {"feature": "dns_event_volume", "operator": "connections_5m>=8 OR connections_5m>=4 AND nxdomain_rate>=0.3", "threshold": "8/4", "observed": {"connections_5m": event_count, "dns_nxdomain_rate": nxdomain}},
-                            {"feature": "dns_query_rate_or_nxdomain_rate", "operator": "query_rate>=0.2 OR nxdomain_rate>=0.3", "threshold": "0.2/0.3", "observed": {"dns_query_rate": query_rate, "dns_nxdomain_rate": nxdomain}},
+                            {"feature": "dns_query_rate_or_nxdomain_rate", "operator": "query_rate>=2.0 OR nxdomain_rate>=0.3", "threshold": "2.0/0.3", "observed": {"dns_query_rate": query_rate, "dns_nxdomain_rate": nxdomain}},
                         ],
                     },
                 ))
             elif (
-                dns_event_count >= 12
+                dns_event_count >= 120
                 and metadata_limited_burst
                 and dns_destination_port == 53
                 and dns_destination_count <= 2
@@ -383,9 +406,9 @@ class DNSTunnelingDetector(Detector):
                     "DNS telemetry shows a burst of resolver queries, but the provider did not export query names.",
                     item["source_ip"],
                     "dns_resolver",
-                    6,
-                    min(0.82, 0.54 + min(query_rate, 20) / 100 + dns_event_count / 200),
-                    min(0.75, dns_event_count / 40),
+                    4,
+                    min(0.68, 0.48 + min(query_rate, 20) / 150 + dns_event_count / 800),
+                    min(0.48, dns_event_count / 500),
                     {
                         "dns_event_count": dns_event_count,
                         "dns_events_10s": dns_events_10s,
@@ -399,8 +422,8 @@ class DNSTunnelingDetector(Detector):
                         "provider_query_names_missing": True,
                         "signature_required": False,
                         "thresholds": [
-                            {"feature": "dns_event_count", "operator": ">=", "threshold": 12, "observed": dns_event_count},
-                            {"feature": "dns_burst_volume", "operator": "dns_events_10s>=12 OR dns_events_60s>=18", "threshold": "12/18", "observed": {"dns_events_10s": dns_events_10s, "dns_events_60s": dns_events_60s}},
+                            {"feature": "dns_event_count", "operator": ">=", "threshold": 120, "observed": dns_event_count},
+                            {"feature": "dns_burst_volume", "operator": "dns_events_10s>=80 OR dns_events_60s>=140", "threshold": "80/140", "observed": {"dns_events_10s": dns_events_10s, "dns_events_60s": dns_events_60s}},
                             {"feature": "dominant_dns_destination_port", "operator": "=", "threshold": 53, "observed": dns_destination_port},
                             {"feature": "dns_destination_count", "operator": "<=", "threshold": 2, "observed": dns_destination_count},
                         ],
@@ -419,6 +442,8 @@ class DNSTunnelingDetector(Detector):
             src = event.get("source", {}).get("ip")
             name = self._rrname(event)
             if not src or not name:
+                continue
+            if self._is_benign_high_entropy_name(name):
                 continue
             first_label = name.split(".")[0]
             entropy = shannon_entropy(first_label)
@@ -479,6 +504,15 @@ class DNSTunnelingDetector(Detector):
         if not value or "." not in value:
             return None
         return value
+
+    @staticmethod
+    def _is_benign_high_entropy_name(name: str) -> bool:
+        value = name.rstrip(".").lower()
+        if value.endswith(".local") or "._udp.local" in value or "._tcp.local" in value:
+            return True
+        if value.endswith(".amazonaws.com") and ".elb." in value:
+            return True
+        return False
 
     @staticmethod
     def _common_destination(items: list[dict[str, Any]]) -> str | None:

@@ -443,6 +443,24 @@ class BackendTests(unittest.TestCase):
         ]
         self.assertEqual(DNSTunnelingDetector().detect(events, aggregate_features(events)), [])
 
+    def test_vertical_scan_detector_ignores_resolver_replies_to_ephemeral_ports(self) -> None:
+        events = [
+            {
+                "schema_version": "1",
+                "event_id": f"dns-reply-flow-{index}",
+                "event_type": "flow",
+                "timestamp": f"2026-07-05T10:00:{index:02d}+00:00",
+                "source": {"ip": "198.51.100.53", "port": 53, "interface": None},
+                "destination": {"ip": "10.10.10.21", "port": 53000 + index},
+                "protocol": "UDP",
+                "direction": "ingress",
+                "metadata": {"event_source": "netflow"},
+                "raw_source": "netflow",
+            }
+            for index in range(20)
+        ]
+        self.assertEqual(VerticalScanDetector().detect(events, aggregate_features(events)), [])
+
     def test_event_store_recent_events_returns_detector_shape(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = EventStore(Path(tmp) / "pondsec-ndr.db")
@@ -1342,13 +1360,36 @@ igb0_vlan10: flags=1008943<UP,BROADCAST,RUNNING>
         ]
         self.assertEqual(DNSTunnelingDetector().detect(events, aggregate_features(events)), [])
 
+    def test_dns_tunneling_detector_ignores_local_and_cloud_lb_names(self) -> None:
+        names = [
+            f"8c2659fb-103a-4864-b0f8-e5781f6882{i:02d}._asquic._udp.local"
+            for i in range(6)
+        ] + [
+            f"apiproxy-device-prod-nlb-{i}-4d12762d4ba53e45.elb.eu-west-1.amazonaws.com"
+            for i in range(6)
+        ]
+        events = [
+            normalize_eve({
+                "timestamp": f"2026-07-05T10:00:{index:02d}+00:00",
+                "event_type": "dns",
+                "src_ip": "192.168.10.70",
+                "src_port": 53000 + index,
+                "dest_ip": "192.168.10.1",
+                "dest_port": 53,
+                "proto": "UDP",
+                "dns": {"rrname": name, "rrtype": "A", "rcode": "NOERROR"},
+            })
+            for index, name in enumerate(names)
+        ]
+        self.assertEqual(DNSTunnelingDetector().detect(events, aggregate_features(events)), [])
+
     def test_dns_tunneling_detector_handles_metadata_limited_dns_burst(self) -> None:
         events = [
             {
                 "schema_version": "1",
                 "event_id": f"dns-limited-{index}",
                 "event_type": "dns",
-                "timestamp": f"2026-07-05T10:00:00.{index:02d}+00:00",
+                "timestamp": f"2026-07-05T10:00:{index // 20:02d}.{index % 20:02d}+00:00",
                 "source": {"ip": "192.168.10.70", "port": 53000 + index, "interface": None},
                 "destination": {"ip": "192.168.10.1", "port": 53},
                 "protocol": "UDP",
@@ -1356,18 +1397,18 @@ igb0_vlan10: flags=1008943<UP,BROADCAST,RUNNING>
                 "metadata": {"event_source": "zenarmor"},
                 "raw_source": "zenarmor",
             }
-            for index in range(18)
+            for index in range(150)
         ]
         features = aggregate_features(events)
-        self.assertEqual(features[0]["dns_event_count"], 18)
-        self.assertEqual(features[0]["dns_events_10s"], 18)
-        self.assertEqual(features[0]["dns_events_60s"], 18)
+        self.assertEqual(features[0]["dns_event_count"], 150)
+        self.assertGreaterEqual(features[0]["dns_events_10s"], 30)
+        self.assertEqual(features[0]["dns_events_60s"], 150)
         self.assertEqual(features[0]["dns_destination_count"], 1)
         detections = DNSTunnelingDetector().detect(events, features)
         self.assertEqual(len(detections), 1)
         self.assertEqual(detections[0]["detector_id"], "pondsec.dns_tunneling")
         self.assertTrue(detections[0]["evidence"]["metadata_limited"])
-        self.assertEqual(detections[0]["evidence"]["dns_events_10s"], 18)
+        self.assertGreaterEqual(detections[0]["evidence"]["dns_events_10s"], 30)
 
     def test_dns_tunneling_detector_keeps_metadata_limited_burst_in_mixed_window(self) -> None:
         dns_events = [
@@ -1375,7 +1416,7 @@ igb0_vlan10: flags=1008943<UP,BROADCAST,RUNNING>
                 "schema_version": "1",
                 "event_id": f"dns-limited-mixed-{index}",
                 "event_type": "dns",
-                "timestamp": f"2026-07-05T10:00:00.{index:02d}+00:00",
+                "timestamp": f"2026-07-05T10:00:{index // 20:02d}.{index % 20:02d}+00:00",
                 "source": {"ip": "192.168.10.70", "port": 53000 + index, "interface": None},
                 "destination": {"ip": "192.168.10.1", "port": 53},
                 "protocol": "UDP",
@@ -1383,16 +1424,16 @@ igb0_vlan10: flags=1008943<UP,BROADCAST,RUNNING>
                 "metadata": {"event_source": "zenarmor"},
                 "raw_source": "zenarmor",
             }
-            for index in range(18)
+            for index in range(150)
         ]
         later_https = [
             normalize_eve(flow_event(f"2026-07-05T10:04:{index:02d}+00:00", "192.168.10.70", f"203.0.113.{index + 1}", 443))
             for index in range(4)
         ]
         features = aggregate_features(dns_events + later_https)
-        self.assertEqual(features[0]["dns_event_count"], 18)
-        self.assertLess(features[0]["dns_query_rate"], 1.0)
-        self.assertEqual(features[0]["dns_events_10s"], 18)
+        self.assertEqual(features[0]["dns_event_count"], 150)
+        self.assertLess(features[0]["dns_query_rate"], 2.0)
+        self.assertGreaterEqual(features[0]["dns_events_10s"], 30)
         self.assertEqual(features[0]["dns_destination_count"], 1)
         self.assertEqual(features[0]["destination_count"], 5)
         detections = DNSTunnelingDetector().detect(dns_events + later_https, features)
