@@ -5436,6 +5436,51 @@ igb0_vlan10: flags=1008943<UP,BROADCAST,RUNNING>
             self.assertFalse(result["shadow_response"]["would_execute"])
             self.assertEqual(store.list_rows("block_entries"), [])
 
+    def test_replay_applies_sandbox_external_results(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            eve = root / "replay-fileinfo.json"
+            sha256 = "3" * 64
+            eve.write_text(json.dumps({
+                "timestamp": "2026-07-05T12:32:10+00:00",
+                "event_type": "fileinfo",
+                "src_ip": "198.51.100.57",
+                "src_port": 443,
+                "dest_ip": "192.0.2.37",
+                "dest_port": 52037,
+                "proto": "TCP",
+                "fileinfo": {
+                    "filename": "payload.bin",
+                    "sha256": sha256,
+                },
+            }) + "\n", encoding="utf-8")
+            data_dir = root / "db"
+            results_dir = data_dir / "sandbox" / "results"
+            results_dir.mkdir(parents=True)
+            (results_dir / "analysis-result.json").write_text(json.dumps({
+                "sha256": sha256,
+                "verdict": "malicious",
+                "confidence": 0.97,
+                "source": "validation-sandbox",
+                "analysis_id": "sandbox-replay-validation-1",
+                "findings": ["safe validation marker"],
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+            }), encoding="utf-8")
+            config = PondSecConfig(
+                enabled=True,
+                suricata_eve_path=str(eve),
+                data_dir=data_dir,
+                log_dir=root / "log",
+                run_dir=root / "run",
+            )
+
+            result = replay_file(eve, 100, config)
+
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(result["sandbox"]["matched_results"], 1)
+            self.assertIn("pondsec.file_sandbox_verdict", {item["detector_id"] for item in result["detections"]})
+            self.assertEqual(result["incidents"][0]["evidence"]["detections"][0]["evidence"]["sandbox_source"], "validation-sandbox")
+
     def test_service_expected_response_denials_do_not_pollute_error_state(self) -> None:
         self.assertTrue(PondSecService._is_expected_response_denial("source IP is protected"))
         self.assertTrue(PondSecService._is_expected_response_denial("incident risk score is below response threshold"))

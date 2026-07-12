@@ -47,6 +47,7 @@ from pondsec_ndr.response.engine import (
     validate_ip_or_network,
 )
 from pondsec_ndr.response.pf import PFTableEnforcer
+from pondsec_ndr.sandbox import enrich_events_with_sandbox
 from pondsec_ndr.sensor import harden_sensor, sensor_status
 from pondsec_ndr.service import PondSecService
 from pondsec_ndr.storage.database import EventStore, SCHEMA_VERSION
@@ -595,6 +596,7 @@ def replay_file(eve_file: Path, max_lines: int, config: Any) -> dict[str, Any]:
     offset.unlink(missing_ok=True)
     collector = EveCollector(eve_file, offset, queue_limit=max_lines)
     events, stats = collector.read_once(max_lines=max_lines)
+    events, sandbox_stats = enrich_events_with_sandbox(events, config.data_dir, config.sandbox)
     store = EventStore(config.data_dir / "pondsec-ndr.db")
     store.migrate()
     features = store.score_features_against_baselines(
@@ -611,6 +613,7 @@ def replay_file(eve_file: Path, max_lines: int, config: Any) -> dict[str, Any]:
         "status": "ok",
         "events": len(events),
         "collector": asdict(stats),
+        "sandbox": sandbox_stats.as_dict(),
         "detections": detections,
         "incidents": incidents,
         "response_mode": "simulation_only",
