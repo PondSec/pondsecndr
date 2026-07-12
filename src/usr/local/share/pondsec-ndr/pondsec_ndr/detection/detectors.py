@@ -311,6 +311,11 @@ class DNSTunnelingDetector(Detector):
             nxdomain = float(item.get("dns_nxdomain_rate") or 0)
             event_count = int(item.get("connections_5m") or 0)
             dns_event_count = int(item.get("dns_event_count") or 0)
+            dns_events_10s = int(item.get("dns_events_10s") or 0)
+            dns_events_60s = int(item.get("dns_events_60s") or 0)
+            dns_destination_count = int(item.get("dns_destination_count") or item.get("destination_count") or 0)
+            dns_destination_port = int(item.get("dominant_dns_destination_port") or item.get("dominant_destination_port") or 0)
+            metadata_limited_burst = dns_events_10s >= 12 or dns_events_60s >= 18
             enough_volume = event_count >= 8 or (event_count >= 4 and nxdomain >= 0.3)
             if entropy >= 3.8 and name_length >= 45 and enough_volume and (query_rate >= 0.2 or nxdomain >= 0.3):
                 detections.append(make_detection(
@@ -339,9 +344,9 @@ class DNSTunnelingDetector(Detector):
                 ))
             elif (
                 dns_event_count >= 12
-                and query_rate >= 4.0
-                and int(item.get("dominant_destination_port") or 0) == 53
-                and int(item.get("destination_count") or 0) <= 2
+                and metadata_limited_burst
+                and dns_destination_port == 53
+                and dns_destination_count <= 2
             ):
                 detections.append(make_detection(
                     self.detector_id,
@@ -355,6 +360,10 @@ class DNSTunnelingDetector(Detector):
                     min(0.75, dns_event_count / 40),
                     {
                         "dns_event_count": dns_event_count,
+                        "dns_events_10s": dns_events_10s,
+                        "dns_events_60s": dns_events_60s,
+                        "dns_destination_count": dns_destination_count,
+                        "dominant_dns_destination_port": dns_destination_port,
                         "dns_query_rate": query_rate,
                         "dns_name_length": name_length,
                         "dns_entropy": entropy,
@@ -363,8 +372,9 @@ class DNSTunnelingDetector(Detector):
                         "signature_required": False,
                         "thresholds": [
                             {"feature": "dns_event_count", "operator": ">=", "threshold": 12, "observed": dns_event_count},
-                            {"feature": "dns_query_rate", "operator": ">=", "threshold": 4.0, "observed": query_rate},
-                            {"feature": "dominant_destination_port", "operator": "=", "threshold": 53, "observed": item.get("dominant_destination_port")},
+                            {"feature": "dns_burst_volume", "operator": "dns_events_10s>=12 OR dns_events_60s>=18", "threshold": "12/18", "observed": {"dns_events_10s": dns_events_10s, "dns_events_60s": dns_events_60s}},
+                            {"feature": "dominant_dns_destination_port", "operator": "=", "threshold": 53, "observed": dns_destination_port},
+                            {"feature": "dns_destination_count", "operator": "<=", "threshold": 2, "observed": dns_destination_count},
                         ],
                     },
                     recommended_action="investigate",

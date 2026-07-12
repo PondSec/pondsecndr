@@ -1117,11 +1117,44 @@ class BackendTests(unittest.TestCase):
         ]
         features = aggregate_features(events)
         self.assertEqual(features[0]["dns_event_count"], 18)
-        self.assertGreaterEqual(features[0]["dns_query_rate"], 4.0)
+        self.assertEqual(features[0]["dns_events_10s"], 18)
+        self.assertEqual(features[0]["dns_events_60s"], 18)
+        self.assertEqual(features[0]["dns_destination_count"], 1)
         detections = DNSTunnelingDetector().detect(events, features)
         self.assertEqual(len(detections), 1)
         self.assertEqual(detections[0]["detector_id"], "pondsec.dns_tunneling")
         self.assertTrue(detections[0]["evidence"]["metadata_limited"])
+        self.assertEqual(detections[0]["evidence"]["dns_events_10s"], 18)
+
+    def test_dns_tunneling_detector_keeps_metadata_limited_burst_in_mixed_window(self) -> None:
+        dns_events = [
+            {
+                "schema_version": "1",
+                "event_id": f"dns-limited-mixed-{index}",
+                "event_type": "dns",
+                "timestamp": f"2026-07-05T10:00:00.{index:02d}+00:00",
+                "source": {"ip": "192.168.10.70", "port": 53000 + index, "interface": None},
+                "destination": {"ip": "192.168.10.1", "port": 53},
+                "protocol": "UDP",
+                "direction": "internal",
+                "metadata": {"event_source": "zenarmor"},
+                "raw_source": "zenarmor",
+            }
+            for index in range(18)
+        ]
+        later_https = [
+            normalize_eve(flow_event(f"2026-07-05T10:04:{index:02d}+00:00", "192.168.10.70", f"203.0.113.{index + 1}", 443))
+            for index in range(4)
+        ]
+        features = aggregate_features(dns_events + later_https)
+        self.assertEqual(features[0]["dns_event_count"], 18)
+        self.assertLess(features[0]["dns_query_rate"], 1.0)
+        self.assertEqual(features[0]["dns_events_10s"], 18)
+        self.assertEqual(features[0]["dns_destination_count"], 1)
+        self.assertEqual(features[0]["destination_count"], 5)
+        detections = DNSTunnelingDetector().detect(dns_events + later_https, features)
+        self.assertEqual(len(detections), 1)
+        self.assertEqual(detections[0]["title"], "Possible DNS tunneling with limited metadata")
 
     def test_metadata_limited_dns_burst_does_not_promote_alone(self) -> None:
         detection = {

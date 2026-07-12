@@ -53,6 +53,10 @@ def _base_feature(source_ip: str) -> dict[str, Any]:
         "new_service_score": 0.0,
         "dns_query_rate": 0.0,
         "dns_event_count": 0,
+        "dns_events_10s": 0,
+        "dns_events_60s": 0,
+        "dns_destination_count": 0,
+        "dominant_dns_destination_port": 0,
         "dns_nxdomain_rate": 0.0,
         "dns_name_length": 0,
         "dns_entropy": 0.0,
@@ -91,7 +95,10 @@ def aggregate_features(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         destinations = set()
         ports = set()
         port_counter: Counter[int] = Counter()
+        dns_port_counter: Counter[int] = Counter()
         dns_names: list[str] = []
+        dns_destinations = set()
+        dns_timestamps: list[float] = []
         nxdomain = 0
         http_methods: dict[str, int] = defaultdict(int)
         http_status: dict[str, int] = defaultdict(int)
@@ -120,6 +127,11 @@ def aggregate_features(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 item["external_connections"] += 1
             if event.get("event_type") == "dns":
                 item["dns_event_count"] += 1
+                dns_timestamps.append(_parse_time(event["timestamp"]))
+                if dst:
+                    dns_destinations.add(dst)
+                if dst_port is not None:
+                    dns_port_counter[int(dst_port)] += 1
                 name = metadata.get("rrname")
                 if name:
                     dns_names.append(str(name))
@@ -145,8 +157,15 @@ def aggregate_features(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         item["port_count"] = len(ports)
         if port_counter:
             item["dominant_destination_port"] = port_counter.most_common(1)[0][0]
+        if dns_port_counter:
+            item["dominant_dns_destination_port"] = dns_port_counter.most_common(1)[0][0]
+        item["dns_destination_count"] = len(dns_destinations)
         item["upload_download_ratio"] = round(item["bytes_out"] / max(item["bytes_in"], 1), 4)
         item["dns_query_rate"] = round(item["dns_event_count"] / duration, 4)
+        if dns_timestamps:
+            last_dns = max(dns_timestamps)
+            item["dns_events_10s"] = sum(1 for ts in dns_timestamps if last_dns - ts <= 10)
+            item["dns_events_60s"] = sum(1 for ts in dns_timestamps if last_dns - ts <= 60)
         item["dns_nxdomain_rate"] = round(nxdomain / max(item["dns_event_count"], 1), 4)
         if dns_names:
             item["dns_name_length"] = int(mean(len(name) for name in dns_names))
