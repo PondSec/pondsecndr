@@ -74,7 +74,7 @@ from pondsec_ndr.response.engine import (
 from pondsec_ndr.response.pf import PFTableEnforcer
 from pondsec_ndr.risk import score_detection_group
 from pondsec_ndr.sandbox import enrich_events_with_sandbox
-from pondsec_ndr.sensor import eve_types_from_suricata_yaml, patch_suricata_yaml_text, required_eve_types
+from pondsec_ndr.sensor import _harden_dnsmasq_acl, eve_types_from_suricata_yaml, patch_suricata_yaml_text, required_eve_types
 from pondsec_ndr.service import PondSecService
 from pondsec_ndr.storage.database import EventStore
 from pondsec_ndr.system import _extract_interface_ips
@@ -5481,6 +5481,40 @@ igb0_vlan10: flags=1008943<UP,BROADCAST,RUNNING>
     def test_required_eve_types_include_behavior_and_metadata_sources(self) -> None:
         config = PondSecConfig()
         self.assertEqual(required_eve_types(config), ["alert", "drop", "flow", "dns", "http", "tls", "fileinfo"])
+
+    def test_sensor_hardening_grants_dnsmasq_directory_and_file_acls(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            log_dir = root / "dnsmasq"
+            log_dir.mkdir()
+            current_log = log_dir / "dnsmasq_20260712.log"
+            current_log.write_text("Jul 12 12:00:00 firewall dnsmasq[1]: query[A] example.test from 192.0.2.10\n")
+            latest_log = log_dir / "latest.log"
+            latest_log.symlink_to(current_log)
+            lease_file = root / "dnsmasq.leases"
+            lease_file.write_text("1783261000 aa:bb:cc:dd:ee:ff 192.0.2.10 laptop 01:aa:bb:cc:dd:ee:ff\n")
+            config = PondSecConfig(
+                dnsmasq=DnsmasqConfig(
+                    enabled=True,
+                    dns_log_path=str(log_dir),
+                    dhcp_log_path="",
+                    lease_path=str(lease_file),
+                )
+            )
+            commands: list[list[str]] = []
+
+            def fake_run(command: list[str]) -> dict[str, object]:
+                commands.append(command)
+                return {"returncode": 0, "stdout": "", "stderr": ""}
+
+            with patch("pondsec_ndr.sensor._run", side_effect=fake_run):
+                result = _harden_dnsmasq_acl(config)
+
+            self.assertEqual(result["errors"], [])
+            self.assertIn(["/bin/setfacl", "-m", "u:pondsecndr:rxaRcs:fd:allow", str(log_dir)], commands)
+            self.assertIn(["/bin/setfacl", "-m", "u:pondsecndr:raRcs::allow", str(current_log)], commands)
+            self.assertIn(["/bin/setfacl", "-m", "u:pondsecndr:raRcs::allow", str(latest_log)], commands)
+            self.assertIn(["/bin/setfacl", "-m", "u:pondsecndr:raRcs::allow", str(lease_file)], commands)
 
 
 class CliTests(unittest.TestCase):

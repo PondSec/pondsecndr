@@ -115,6 +115,22 @@ For log rotation, keep the EVE newsyslog entry at `root:pondsecndr` with mode
 `640`. The development deploy helper applies this when `/var/log/suricata`
 exists.
 
+## dnsmasq DNS/DHCP Access
+
+When dnsmasq is enabled as a provider, PondSec needs read-only access to query
+logs, DHCP logs, and lease snapshots. The deployment helper grants the service
+account directory traversal/listing for `/var/log/dnsmasq`, inherited read ACLs
+for newly created log files, read ACLs for existing `*.log` files including
+`latest.log`, and read ACLs for `/var/db/dnsmasq.leases`.
+
+Manual repair command after log rotation:
+
+```sh
+setfacl -m u:pondsecndr:rxaRcs:fd:allow /var/log/dnsmasq
+setfacl -m u:pondsecndr:raRcs::allow /var/log/dnsmasq/*.log /var/log/dnsmasq/latest.log
+setfacl -m u:pondsecndr:raRcs::allow /var/db/dnsmasq.leases
+```
+
 ## Zeek And Zenarmor Connectors
 
 Zeek can be used as a local log reader only when the active OPNsense package

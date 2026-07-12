@@ -307,7 +307,7 @@ def _harden_dnsmasq_path(path: Path, result: dict[str, Any]) -> None:
     if not path.exists():
         return
     if path.is_dir():
-        payload = _run(["/bin/setfacl", "-m", "u:pondsecndr:xaRcs:fd:allow", str(path)])
+        payload = _run(["/bin/setfacl", "-m", "u:pondsecndr:rxaRcs:fd:allow", str(path)])
         if payload["returncode"] == 0:
             result["changes"].append(f"dnsmasq_log_dir_acl_checked:{path}")
         else:

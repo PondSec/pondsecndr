@@ -80,6 +80,21 @@ if [ -d /var/log/suricata ]; then
     fi
 fi
 
+if [ -d /var/log/dnsmasq ] || [ -f /var/db/dnsmasq.leases ]; then
+    sudo sh -c "getfacl /var/log/dnsmasq /var/log/dnsmasq/*.log /var/log/dnsmasq/latest.log /var/db/dnsmasq.leases > \"$BACKUP/dnsmasq-acl-before.txt\" 2>/dev/null || true"
+    if [ -d /var/log/dnsmasq ]; then
+        sudo setfacl -m u:pondsecndr:rxaRcs:fd:allow /var/log/dnsmasq || true
+        for file in /var/log/dnsmasq/*.log /var/log/dnsmasq/latest.log; do
+            if sudo test -e "$file"; then
+                sudo setfacl -m u:pondsecndr:raRcs::allow "$file" || true
+            fi
+        done
+    fi
+    if sudo test -f /var/db/dnsmasq.leases; then
+        sudo setfacl -m u:pondsecndr:raRcs::allow /var/db/dnsmasq.leases || true
+    fi
+fi
+
 sudo find \
     /usr/local/opnsense/mvc/app/controllers/OPNsense/PondSecNDR \
     /usr/local/opnsense/mvc/app/models/OPNsense/PondSecNDR \
