@@ -2835,6 +2835,42 @@ igb0_vlan10: flags=1008943<UP,BROADCAST,RUNNING>
             self.assertEqual(providers["netflow"]["health_status"], "healthy")
             self.assertEqual(providers["netflow"]["statistics"]["events_24h"], 1)
 
+    def test_diagnostics_sandbox_provider_health_uses_verdict_coverage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = EventStore(root / "pondsec-ndr.db")
+            store.migrate()
+            now = datetime.now(timezone.utc).isoformat()
+            store.set_health("healthy", 123, {
+                "sandbox": {
+                    "processed_file_events": 0,
+                    "matched_results": 0,
+                    "pending_requests": 0,
+                    "errors": 0,
+                },
+            })
+            store.insert_events([{
+                "event_id": "sandbox-coverage-zeek-file",
+                "schema_version": 1,
+                "timestamp": now,
+                "event_type": "fileinfo",
+                "source": {"ip": "192.0.2.10", "port": 52000},
+                "destination": {"ip": "198.51.100.20", "port": 80},
+                "protocol": "TCP",
+                "metadata": {
+                    "md5": "2301648862fe5df7dd6e3f8a62d60a02",
+                    "sandbox_verdict": "benign",
+                    "sandbox_status": "complete",
+                },
+                "raw_source": "zeek",
+            }])
+            payload = diagnostics_payload(PondSecConfig(data_dir=root), store)
+            providers = {item["provider_id"]: item for item in payload["providers"]}
+            sandbox = providers["file_sandbox"]
+            self.assertEqual(sandbox["health_status"], "healthy")
+            self.assertEqual(sandbox["statistics"]["events_24h"], 1)
+            self.assertIsNotNone(sandbox["last_successful_processing"])
+
     def test_diagnostics_exposes_provider_telemetry_coverage(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

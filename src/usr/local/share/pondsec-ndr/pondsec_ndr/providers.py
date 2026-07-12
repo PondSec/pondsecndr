@@ -38,6 +38,7 @@ def provider_inventory(
     sources = detail.get("collector_sources", {}) if isinstance(detail.get("collector_sources"), dict) else {}
     updated_at = health.get("updated_at")
     coverage = telemetry_coverage.get("by_provider", {}) if isinstance(telemetry_coverage, dict) else {}
+    sandbox_coverage = _class_coverage(coverage, "sandbox_verdict")
     providers = [
         _suricata_provider(config, sources.get("suricata_eve") or {}, updated_at, coverage.get("suricata") or {}),
         _filterlog_provider(config, sources.get("opnsense_filterlog") or {}, updated_at, coverage.get("opnsense_filterlog") or {}),
@@ -45,7 +46,7 @@ def provider_inventory(
         _zeek_provider(config, sources.get("zeek") or {}, updated_at, coverage.get("zeek") or {}),
         _netflow_provider(config, sources.get("netflow") or {}, updated_at, coverage.get("netflow") or {}),
         _zenarmor_provider(config, sources.get("zenarmor") or {}, updated_at, coverage.get("zenarmor") or {}),
-        _sandbox_provider(config, detail.get("sandbox") or {}, updated_at),
+        _sandbox_provider(config, detail.get("sandbox") or {}, updated_at, sandbox_coverage),
     ]
     providers.extend(_planned_providers())
     return [provider.as_dict() for provider in providers]
@@ -224,7 +225,7 @@ def _zenarmor_provider(config: PondSecConfig, stats: dict[str, Any], updated_at:
     )
 
 
-def _sandbox_provider(config: PondSecConfig, stats: dict[str, Any], updated_at: str | None) -> DataSourceProvider:
+def _sandbox_provider(config: PondSecConfig, stats: dict[str, Any], updated_at: str | None, coverage: dict[str, Any]) -> DataSourceProvider:
     enabled = bool(config.sandbox.enabled)
     errors = int(stats.get("errors") or 0)
     last_error = stats.get("last_error")
@@ -234,7 +235,7 @@ def _sandbox_provider(config: PondSecConfig, stats: dict[str, Any], updated_at: 
         description="Consumes file hashes, provider verdicts and external sandbox-result files; it does not execute artifacts locally.",
         version="1",
         enabled=enabled,
-        health_status="degraded" if enabled and (last_error or errors) else _health(enabled, last_error, stats, optional=True),
+        health_status="degraded" if enabled and (last_error or errors) else _health(enabled, last_error, stats, optional=True, coverage=coverage),
         input_type="file",
         event_types=["file", "sandbox_verdict", "malware"],
         configuration={
@@ -254,8 +255,12 @@ def _sandbox_provider(config: PondSecConfig, stats: dict[str, Any], updated_at: 
             "timed_out_requests": int(stats.get("timed_out_requests") or 0),
             "stale_results_ignored": int(stats.get("stale_results_ignored") or 0),
             "errors": errors,
+            "last_event_at": coverage.get("last_event_at"),
+            "events_1h": _coverage_total(coverage, "1h"),
+            "events_6h": _coverage_total(coverage, "6h"),
+            "events_24h": _coverage_total(coverage, "24h"),
         },
-        last_successful_processing=updated_at if enabled and not last_error and int(stats.get("processed_file_events") or 0) else None,
+        last_successful_processing=_last_success(enabled, last_error, stats, coverage, updated_at),
         last_error=last_error,
     )
 
@@ -289,6 +294,31 @@ def _planned_providers() -> list[DataSourceProvider]:
         )
         for provider_id, display_name, input_type, event_types in planned
     ]
+
+
+def _class_coverage(by_provider: dict[str, Any], class_name: str) -> dict[str, Any]:
+    windows = {
+        "1h": {"total": 0},
+        "6h": {"total": 0},
+        "24h": {"total": 0},
+    }
+    last_event_at = None
+    for entry in by_provider.values():
+        if not isinstance(entry, dict):
+            continue
+        entry_windows = entry.get("windows") if isinstance(entry.get("windows"), dict) else {}
+        has_class = False
+        for window_name in windows:
+            counts = entry_windows.get(window_name) if isinstance(entry_windows.get(window_name), dict) else {}
+            value = int(counts.get(class_name) or 0)
+            windows[window_name]["total"] += value
+            if value:
+                has_class = True
+        if has_class and entry.get("last_event_at"):
+            candidate = str(entry.get("last_event_at"))
+            if last_event_at is None or candidate > last_event_at:
+                last_event_at = candidate
+    return {"windows": windows, "last_event_at": last_event_at}
 
 
 def _health(
