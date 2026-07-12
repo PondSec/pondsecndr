@@ -296,6 +296,9 @@ class PondSecService:
 
         if self._database_over_limit():
             cleaned = self.store.cleanup(self.config.retention_days)
+            size_cleanup: dict[str, Any] = {}
+            if self._database_over_limit():
+                size_cleanup = self.store.cleanup_to_size(self.config.max_database_mb)
             if self._database_over_limit():
                 block_sync = self._sync_active_blocks()
                 self.counters["queue_drops"] += len(events)
@@ -304,6 +307,7 @@ class PondSecService:
                     "backpressure": "database_size_limit",
                     "dropped_events": len(events),
                     "cleanup_deleted": cleaned,
+                    "size_cleanup": size_cleanup,
                     "block_sync": block_sync,
                     "queue_size": len(events),
                     "resource_usage": resource_usage,
@@ -314,8 +318,11 @@ class PondSecService:
                     "reason": "database_size_limit",
                     "dropped_events": len(events),
                     "cleanup_deleted": cleaned,
+                    "size_cleanup": size_cleanup,
                     "block_sync": block_sync,
                 }
+        else:
+            size_cleanup = {}
 
         excluded_hosts, excluded_networks = self._analysis_exclusions()
         filtered_current_events = filter_analysis_events(events, excluded_hosts, excluded_networks)
@@ -409,6 +416,7 @@ class PondSecService:
             "block_sync": block_sync,
             "baseline_updates": baseline_updates,
             "cleanup_deleted": cleaned,
+            "size_cleanup": size_cleanup,
             "parser_errors": self.counters["parser_errors"],
             "normalization_errors": normalization_errors,
             "queue_drops": self.counters["queue_drops"],
@@ -478,6 +486,7 @@ class PondSecService:
             "response_actions": response_actions,
             "block_sync": block_sync,
             "baseline_updates": baseline_updates,
+            "size_cleanup": size_cleanup,
             "resource_warnings": resource_warnings,
             "learning_status": learning_status,
             "response_auto_armed": response_auto_armed,

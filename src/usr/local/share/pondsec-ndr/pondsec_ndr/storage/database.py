@@ -3415,6 +3415,113 @@ class EventStore:
         cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).isoformat()
         return self.purge_before(cutoff, include_open_incidents=False)
 
+    def cleanup_to_size(
+        self,
+        max_database_mb: int,
+        target_ratio: float = 0.90,
+        batch_size: int = 10000,
+    ) -> dict[str, Any]:
+        max_bytes = max(0, int(max_database_mb)) * 1024 * 1024
+        current_bytes = self.db_path.stat().st_size if self.db_path.exists() else 0
+        if max_bytes <= 0:
+            target_bytes = 0
+        else:
+            target_bytes = int(max_bytes * min(0.99, max(0.50, float(target_ratio))))
+        if max_bytes > 0 and current_bytes <= max_bytes:
+            return {
+                "status": "not_needed",
+                "size_before": current_bytes,
+                "size_after": current_bytes,
+                "target_bytes": target_bytes,
+                "deleted": {},
+                "vacuumed": False,
+            }
+
+        deleted: dict[str, int] = {}
+        with self.connect() as conn:
+            for table, id_column in (
+                ("events", "event_id"),
+                ("features", "feature_id"),
+                ("detections", "detection_id"),
+            ):
+                count = int(conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0])
+                if count <= 0:
+                    deleted[table] = 0
+                    continue
+                retain_floor = {
+                    "events": 10000,
+                    "features": 1000,
+                    "detections": 500,
+                }[table]
+                deletable_count = max(0, count - retain_floor)
+                if deletable_count <= 0:
+                    deleted[table] = 0
+                    continue
+                over_ratio = 1.0 if target_bytes <= 0 else max(0.0, (current_bytes - target_bytes) / max(current_bytes, 1))
+                delete_ratio = min(0.50, max(0.10, over_ratio * 1.5))
+                minimum_batch = {
+                    "events": int(batch_size),
+                    "features": max(100, int(batch_size / 2)),
+                    "detections": max(100, int(batch_size / 10)),
+                }[table]
+                delete_limit = min(deletable_count, max(1, min(deletable_count, minimum_batch), int(deletable_count * delete_ratio)))
+                rows = conn.execute(
+                    f"SELECT {id_column} AS row_id FROM {table} ORDER BY timestamp ASC LIMIT ?",
+                    (delete_limit,),
+                ).fetchall()
+                ids = [row["row_id"] for row in rows]
+                if not ids:
+                    deleted[table] = 0
+                    continue
+                placeholders = ",".join("?" for _ in ids)
+                if table == "detections":
+                    conn.execute(f"DELETE FROM incident_detections WHERE detection_id IN ({placeholders})", ids)
+                before = conn.total_changes
+                conn.execute(f"DELETE FROM {table} WHERE {id_column} IN ({placeholders})", ids)
+                deleted[table] = conn.total_changes - before
+
+            archived_rows = conn.execute(
+                """
+                SELECT incident_id
+                FROM incidents
+                WHERE status IN ('closed', 'false_positive', 'archived')
+                ORDER BY COALESCE(updated_at, created_at) ASC
+                LIMIT ?
+                """,
+                (max(100, int(batch_size / 10)),),
+            ).fetchall()
+            archived_ids = [row["incident_id"] for row in archived_rows]
+            if archived_ids:
+                placeholders = ",".join("?" for _ in archived_ids)
+                conn.execute(f"DELETE FROM incident_detections WHERE incident_id IN ({placeholders})", archived_ids)
+                before = conn.total_changes
+                conn.execute(f"DELETE FROM incidents WHERE incident_id IN ({placeholders})", archived_ids)
+                conn.execute(f"DELETE FROM responses WHERE incident_id IN ({placeholders})", archived_ids)
+                deleted["archived_incidents"] = conn.total_changes - before
+            else:
+                deleted["archived_incidents"] = 0
+
+        total_deleted = sum(deleted.values())
+        vacuumed = False
+        if total_deleted > 0:
+            with self.connect() as conn:
+                conn.execute("VACUUM")
+            vacuumed = True
+        size_after = self.db_path.stat().st_size if self.db_path.exists() else 0
+        status = "ok" if max_bytes <= 0 or size_after <= max_bytes else "partial"
+        if total_deleted == 0 and size_after > max_bytes:
+            status = "no_reclaimable_rows"
+        return {
+            "status": status,
+            "size_before": current_bytes,
+            "size_after": size_after,
+            "target_bytes": target_bytes,
+            "max_bytes": max_bytes,
+            "deleted": deleted,
+            "total_deleted": total_deleted,
+            "vacuumed": vacuumed,
+        }
+
     def purge_before(self, cutoff: str, include_open_incidents: bool = False) -> int:
         with self.connect() as conn:
             before = conn.total_changes

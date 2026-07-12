@@ -2450,6 +2450,33 @@ igb0_vlan10: flags=1008943<UP,BROADCAST,RUNNING>
             self.assertEqual(result["status"], "ok")
             self.assertEqual(store.list_rows("events"), [])
 
+    def test_size_cleanup_prunes_old_raw_telemetry_but_keeps_blocks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            base = datetime(2026, 7, 5, 10, 0, tzinfo=timezone.utc)
+            events = []
+            for index in range(11050):
+                timestamp = (base + timedelta(seconds=index)).isoformat()
+                events.append(normalize_eve(flow_event(timestamp, "192.168.10.60", "198.51.100.60", 443)))
+            self.assertEqual(store.insert_events(events), 11050)
+            store.add_block_entry({
+                "block_id": "cleanup-active-block",
+                "source_ip": "51.159.110.167",
+                "destination": "any",
+                "reason": "active external block",
+                "risk_score": 95,
+                "confidence": 0.98,
+                "expires_at": "2099-01-01T00:00:00+00:00",
+                "status": "active",
+            }, actor="test")
+
+            result = store.cleanup_to_size(0, batch_size=100)
+
+            self.assertGreater(result["deleted"]["events"], 0)
+            self.assertGreaterEqual(len(store.list_rows("events", limit=20000)), 10000)
+            self.assertEqual(store.list_rows("block_entries")[0]["source_ip"], "51.159.110.167")
+
     def test_diagnostic_archive_excludes_sensitive_payloads(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
