@@ -1000,12 +1000,26 @@ class EventStore:
             (6, now_iso()),
         )
 
-    def check(self) -> dict[str, Any]:
+    def check(self, integrity: str = "full") -> dict[str, Any]:
+        mode = str(integrity or "full").lower()
+        if mode not in {"full", "quick", "light"}:
+            mode = "full"
         with self.connect() as conn:
-            result = conn.execute("PRAGMA integrity_check").fetchone()[0]
+            if mode == "light":
+                result = "not_run"
+            else:
+                pragma = "quick_check" if mode == "quick" else "integrity_check"
+                result = conn.execute(f"PRAGMA {pragma}").fetchone()[0]
             version = conn.execute("SELECT max(version) FROM schema_migrations").fetchone()[0]
         size = self.db_path.stat().st_size if self.db_path.exists() else 0
-        return {"status": "ok" if result == "ok" else "corrupt", "integrity": result, "schema_version": version, "size_bytes": size}
+        status = "ok" if result in {"ok", "not_run"} else "corrupt"
+        return {
+            "status": status,
+            "integrity": result,
+            "integrity_mode": mode,
+            "schema_version": version,
+            "size_bytes": size,
+        }
 
     def insert_events(self, events: list[dict[str, Any]]) -> int:
         if not events:

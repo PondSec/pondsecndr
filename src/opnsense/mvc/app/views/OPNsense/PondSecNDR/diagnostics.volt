@@ -268,9 +268,39 @@ $(function() {
         $('#raw_json').text(JSON.stringify(compact, null, 2));
     }
 
+    function renderDiagnosticsError(message, data) {
+        var detail = data || {};
+        var text = message || detail.message || 'Diagnostics backend did not return data.';
+        $('#readiness_badge').html(badge('error'));
+        $('#readiness_text').text(text);
+        $('#mode_value').text('-');
+        $('#service_value').html(badge(detail.status || 'unknown'));
+        $('#required_checks').html('<div class="pondsec-empty">' + escapeHtml(text) + '</div>');
+        $('#optional_checks').html('<div class="pondsec-empty">' + escapeHtml(detail.action || 'Check backend logs and retry diagnostics.') + '</div>');
+        $('#runtime_grid').html('<div class="pondsec-runtime-card"><span>Diagnostics</span><strong>Error</strong><p>' + escapeHtml(text) + '</p></div>');
+        $('#providers_table tbody').html('<tr><td colspan="5" class="pondsec-empty">' + escapeHtml(text) + '</td></tr>');
+        $('#coverage_table tbody').html('<tr><td colspan="6" class="pondsec-empty">' + escapeHtml(text) + '</td></tr>');
+        $('#coverage_readiness').html('');
+        $('#health_table tbody').html('<tr><td>' + escapeHtml(text) + '</td></tr>');
+        $('#error_table tbody').html('<tr><td>' + escapeHtml(detail.raw_excerpt || detail.json_error || 'No backend detail available.') + '</td></tr>');
+        $('#raw_json').text(JSON.stringify(detail, null, 2));
+    }
+
     function refreshDiagnostics() {
+        var completed = false;
+        var timeout = window.setTimeout(function() {
+            if (!completed) {
+                renderDiagnosticsError('Diagnostics backend is still loading. Retry in a moment or run the self-test for a narrower check.', {});
+            }
+        }, 30000);
         ajaxGet('/api/pondsecndr/diagnostics/get', {}, function(data) {
+            completed = true;
+            window.clearTimeout(timeout);
             latestDiagnostics = data;
+            if (!data || data.status === 'error') {
+                renderDiagnosticsError((data || {}).message, data || {});
+                return;
+            }
             renderReadiness(data);
             renderRuntime(data);
             renderHealth(data);

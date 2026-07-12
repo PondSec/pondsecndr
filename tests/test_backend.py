@@ -2317,6 +2317,8 @@ class BackendTests(unittest.TestCase):
                 ),
                 store,
             )
+            self.assertEqual(payload["database_integrity_mode"], "light")
+            self.assertEqual(payload["database_integrity"], "not_run")
             providers = {item["provider_id"]: item for item in payload["providers"]}
             self.assertEqual(providers["suricata_eve"]["health_status"], "healthy")
             self.assertEqual(providers["opnsense_filterlog"]["health_status"], "warning")

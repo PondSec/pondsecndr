@@ -29,7 +29,7 @@ DEFAULT_SERVICE_USER = os.environ.get("PONDSEC_NDR_SERVICE_USER", "pondsecndr")
 def service_status(config: PondSecConfig, store: EventStore) -> dict[str, Any]:
     health = store.get_health()
     detail = health.get("detail", {}) if isinstance(health.get("detail"), dict) else {}
-    db = store.check()
+    db = store.check(integrity="light")
     eve_access = eve_access_status(config)
     return {
         "status": health["status"],
@@ -52,7 +52,7 @@ def service_status(config: PondSecConfig, store: EventStore) -> dict[str, Any]:
 
 def diagnostics(config: PondSecConfig, store: EventStore) -> dict[str, Any]:
     health = store.get_health()
-    db = store.check()
+    db = store.check(integrity="light")
     detail = health.get("detail") or {}
     eve_access = eve_access_status(config)
     telemetry_counts = store.telemetry_type_counts()
@@ -81,6 +81,8 @@ def diagnostics(config: PondSecConfig, store: EventStore) -> dict[str, Any]:
         "queue_drops": detail.get("queue_drops", 0),
         "parser_errors": detail.get("parser_errors", 0),
         "database_size": db.get("size_bytes"),
+        "database_integrity": db.get("integrity"),
+        "database_integrity_mode": db.get("integrity_mode"),
         "active_model_version": _active_model(config),
         "feature_version": "1",
         "collector_offset": detail.get("collector_offset"),
