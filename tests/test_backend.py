@@ -313,6 +313,34 @@ class BackendTests(unittest.TestCase):
         self.assertTrue(any(item["detector_id"] == "pondsec.portscan" for item in detections))
         self.assertGreaterEqual(detections[0]["confidence"], 0.8)
 
+    def test_feature_aggregation_preserves_application_domain_and_decision_context(self) -> None:
+        events = [
+            {
+                "schema_version": "1",
+                "event_id": "feature-context-1",
+                "event_type": "flow",
+                "timestamp": "2026-07-05T10:00:00+00:00",
+                "source": {"ip": "192.168.20.115", "port": 52000, "interface": None},
+                "destination": {"ip": "52.123.243.94", "port": 443},
+                "protocol": "TCP",
+                "direction": "outbound",
+                "metadata": {
+                    "event_source": "zenarmor",
+                    "bytes_out": 100_000_000,
+                    "bytes_in": 10_000,
+                    "application": "Microsoft Office",
+                    "domain": "ecs.office.com",
+                    "decision": "allowed",
+                },
+                "raw_source": "zenarmor",
+            }
+        ]
+        features = aggregate_features(events)
+
+        self.assertEqual(features[0]["applications"], ["Microsoft Office"])
+        self.assertEqual(features[0]["domains"], ["ecs.office.com"])
+        self.assertEqual(features[0]["provider_decisions"], {"allowed": 1})
+
     def test_dns_responses_do_not_create_scan_or_beacon_detections(self) -> None:
         events = [
             normalize_eve({
@@ -1330,6 +1358,38 @@ igb0_vlan10: flags=1008943<UP,BROADCAST,RUNNING>
         promotion = detection["evidence"]["promotion"]
         self.assertEqual(promotion["decision"], "suppressed")
         self.assertEqual(promotion["reason"], "single_weak_detector")
+
+    def test_allowed_known_service_exfiltration_context_does_not_open_incident(self) -> None:
+        detection = {
+            "detection_id": "d-exfil-office-allowed",
+            "detector_id": "pondsec.data_exfiltration",
+            "detector_version": "1",
+            "category": "exfiltration",
+            "title": "Possible data exfiltration",
+            "description": "Host uploaded substantially more data than it downloaded.",
+            "timestamp": "2026-07-05T10:00:00+00:00",
+            "source_ip": "192.168.20.115",
+            "destination_ip": None,
+            "severity": 8,
+            "confidence": 0.96,
+            "anomaly_score": 1.0,
+            "evidence": {
+                "bytes_out": 800_000_000,
+                "non_dns_bytes_out": 800_000_000,
+                "external_non_dns_bytes_out": 799_000_000,
+                "external_destination_count": 2,
+                "upload_download_ratio": 80.0,
+                "applications": ["Dynamic Classifier", "Secure Web Browsing"],
+                "domains": ["ecs.office.com"],
+                "provider_decisions": {"allowed": 4},
+            },
+            "recommended_action": "investigate",
+        }
+
+        self.assertEqual(correlate_detections([detection]), [])
+        promotion = detection["evidence"]["promotion"]
+        self.assertEqual(promotion["decision"], "suppressed")
+        self.assertEqual(promotion["reason"], "allowed_known_service_transfer")
 
     def test_single_exfiltration_with_reputation_context_still_promotes(self) -> None:
         detection = {

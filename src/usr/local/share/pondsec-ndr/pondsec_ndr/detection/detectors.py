@@ -847,6 +847,9 @@ class DataExfiltrationDetector(Detector):
                         "external_non_dns_bytes_out": external_non_dns_bytes_out,
                         "external_destination_count": external_destinations,
                         "upload_download_ratio": ratio,
+                        "applications": item.get("applications") or [],
+                        "domains": item.get("domains") or [],
+                        "provider_decisions": item.get("provider_decisions") or {},
                         "thresholds": [
                             {"feature": "bytes_out", "operator": ">=", "threshold": 50_000_000, "observed": bytes_out},
                             {"feature": "non_dns_bytes_out", "operator": ">=", "threshold": 50_000_000, "observed": non_dns_bytes_out},

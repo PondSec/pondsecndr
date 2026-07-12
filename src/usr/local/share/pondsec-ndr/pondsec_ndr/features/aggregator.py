@@ -76,6 +76,9 @@ def _base_feature(source_ip: str) -> dict[str, Any]:
         "certificate_issuer_seen_before": None,
         "http_method_frequency": {},
         "http_status_distribution": {},
+        "applications": [],
+        "domains": [],
+        "provider_decisions": {},
         "suricata_alert_count": 0,
         "periodicity_score": 0.0,
         "beaconing_score": 0.0,
@@ -85,6 +88,24 @@ def _base_feature(source_ip: str) -> dict[str, Any]:
         "destination_count": 0,
         "port_count": 0,
     }
+
+
+def _metadata_values(metadata: dict[str, Any], *keys: str) -> list[str]:
+    values: list[str] = []
+    for key in keys:
+        value = metadata.get(key)
+        if value in (None, "", [], {}):
+            continue
+        if isinstance(value, (list, tuple, set)):
+            values.extend(str(item).strip() for item in value if str(item).strip())
+            continue
+        if isinstance(value, dict):
+            values.extend(str(item).strip() for item in value.values() if str(item).strip())
+            continue
+        text = str(value).strip()
+        if text:
+            values.append(text)
+    return values
 
 
 def aggregate_features(
@@ -127,6 +148,9 @@ def aggregate_features(
         nxdomain = 0
         http_methods: dict[str, int] = defaultdict(int)
         http_status: dict[str, int] = defaultdict(int)
+        application_counter: Counter[str] = Counter()
+        domain_counter: Counter[str] = Counter()
+        decision_counter: Counter[str] = Counter()
 
         for event in source_events:
             metadata = event.get("metadata", {})
@@ -187,6 +211,12 @@ def aggregate_features(
                 http_status[status] += 1
             if event.get("event_type") == "alert":
                 item["suricata_alert_count"] += 1
+            for value in _metadata_values(metadata, "application", "app", "service", "application_category"):
+                application_counter[value] += 1
+            for value in _metadata_values(metadata, "domain", "sni", "tls_sni", "server_name", "rrname", "query", "http_host"):
+                domain_counter[value.lower().rstrip(".")] += 1
+            for value in _metadata_values(metadata, "decision", "action", "policy_action", "suricata_action"):
+                decision_counter[value.lower()] += 1
 
         duration = max(last - first, 1.0)
         item["connections_10s"] = sum(1 for ts in timestamps if last - ts <= 10)
@@ -230,5 +260,8 @@ def aggregate_features(
         item["baseline_deviation"] = max(item["burst_score"], item["data_transfer_deviation"], item["dns_entropy"] / 5 if item["dns_entropy"] else 0)
         item["http_method_frequency"] = dict(http_methods)
         item["http_status_distribution"] = dict(http_status)
+        item["applications"] = [value for value, _count in application_counter.most_common(10)]
+        item["domains"] = [value for value, _count in domain_counter.most_common(20)]
+        item["provider_decisions"] = dict(decision_counter)
         features.append(item)
     return features

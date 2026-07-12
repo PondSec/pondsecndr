@@ -244,6 +244,8 @@ def _promotion_score(
     benign_context = _benign_application_context(detections)
     if benign_context and not (marker_supply_chain or high_confidence_signature or strong_detectors):
         score -= _add_factor(negative, "known_benign_application_context", 25, {"context": benign_context})
+    if _is_allowed_known_service_exfiltration_only(detections):
+        score -= _add_factor(negative, "allowed_known_service_transfer", 35, {})
     if not _has_reputation_or_signature_context(detections) and not actionable_reconnaissance:
         score -= _add_factor(negative, "missing_reputation_or_signature_context", 5, {})
 
@@ -428,6 +430,7 @@ def _benign_application_context(detections: list[dict[str, Any]]) -> list[str]:
     terms = {
         "apple",
         "microsoft",
+        "office",
         "google",
         "cloudflare",
         "akamai",
@@ -439,6 +442,9 @@ def _benign_application_context(detections: list[dict[str, Any]]) -> list[str]:
         "backup",
         "zoom",
         "teams",
+        "icloud",
+        "tplink",
+        "tp link",
     }
     matches: set[str] = set()
     for detection in detections:
@@ -448,6 +454,41 @@ def _benign_application_context(detections: list[dict[str, Any]]) -> list[str]:
             if term in haystack:
                 matches.add(term)
     return sorted(matches)
+
+
+def _is_allowed_known_service_exfiltration_only(detections: list[dict[str, Any]]) -> bool:
+    if not detections or any(str(item.get("detector_id") or "") != "pondsec.data_exfiltration" for item in detections):
+        return False
+    if _has_reputation_or_signature_context(detections) or _has_provider_prevention_context(detections):
+        return False
+    known_terms = {
+        "apple",
+        "icloud",
+        "courier.push.apple.com",
+        "microsoft",
+        "office",
+        "ecs.office.com",
+        "tplink",
+        "tp-link",
+        "tplinknbu.com",
+        "security.iot.i.tplinknbu.com",
+    }
+    for detection in detections:
+        evidence = detection.get("evidence") if isinstance(detection.get("evidence"), dict) else {}
+        decisions = evidence.get("provider_decisions") if isinstance(evidence.get("provider_decisions"), dict) else {}
+        decision_values = {str(key).lower() for key, count in decisions.items() if int(count or 0) > 0}
+        has_allowed_context = not decision_values or bool(decision_values <= {"allow", "allowed", "pass", "passed", "permit", "permitted"})
+        values: list[str] = []
+        for key in ("applications", "domains"):
+            raw = evidence.get(key)
+            if isinstance(raw, list):
+                values.extend(str(item).lower() for item in raw)
+            elif raw:
+                values.append(str(raw).lower())
+        text = " ".join(values)
+        if has_allowed_context and any(term in text for term in known_terms):
+            return True
+    return False
 
 
 def _has_reputation_or_signature_context(detections: list[dict[str, Any]]) -> bool:
