@@ -3465,38 +3465,48 @@ class EventStore:
                     "detections": max(100, int(batch_size / 10)),
                 }[table]
                 delete_limit = min(deletable_count, max(1, min(deletable_count, minimum_batch), int(deletable_count * delete_ratio)))
-                rows = conn.execute(
-                    f"SELECT {id_column} AS row_id FROM {table} ORDER BY timestamp ASC LIMIT ?",
-                    (delete_limit,),
-                ).fetchall()
-                ids = [row["row_id"] for row in rows]
-                if not ids:
-                    deleted[table] = 0
-                    continue
-                placeholders = ",".join("?" for _ in ids)
                 if table == "detections":
-                    conn.execute(f"DELETE FROM incident_detections WHERE detection_id IN ({placeholders})", ids)
+                    conn.execute(
+                        """
+                        DELETE FROM incident_detections
+                        WHERE detection_id IN (
+                            SELECT detection_id FROM detections ORDER BY timestamp ASC LIMIT ?
+                        )
+                        """,
+                        (delete_limit,),
+                    )
                 before = conn.total_changes
-                conn.execute(f"DELETE FROM {table} WHERE {id_column} IN ({placeholders})", ids)
+                conn.execute(
+                    f"""
+                    DELETE FROM {table}
+                    WHERE {id_column} IN (
+                        SELECT {id_column} FROM {table} ORDER BY timestamp ASC LIMIT ?
+                    )
+                    """,
+                    (delete_limit,),
+                )
                 deleted[table] = conn.total_changes - before
 
-            archived_rows = conn.execute(
+            archived_count = int(conn.execute(
                 """
-                SELECT incident_id
+                SELECT count(*)
                 FROM incidents
                 WHERE status IN ('closed', 'false_positive', 'archived')
-                ORDER BY COALESCE(updated_at, created_at) ASC
-                LIMIT ?
-                """,
-                (max(100, int(batch_size / 10)),),
-            ).fetchall()
-            archived_ids = [row["incident_id"] for row in archived_rows]
-            if archived_ids:
-                placeholders = ",".join("?" for _ in archived_ids)
-                conn.execute(f"DELETE FROM incident_detections WHERE incident_id IN ({placeholders})", archived_ids)
+                """
+            ).fetchone()[0])
+            if archived_count:
+                archived_limit = min(archived_count, max(100, int(batch_size / 10)))
+                archive_subquery = """
+                    SELECT incident_id
+                    FROM incidents
+                    WHERE status IN ('closed', 'false_positive', 'archived')
+                    ORDER BY COALESCE(updated_at, created_at) ASC
+                    LIMIT ?
+                """
+                conn.execute(f"DELETE FROM incident_detections WHERE incident_id IN ({archive_subquery})", (archived_limit,))
                 before = conn.total_changes
-                conn.execute(f"DELETE FROM incidents WHERE incident_id IN ({placeholders})", archived_ids)
-                conn.execute(f"DELETE FROM responses WHERE incident_id IN ({placeholders})", archived_ids)
+                conn.execute(f"DELETE FROM responses WHERE incident_id IN ({archive_subquery})", (archived_limit,))
+                conn.execute(f"DELETE FROM incidents WHERE incident_id IN ({archive_subquery})", (archived_limit,))
                 deleted["archived_incidents"] = conn.total_changes - before
             else:
                 deleted["archived_incidents"] = 0
