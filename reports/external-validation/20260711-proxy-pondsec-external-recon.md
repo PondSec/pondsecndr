@@ -1,11 +1,11 @@
-# External detection validation: proxy.pondsec.com
+# External detection validation: direct origin target
 
 ## Scope
 
 - Date: 2026-07-11
-- Target: `proxy.pondsec.com`
-- Resolved origin: `80.153.171.185`
-- Cloudflare target excluded: `pondsec.com` resolves to Cloudflare and was not scanned as an origin test.
+- Target: `<direct-origin-fqdn>`
+- Resolved origin: `<wan-origin-ip>`
+- Cloudflare target excluded: `<cloudflare-fronted-fqdn>` resolves to Cloudflare and was not scanned as an origin test.
 - Test class: external reconnaissance and service enumeration
 - Safety constraints: no destructive payloads, no brute force, no malware, no persistence, no denial-of-service test
 
@@ -15,8 +15,8 @@
 | --- | --- |
 | External tool | Nmap Online web API |
 | Tool result channel | API request returned Cloudflare `504`, but scan traffic reached the origin |
-| Source observed by NDR | `207.231.110.35` |
-| Target observed by NDR | `80.153.171.185` |
+| Source observed by NDR | `<external-scanner-ip>` |
+| Target observed by NDR | `<wan-origin-ip>` |
 | Test start | 2026-07-11T21:28Z |
 | Expected detection | External reconnaissance / port scan / vertical scan |
 | Expected correlation | One incident for the same source and target |
@@ -27,7 +27,7 @@
 | Field | Actual result |
 | --- | --- |
 | Incident ID | `96cf3e70-b3a0-5e91-8241-cf4a211ffa5c` |
-| Incident title | `Reconnaissance from 207.231.110.35 (3 detections)` |
+| Incident title | `Reconnaissance from <external-scanner-ip> (3 detections)` |
 | Status | `open` |
 | Category | `reconnaissance` |
 | MITRE phase | `reconnaissance` |
@@ -53,4 +53,4 @@ The validation incident was closed after evidence capture. Open and active incid
 
 - Repeat from a second independent external runner to validate independent-source separation.
 - Run a controlled service-enumeration stage from an external runner with a bounded port list.
-- Keep `pondsec.com` tests separate from origin tests because Cloudflare terminates that path before the firewall.
+- Keep Cloudflare-fronted tests separate from origin tests because Cloudflare terminates that path before the firewall.

@@ -1,15 +1,15 @@
 # NAT private-egress worm-lookalike validation
 
 Date: 2026-07-11
-System: HWFirewall01.internal / PondSec NDR
+System: <firewall-hostname> / PondSec NDR
 Scope: local client network only, harmless TCP connect attempts to non-production private test addresses
 
 ## Test setup
 
-- Source host: 192.168.10.20
+- Source host: <test-client-ip>
 - VPN state during valid traffic run: disconnected
-- Route during valid traffic run: 10.255.255.50/53 via en0, gateway 192.168.10.5
-- Test targets: 10.255.255.50, 10.255.255.51, 10.255.255.52, 10.255.255.53
+- Route during valid traffic run: <private-test-target-range> via en0, gateway <client-gateway-ip>
+- Test targets: <private-test-target-1>, <private-test-target-2>, <private-test-target-3>, <private-test-target-4>
 - Ports: 445, 135, 139
 - Tool: tools/pentest/ndr_worm_lookalike.py
 - Safety: no credentials, no exploit payload, no malware, no file write, no self-propagation
@@ -18,8 +18,8 @@ Scope: local client network only, harmless TCP connect attempts to non-productio
 
 The first internal worm-lookalike run produced PF filterlog records only after NAT on WAN:
 
-- source: 80.153.171.185
-- destination: 10.255.255.x
+- source: <wan-origin-ip>
+- destination: <private-test-target-range>
 - action: pass
 - direction: out
 
@@ -41,14 +41,14 @@ Fresh post-fix case:
 
 - Incident: 7e051efb-6ff4-5bde-84fb-5cc238dd4ea1
 - Category: lateral_movement
-- Source field: 80.153.171.185
+- Source field: <wan-origin-ip>
 - Destination: private_egress
 - Risk score: 82
 - Detection count: 1
 - Event count: 12
 - Detector: pondsec.worm_like_propagation
 - Evidence flags: `nat_mapping_required=true`, `response_target_confidence=low_without_pre_nat_session_context`
-- Entity roles: `affected_host=unresolved_internal_host_behind_nat`, `destination=private_egress`, `threat_source=80.153.171.185`
+- Entity roles: `affected_host=unresolved_internal_host_behind_nat`, `destination=private_egress`, `threat_source=<wan-origin-ip>`
 - Response target: absent
 
 Expected behavior was met: the attack-like pattern is detected as lateral movement, is not merged with external reconnaissance cases, and does not propose blocking the WAN address without a real pre-NAT client mapping.
