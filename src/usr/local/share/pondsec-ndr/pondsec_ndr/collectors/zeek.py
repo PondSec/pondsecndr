@@ -16,7 +16,7 @@ from urllib.parse import urlsplit
 from pondsec_ndr.schema import EVENT_SCHEMA_VERSION, event_id_from, is_private_ip, parse_timestamp, valid_ip, valid_port
 
 
-SUPPORTED_ZEEK_LOGS = ("conn", "dns", "ssl", "x509", "http", "files", "notice", "weird")
+SUPPORTED_ZEEK_LOGS = ("conn", "dns", "ssl", "x509", "http", "smtp", "files", "notice", "weird")
 
 
 @dataclass(slots=True)
@@ -392,6 +392,20 @@ def _typed_metadata(log_type: str, row: Mapping[str, Any]) -> dict[str, Any]:
             "response_body_len": _int(row.get("response_body_len")),
             "byte_count": _int(row.get("request_body_len")) + _int(row.get("response_body_len")),
         }
+    if log_type == "smtp":
+        return {
+            "mailfrom": row.get("mailfrom"),
+            "rcptto": _set_items(row.get("rcptto"))[:8],
+            "date": row.get("date"),
+            "from": _set_items(row.get("from"))[:8],
+            "to": _set_items(row.get("to"))[:8],
+            "reply_to": _set_items(row.get("reply_to"))[:8],
+            "msg_id": row.get("msg_id"),
+            "subject": _bounded(row.get("subject"), 256),
+            "user_agent": row.get("user_agent"),
+            "fuids": _set_items(row.get("fuids"))[:8],
+            "is_webmail": _boolish(row.get("is_webmail")),
+        }
     if log_type == "files":
         return {
             "file_id": row.get("fuid"),
@@ -428,6 +442,7 @@ def _event_type(log_type: str) -> str:
         "conn": "flow",
         "ssl": "tls",
         "x509": "tls",
+        "smtp": "smtp",
         "files": "fileinfo",
         "notice": "notice",
         "weird": "anomaly",

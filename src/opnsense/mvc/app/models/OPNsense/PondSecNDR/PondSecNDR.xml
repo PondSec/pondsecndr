@@ -290,15 +290,15 @@
                 </OptionValues>
             </mode>
             <results_dir type="TextField">
-                <default></default>
+                <default>/var/db/pondsec-ndr/sandbox/results</default>
                 <Required>N</Required>
             </results_dir>
             <pending_dir type="TextField">
-                <default></default>
+                <default>/var/db/pondsec-ndr/sandbox/pending</default>
                 <Required>N</Required>
             </pending_dir>
             <artifact_dir type="TextField">
-                <default></default>
+                <default>/var/db/pondsec-ndr/sandbox/artifacts</default>
                 <Required>N</Required>
             </artifact_dir>
             <request_timeout_seconds type="IntegerField">
@@ -384,6 +384,10 @@
                 <default>http.log</default>
                 <Required>N</Required>
             </http_log>
+            <smtp_log type="TextField">
+                <default>smtp.log</default>
+                <Required>N</Required>
+            </smtp_log>
             <files_log type="TextField">
                 <default>files.log</default>
                 <Required>N</Required>

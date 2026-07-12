@@ -74,9 +74,9 @@
   "sandbox": {
     "enabled": "{{ sandbox.enabled|default("1") }}",
     "mode": "{{ sandbox.mode|default("external_result") }}",
-    "results_dir": "{{ sandbox.results_dir|default("") }}",
-    "pending_dir": "{{ sandbox.pending_dir|default("") }}",
-    "artifact_dir": "{{ sandbox.artifact_dir|default("") }}",
+    "results_dir": "{{ sandbox.results_dir|default("/var/db/pondsec-ndr/sandbox/results") }}",
+    "pending_dir": "{{ sandbox.pending_dir|default("/var/db/pondsec-ndr/sandbox/pending") }}",
+    "artifact_dir": "{{ sandbox.artifact_dir|default("/var/db/pondsec-ndr/sandbox/artifacts") }}",
     "request_timeout_seconds": "{{ sandbox.request_timeout_seconds|default("600") }}",
     "result_ttl_hours": "{{ sandbox.result_ttl_hours|default("168") }}",
     "queue_limit": "{{ sandbox.queue_limit|default("1000") }}",
@@ -97,6 +97,7 @@
       "ssl": "{{ zeek_logs.ssl|default(zeek.ssl_log|default("ssl.log")) }}",
       "x509": "{{ zeek_logs.x509|default(zeek.x509_log|default("x509.log")) }}",
       "http": "{{ zeek_logs.http|default(zeek.http_log|default("http.log")) }}",
+      "smtp": "{{ zeek_logs.smtp|default(zeek.smtp_log|default("smtp.log")) }}",
       "files": "{{ zeek_logs.files|default(zeek.files_log|default("files.log")) }}",
       "notice": "{{ zeek_logs.notice|default(zeek.notice_log|default("notice.log")) }}",
       "weird": "{{ zeek_logs.weird|default(zeek.weird_log|default("weird.log")) }}"

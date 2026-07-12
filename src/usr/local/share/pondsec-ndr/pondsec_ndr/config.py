@@ -24,6 +24,9 @@ ZEEK_PARSERS = {"tsv"}
 ZENARMOR_SOURCES = {"syslog_export", "syslog_udp", "official_log", "api"}
 ZENARMOR_FORMATS = {"auto", "json", "key_value"}
 SANDBOX_MODES = {"metadata", "local_static", "external_result"}
+DEFAULT_SANDBOX_RESULTS_DIR = "/var/db/pondsec-ndr/sandbox/results"
+DEFAULT_SANDBOX_PENDING_DIR = "/var/db/pondsec-ndr/sandbox/pending"
+DEFAULT_SANDBOX_ARTIFACT_DIR = "/var/db/pondsec-ndr/sandbox/artifacts"
 
 
 def _bool(value: Any, default: bool = False) -> bool:
@@ -72,6 +75,21 @@ def _parse_datetime(value: Any) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def sandbox_runtime_dirs(data_dir: Path, sandbox: "SandboxConfig") -> dict[str, Path]:
+    return {
+        "results": _sandbox_runtime_path(data_dir, sandbox.results_dir, DEFAULT_SANDBOX_RESULTS_DIR, "results"),
+        "pending": _sandbox_runtime_path(data_dir, sandbox.pending_dir, DEFAULT_SANDBOX_PENDING_DIR, "pending"),
+        "artifacts": _sandbox_runtime_path(data_dir, sandbox.artifact_dir, DEFAULT_SANDBOX_ARTIFACT_DIR, "artifacts"),
+    }
+
+
+def _sandbox_runtime_path(data_dir: Path, configured: str, default_path: str, leaf: str) -> Path:
+    path = Path(configured or default_path)
+    if str(path) == default_path and Path(data_dir) != DATA_DIR:
+        return Path(data_dir) / "sandbox" / leaf
+    return path
 
 
 def _read_learning_started_marker(data_dir: Path) -> str:
@@ -195,9 +213,9 @@ class ThreatIntelConfig:
 class SandboxConfig:
     enabled: bool = True
     mode: str = "external_result"
-    results_dir: str = ""
-    pending_dir: str = ""
-    artifact_dir: str = ""
+    results_dir: str = DEFAULT_SANDBOX_RESULTS_DIR
+    pending_dir: str = DEFAULT_SANDBOX_PENDING_DIR
+    artifact_dir: str = DEFAULT_SANDBOX_ARTIFACT_DIR
     request_timeout_seconds: int = 600
     result_ttl_hours: int = 168
     queue_limit: int = 1000
@@ -219,6 +237,7 @@ class ZeekConfig:
     ssl_log: str = "ssl.log"
     x509_log: str = "x509.log"
     http_log: str = "http.log"
+    smtp_log: str = "smtp.log"
     files_log: str = "files.log"
     notice_log: str = "notice.log"
     weird_log: str = "weird.log"
@@ -231,6 +250,7 @@ class ZeekConfig:
             "ssl": self.ssl_log,
             "x509": self.x509_log,
             "http": self.http_log,
+            "smtp": self.smtp_log,
             "files": self.files_log,
             "notice": self.notice_log,
             "weird": self.weird_log,
@@ -564,9 +584,9 @@ def load_config(path: Path | None = None) -> PondSecConfig:
         sandbox=SandboxConfig(
             enabled=_bool(sandbox.get("enabled"), True),
             mode=sandbox_mode,
-            results_dir=_text(sandbox.get("results_dir", "")),
-            pending_dir=_text(sandbox.get("pending_dir", "")),
-            artifact_dir=_text(sandbox.get("artifact_dir", "")),
+            results_dir=_text(sandbox.get("results_dir"), DEFAULT_SANDBOX_RESULTS_DIR),
+            pending_dir=_text(sandbox.get("pending_dir"), DEFAULT_SANDBOX_PENDING_DIR),
+            artifact_dir=_text(sandbox.get("artifact_dir"), DEFAULT_SANDBOX_ARTIFACT_DIR),
             request_timeout_seconds=_int(sandbox.get("request_timeout_seconds"), 600, 1, 86400),
             result_ttl_hours=_int(sandbox.get("result_ttl_hours"), 168, 1, 8760),
             queue_limit=_int(sandbox.get("queue_limit"), 1000, 1, 100000),
@@ -586,6 +606,7 @@ def load_config(path: Path | None = None) -> PondSecConfig:
             ssl_log=str(zeek_logs.get("ssl") or zeek.get("ssl_log") or "ssl.log"),
             x509_log=str(zeek_logs.get("x509") or zeek.get("x509_log") or "x509.log"),
             http_log=str(zeek_logs.get("http") or zeek.get("http_log") or "http.log"),
+            smtp_log=str(zeek_logs.get("smtp") or zeek.get("smtp_log") or "smtp.log"),
             files_log=str(zeek_logs.get("files") or zeek.get("files_log") or "files.log"),
             notice_log=str(zeek_logs.get("notice") or zeek.get("notice_log") or "notice.log"),
             weird_log=str(zeek_logs.get("weird") or zeek.get("weird_log") or "weird.log"),
@@ -674,5 +695,6 @@ def load_config(path: Path | None = None) -> PondSecConfig:
 
 
 def ensure_directories(config: PondSecConfig) -> None:
-    for directory in (config.data_dir, config.log_dir, config.run_dir):
+    sandbox_dirs = list(sandbox_runtime_dirs(config.data_dir, config.sandbox).values())
+    for directory in (config.data_dir, config.log_dir, config.run_dir, *sandbox_dirs):
         directory.mkdir(parents=True, exist_ok=True)

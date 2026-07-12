@@ -23,6 +23,8 @@ def required_eve_types(config: Any) -> list[str]:
         required.append("http")
     if getattr(config.detection, "tls_analysis", True):
         required.append("tls")
+    if getattr(getattr(config, "sandbox", None), "enabled", False):
+        required.append("fileinfo")
     return required
 
 
@@ -56,7 +58,7 @@ def eve_types_from_suricata_yaml(text: str) -> list[str]:
 def patch_suricata_yaml_text(text: str, required: list[str] | tuple[str, ...]) -> tuple[str, bool, list[str]]:
     present = set(eve_types_from_suricata_yaml(text))
     missing = [item for item in required if item not in present]
-    patchable = [item for item in missing if item in {"flow", "dns"}]
+    patchable = [item for item in missing if item in {"flow", "dns", "fileinfo"}]
     if not patchable:
         return text, False, []
 
@@ -73,6 +75,8 @@ def patch_suricata_yaml_text(text: str, required: list[str] | tuple[str, ...]) -
                 output.append(f"{indent}- dns:")
                 output.append(f"{indent}    requests: yes")
                 output.append(f"{indent}    responses: yes")
+            if "fileinfo" in patchable:
+                output.append(f"{indent}- fileinfo")
             inserted = True
     if not inserted:
         return text, False, []
@@ -144,6 +148,10 @@ def harden_sensor(config: Any, restart_suricata: bool = False) -> dict[str, Any]
     changes.extend(acl_result["changes"])
     errors.extend(acl_result["errors"])
 
+    dnsmasq_acl_result = _harden_dnsmasq_acl(config)
+    changes.extend(dnsmasq_acl_result["changes"])
+    errors.extend(dnsmasq_acl_result["errors"])
+
     status = sensor_status(config)
     return {
         "status": "ok" if not errors and status["status"] == "ok" else "failed",
@@ -154,6 +162,7 @@ def harden_sensor(config: Any, restart_suricata: bool = False) -> dict[str, Any]
         "backups": backups,
         "template_reload": template_result,
         "suricata_restart": restart_result,
+        "dnsmasq_acl": dnsmasq_acl_result,
         "sensor_status": status,
     }
 
@@ -269,6 +278,57 @@ def _harden_eve_acl() -> dict[str, Any]:
             if payload["returncode"] == 0:
                 result["changes"].append(change)
     return result
+
+
+def _harden_dnsmasq_acl(config: Any) -> dict[str, Any]:
+    result = {"changes": [], "errors": []}
+    dnsmasq = getattr(config, "dnsmasq", None)
+    if dnsmasq is None or not getattr(dnsmasq, "enabled", False):
+        return result
+
+    candidates = [
+        getattr(dnsmasq, "dns_log_path", ""),
+        getattr(dnsmasq, "dhcp_log_path", ""),
+        getattr(dnsmasq, "lease_path", ""),
+    ]
+    seen: set[Path] = set()
+    for candidate in candidates:
+        if not candidate:
+            continue
+        path = Path(str(candidate))
+        if path in seen:
+            continue
+        seen.add(path)
+        _harden_dnsmasq_path(path, result)
+    return result
+
+
+def _harden_dnsmasq_path(path: Path, result: dict[str, Any]) -> None:
+    if not path.exists():
+        return
+    if path.is_dir():
+        payload = _run(["/bin/setfacl", "-m", "u:pondsecndr:xaRcs:fd:allow", str(path)])
+        if payload["returncode"] == 0:
+            result["changes"].append(f"dnsmasq_log_dir_acl_checked:{path}")
+        else:
+            result["errors"].append(f"dnsmasq_log_dir_acl_failed:{path}:{payload['stderr']}")
+        try:
+            files = [item for item in path.iterdir() if item.is_file()]
+        except OSError as exc:
+            result["errors"].append(f"dnsmasq_log_dir_scan_failed:{path}:{exc}")
+            return
+        for item in files:
+            _harden_dnsmasq_file(item, result)
+        return
+    _harden_dnsmasq_file(path, result)
+
+
+def _harden_dnsmasq_file(path: Path, result: dict[str, Any]) -> None:
+    payload = _run(["/bin/setfacl", "-m", "u:pondsecndr:raRcs::allow", str(path)])
+    if payload["returncode"] == 0:
+        result["changes"].append(f"dnsmasq_log_file_acl_checked:{path}")
+    else:
+        result["errors"].append(f"dnsmasq_log_file_acl_failed:{path}:{payload['stderr']}")
 
 
 def _harden_newsyslog() -> dict[str, Any]:

@@ -13,7 +13,7 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
-from pondsec_ndr.config import SandboxConfig
+from pondsec_ndr.config import SandboxConfig, sandbox_runtime_dirs
 
 
 EICAR_SHA256 = "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f"
@@ -62,8 +62,9 @@ def enrich_events_with_sandbox(
     if not config.enabled:
         return events, stats
 
-    results_dir = Path(config.results_dir) if config.results_dir else Path(data_dir) / "sandbox" / "results"
-    pending_dir = Path(config.pending_dir) if config.pending_dir else Path(data_dir) / "sandbox" / "pending"
+    runtime_dirs = sandbox_runtime_dirs(data_dir, config)
+    results_dir = runtime_dirs["results"]
+    pending_dir = runtime_dirs["pending"]
     results = load_sandbox_results(results_dir, config.result_ttl_hours, stats)
     now = datetime.now(timezone.utc)
     enriched: list[dict[str, Any]] = []

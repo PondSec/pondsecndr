@@ -187,8 +187,11 @@ $(function() {
                 ['TLS', counts.tls],
                 ['HTTP', counts.http],
                 ['File', counts.fileinfo],
+                ['SMTP', counts.smtp],
+                ['DHCP', counts.dhcp],
                 ['Auth', counts.authentication],
                 ['Sandbox', counts.sandbox_verdict],
+                ['Threat Intel', counts.threat_intel],
                 ['Incomplete', counts.incomplete]
             ].filter(function(item) {
                 return numberValue(item[1]) > 0;
@@ -241,8 +244,11 @@ $(function() {
             ['TLS', ready.tls_metadata],
             ['HTTP', ready.http_metadata],
             ['Fileinfo', ready.file_metadata],
+            ['SMTP', ready.smtp_metadata],
+            ['DHCP', ready.dhcp_metadata],
             ['Signatures/drops', ready.signature_or_drop_metadata],
-            ['Sandbox verdicts', ready.sandbox_verdict_metadata]
+            ['Sandbox verdicts', ready.sandbox_verdict_metadata],
+            ['Threat Intel', ready.threat_intel_metadata]
         ].map(function(item) {
             return '<span class="pondsec-badge ' + (item[1] ? 'good' : 'neutral') + '">' + escapeHtml(item[0]) + '</span>';
         }).join(''));

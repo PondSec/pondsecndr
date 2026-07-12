@@ -604,6 +604,21 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(http["event_type"], "http")
         self.assertEqual(http["metadata"]["url_path"], "/login")
 
+        smtp = normalize_zeek_row("smtp", {
+            "ts": "2026-07-05T10:00:04+00:00",
+            "uid": "M1",
+            "id.orig_h": "192.168.10.20",
+            "id.orig_p": "53003",
+            "id.resp_h": "198.51.100.25",
+            "id.resp_p": "587",
+            "mailfrom": "sender@example.test",
+            "rcptto": "recipient@example.test",
+            "subject": "Validation message",
+        })
+        self.assertEqual(smtp["event_type"], "smtp")
+        self.assertEqual(smtp["metadata"]["mailfrom"], "sender@example.test")
+        self.assertEqual(smtp["metadata"]["rcptto"], ["recipient@example.test"])
+
         files = normalize_zeek_row("files", {
             "ts": "2026-07-05T10:00:05+00:00",
             "fuid": "F2",
@@ -2391,6 +2406,47 @@ class BackendTests(unittest.TestCase):
                     "metadata": {},
                     "raw_source": "dnsmasq",
                 },
+                {
+                    "schema_version": "1",
+                    "event_id": "coverage-dhcp",
+                    "event_type": "dhcp",
+                    "timestamp": now,
+                    "source": {"ip": "192.168.10.44", "port": None, "interface": "igb0_vlan10"},
+                    "destination": {"ip": None, "port": None},
+                    "protocol": None,
+                    "direction": "internal",
+                    "metadata": {"dhcp_action": "dhcpack", "mac": "aa:bb:cc:dd:ee:44", "hostname": "client-44"},
+                    "raw_source": "dnsmasq",
+                },
+                {
+                    "schema_version": "1",
+                    "event_id": "coverage-smtp",
+                    "event_type": "smtp",
+                    "timestamp": now,
+                    "source": {"ip": "192.168.10.45", "port": 55045, "interface": None},
+                    "destination": {"ip": "203.0.113.45", "port": 587},
+                    "protocol": "TCP",
+                    "direction": "egress",
+                    "metadata": {"hostname": "mail.validation.pondsec.test"},
+                    "raw_source": "zeek",
+                },
+                {
+                    "schema_version": "1",
+                    "event_id": "coverage-threat-intel",
+                    "event_type": "dns",
+                    "timestamp": now,
+                    "source": {"ip": "192.168.10.46", "port": 53046, "interface": None},
+                    "destination": {"ip": "192.168.10.5", "port": 53},
+                    "protocol": "UDP",
+                    "direction": "internal",
+                    "metadata": {
+                        "rrname": "listed.validation.pondsec.test",
+                        "ioc_match": "listed.validation.pondsec.test",
+                        "threat_intel_confidence": 0.97,
+                        "threat_intel_source": "local-validation-feed",
+                    },
+                    "raw_source": "dnsmasq",
+                },
             ])
             store.set_health("healthy", 123, {
                 "collector_sources": {
@@ -2410,14 +2466,20 @@ class BackendTests(unittest.TestCase):
             coverage = payload["telemetry_coverage"]
 
             self.assertEqual(coverage["by_provider"]["zeek"]["windows"]["24h"]["dns"], 1)
+            self.assertEqual(coverage["by_provider"]["zeek"]["windows"]["24h"]["smtp"], 1)
             self.assertEqual(coverage["by_provider"]["zenarmor"]["windows"]["24h"]["tls"], 1)
             self.assertEqual(coverage["by_provider"]["zenarmor"]["windows"]["24h"]["fileinfo"], 1)
             self.assertEqual(coverage["by_provider"]["zenarmor"]["windows"]["24h"]["sandbox_verdict"], 1)
+            self.assertEqual(coverage["by_provider"]["dnsmasq"]["windows"]["24h"]["dhcp"], 1)
+            self.assertEqual(coverage["by_provider"]["dnsmasq"]["windows"]["24h"]["threat_intel"], 1)
             self.assertEqual(coverage["by_provider"]["dnsmasq"]["windows"]["24h"]["incomplete"], 1)
             self.assertTrue(coverage["email_url_file_ready"]["dns_metadata"])
             self.assertTrue(coverage["email_url_file_ready"]["tls_metadata"])
             self.assertTrue(coverage["email_url_file_ready"]["file_metadata"])
+            self.assertTrue(coverage["email_url_file_ready"]["smtp_metadata"])
+            self.assertTrue(coverage["email_url_file_ready"]["dhcp_metadata"])
             self.assertTrue(coverage["email_url_file_ready"]["sandbox_verdict_metadata"])
+            self.assertTrue(coverage["email_url_file_ready"]["threat_intel_metadata"])
             self.assertEqual(coverage["collector_runtime"]["file_sandbox"]["matched_results"], 1)
 
     def test_config_loads_extended_zenarmor_settings(self) -> None:
@@ -2493,6 +2555,12 @@ class BackendTests(unittest.TestCase):
             self.assertFalse(config.sandbox.privacy_mode)
             self.assertFalse(config.response.auto_arm_after_learning)
             self.assertEqual(config.validate(), [])
+
+    def test_config_sets_sandbox_default_directories(self) -> None:
+        config = PondSecConfig()
+        self.assertEqual(config.sandbox.results_dir, "/var/db/pondsec-ndr/sandbox/results")
+        self.assertEqual(config.sandbox.pending_dir, "/var/db/pondsec-ndr/sandbox/pending")
+        self.assertEqual(config.sandbox.artifact_dir, "/var/db/pondsec-ndr/sandbox/artifacts")
 
     def test_diagnostics_exposes_response_readiness(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -5006,7 +5074,7 @@ class BackendTests(unittest.TestCase):
                 propose_block_for_incident(store, config, "incident-allowlist-test", actor="test")
             self.assertTrue(is_protected_target("127.0.0.1", config))
 
-    def test_sensor_patch_adds_flow_and_dns_to_first_eve_log(self) -> None:
+    def test_sensor_patch_adds_flow_dns_and_fileinfo_to_first_eve_log(self) -> None:
         original = """outputs:
   - eve-log:
       enabled: yes
@@ -5019,18 +5087,18 @@ class BackendTests(unittest.TestCase):
   - stats:
       enabled: yes
 """
-        patched, changed, added = patch_suricata_yaml_text(original, ["alert", "drop", "flow", "dns"])
+        patched, changed, added = patch_suricata_yaml_text(original, ["alert", "drop", "flow", "dns", "fileinfo"])
         self.assertTrue(changed)
-        self.assertEqual(added, ["flow", "dns"])
-        self.assertEqual(eve_types_from_suricata_yaml(patched)[:4], ["flow", "dns", "alert", "drop"])
-        patched_again, changed_again, added_again = patch_suricata_yaml_text(patched, ["alert", "drop", "flow", "dns"])
+        self.assertEqual(added, ["flow", "dns", "fileinfo"])
+        self.assertEqual(eve_types_from_suricata_yaml(patched)[:5], ["flow", "dns", "fileinfo", "alert", "drop"])
+        patched_again, changed_again, added_again = patch_suricata_yaml_text(patched, ["alert", "drop", "flow", "dns", "fileinfo"])
         self.assertFalse(changed_again)
         self.assertEqual(added_again, [])
         self.assertEqual(patched_again, patched)
 
     def test_required_eve_types_include_behavior_and_metadata_sources(self) -> None:
         config = PondSecConfig()
-        self.assertEqual(required_eve_types(config), ["alert", "drop", "flow", "dns", "http", "tls"])
+        self.assertEqual(required_eve_types(config), ["alert", "drop", "flow", "dns", "http", "tls", "fileinfo"])
 
 
 class CliTests(unittest.TestCase):

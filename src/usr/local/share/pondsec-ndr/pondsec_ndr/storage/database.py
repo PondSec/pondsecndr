@@ -190,8 +190,11 @@ def _empty_telemetry_counts() -> dict[str, int]:
         "tls": 0,
         "http": 0,
         "fileinfo": 0,
+        "smtp": 0,
+        "dhcp": 0,
         "authentication": 0,
         "sandbox_verdict": 0,
+        "threat_intel": 0,
         "alert_or_drop": 0,
         "incomplete": 0,
     }
@@ -200,8 +203,10 @@ def _empty_telemetry_counts() -> dict[str, int]:
 def _telemetry_classes(event_type: str, destination_port: int, metadata: dict[str, Any]) -> set[str]:
     classes: set[str] = set()
     normalized = str(event_type or "").lower()
-    if normalized in {"flow", "dns", "tls", "http", "fileinfo"}:
+    if normalized in {"flow", "dns", "tls", "http", "fileinfo", "dhcp", "smtp"}:
         classes.add(normalized)
+    if normalized in {"smtp"} or destination_port in {25, 465, 587}:
+        classes.add("smtp")
     if normalized in {"alert", "drop"}:
         classes.add("alert_or_drop")
     if normalized == "authentication" or destination_port in {22, 25, 88, 110, 143, 389, 445, 465, 587, 636, 993, 995, 3389, 5985, 5986}:
@@ -209,6 +214,8 @@ def _telemetry_classes(event_type: str, destination_port: int, metadata: dict[st
             classes.add("authentication")
     if any(metadata.get(key) for key in ("sandbox_verdict", "sandbox_status", "sandbox_confidence", "file_verdict", "av_verdict")):
         classes.add("sandbox_verdict")
+    if any(metadata.get(key) for key in ("ioc_match", "threat_intel_match", "threat_intel_confidence", "threat_intel_source", "reputation")):
+        classes.add("threat_intel")
     return classes
 
 
@@ -224,6 +231,8 @@ def _incomplete_telemetry_event(event_type: str, source_ip: str | None, destinat
         return not any(metadata.get(key) for key in ("url_path", "url", "hostname", "status", "http_method", "method"))
     if normalized == "fileinfo":
         return not any(metadata.get(key) for key in ("filename", "md5", "sha1", "sha256", "file_verdict", "sandbox_verdict"))
+    if normalized == "dhcp":
+        return not any(metadata.get(key) for key in ("dhcp_action", "mac", "hostname", "client_id"))
     return False
 
 
@@ -3136,8 +3145,11 @@ class EventStore:
                 "tls_metadata": coverage["tls"] > 0,
                 "http_metadata": coverage["http"] > 0,
                 "file_metadata": coverage["fileinfo"] > 0,
+                "smtp_metadata": coverage["smtp"] > 0,
+                "dhcp_metadata": coverage["dhcp"] > 0,
                 "signature_or_drop_metadata": coverage["alert_or_drop"] > 0,
                 "sandbox_verdict_metadata": coverage["sandbox_verdict"] > 0,
+                "threat_intel_metadata": coverage["threat_intel"] > 0,
             },
         }
 
