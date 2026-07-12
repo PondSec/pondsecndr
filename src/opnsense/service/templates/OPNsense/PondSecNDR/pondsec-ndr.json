@@ -1,4 +1,5 @@
 {% set threat_intel = OPNsense.pondsecndr.threat_intel|default({}) %}
+{% set sandbox = OPNsense.pondsecndr.sandbox|default({}) %}
 {% set zeek = OPNsense.pondsecndr.zeek|default({}) %}
 {% set zeek_logs = zeek.logs|default({}) %}
 {% set zenarmor = OPNsense.pondsecndr.zenarmor|default({}) %}
@@ -64,9 +65,22 @@
   },
   "threat_intel": {
     "cve_enrichment": "{{ threat_intel.cve_enrichment|default("1") }}",
+    "local_iocs": "{{ threat_intel.local_iocs|default("1") }}",
     "external_lookup": "{{ threat_intel.external_lookup|default("0") }}",
     "cache_ttl_hours": "{{ threat_intel.cache_ttl_hours|default("24") }}",
-    "api_timeout_seconds": "{{ threat_intel.api_timeout_seconds|default("5") }}"
+    "api_timeout_seconds": "{{ threat_intel.api_timeout_seconds|default("5") }}",
+    "feed_ttl_hours": "{{ threat_intel.feed_ttl_hours|default("168") }}"
+  },
+  "sandbox": {
+    "enabled": "{{ sandbox.enabled|default("1") }}",
+    "mode": "{{ sandbox.mode|default("external_result") }}",
+    "results_dir": "{{ sandbox.results_dir|default("") }}",
+    "pending_dir": "{{ sandbox.pending_dir|default("") }}",
+    "artifact_dir": "{{ sandbox.artifact_dir|default("") }}",
+    "request_timeout_seconds": "{{ sandbox.request_timeout_seconds|default("600") }}",
+    "result_ttl_hours": "{{ sandbox.result_ttl_hours|default("168") }}",
+    "queue_limit": "{{ sandbox.queue_limit|default("1000") }}",
+    "privacy_mode": "{{ sandbox.privacy_mode|default("1") }}"
   },
   "zeek": {
     "enabled": "{{ zeek.enabled|default("0") }}",

@@ -23,6 +23,7 @@ ZEEK_MODES = {"external", "local"}
 ZEEK_PARSERS = {"tsv"}
 ZENARMOR_SOURCES = {"syslog_export", "syslog_udp", "official_log", "api"}
 ZENARMOR_FORMATS = {"auto", "json", "key_value"}
+SANDBOX_MODES = {"metadata", "local_static", "external_result"}
 
 
 def _bool(value: Any, default: bool = False) -> bool:
@@ -183,9 +184,24 @@ class DetectionConfig:
 @dataclass(slots=True)
 class ThreatIntelConfig:
     cve_enrichment: bool = True
+    local_iocs: bool = True
     external_lookup: bool = False
     cache_ttl_hours: int = 24
     api_timeout_seconds: int = 5
+    feed_ttl_hours: int = 168
+
+
+@dataclass(slots=True)
+class SandboxConfig:
+    enabled: bool = True
+    mode: str = "external_result"
+    results_dir: str = ""
+    pending_dir: str = ""
+    artifact_dir: str = ""
+    request_timeout_seconds: int = 600
+    result_ttl_hours: int = 168
+    queue_limit: int = 1000
+    privacy_mode: bool = True
 
 
 @dataclass(slots=True)
@@ -336,6 +352,7 @@ class PondSecConfig:
     interfaces: InterfaceConfig = field(default_factory=InterfaceConfig)
     detection: DetectionConfig = field(default_factory=DetectionConfig)
     threat_intel: ThreatIntelConfig = field(default_factory=ThreatIntelConfig)
+    sandbox: SandboxConfig = field(default_factory=SandboxConfig)
     zeek: ZeekConfig = field(default_factory=ZeekConfig)
     zenarmor: ZenarmorConfig = field(default_factory=ZenarmorConfig)
     netflow: NetFlowConfig = field(default_factory=NetFlowConfig)
@@ -379,6 +396,16 @@ class PondSecConfig:
             errors.append("threat_intel cache_ttl_hours must be positive")
         if self.threat_intel.api_timeout_seconds < 1:
             errors.append("threat_intel api_timeout_seconds must be positive")
+        if self.threat_intel.feed_ttl_hours < 1:
+            errors.append("threat_intel feed_ttl_hours must be positive")
+        if self.sandbox.mode not in SANDBOX_MODES:
+            errors.append(f"invalid sandbox mode: {self.sandbox.mode}")
+        if self.sandbox.request_timeout_seconds < 1:
+            errors.append("sandbox request_timeout_seconds must be positive")
+        if self.sandbox.result_ttl_hours < 1:
+            errors.append("sandbox result_ttl_hours must be positive")
+        if self.sandbox.queue_limit < 1:
+            errors.append("sandbox queue_limit must be positive")
         if self.zeek.mode not in ZEEK_MODES:
             errors.append(f"invalid Zeek mode: {self.zeek.mode}")
         if self.zeek.parser not in ZEEK_PARSERS:
@@ -441,6 +468,7 @@ def load_config(path: Path | None = None) -> PondSecConfig:
     interfaces = raw.get("interfaces") or {}
     detection = raw.get("detection") or {}
     threat_intel = raw.get("threat_intel") or {}
+    sandbox = raw.get("sandbox") or {}
     zeek = raw.get("zeek") or {}
     zeek_logs = zeek.get("logs") or {}
     zenarmor = raw.get("zenarmor") or {}
@@ -462,6 +490,9 @@ def load_config(path: Path | None = None) -> PondSecConfig:
     zenarmor_format = str(zenarmor.get("format") or "auto").strip().lower()
     if zenarmor_format not in ZENARMOR_FORMATS:
         zenarmor_format = "auto"
+    sandbox_mode = str(sandbox.get("mode") or "external_result").strip().lower()
+    if sandbox_mode not in SANDBOX_MODES:
+        sandbox_mode = "external_result"
 
     return PondSecConfig(
         enabled=_bool(raw.get("enabled"), False),
@@ -524,9 +555,22 @@ def load_config(path: Path | None = None) -> PondSecConfig:
         ),
         threat_intel=ThreatIntelConfig(
             cve_enrichment=_bool(threat_intel.get("cve_enrichment"), True),
+            local_iocs=_bool(threat_intel.get("local_iocs"), True),
             external_lookup=_bool(threat_intel.get("external_lookup"), False),
             cache_ttl_hours=_int(threat_intel.get("cache_ttl_hours"), 24, 1, 168),
             api_timeout_seconds=_int(threat_intel.get("api_timeout_seconds"), 5, 1, 30),
+            feed_ttl_hours=_int(threat_intel.get("feed_ttl_hours"), 168, 1, 8760),
+        ),
+        sandbox=SandboxConfig(
+            enabled=_bool(sandbox.get("enabled"), True),
+            mode=sandbox_mode,
+            results_dir=_text(sandbox.get("results_dir", "")),
+            pending_dir=_text(sandbox.get("pending_dir", "")),
+            artifact_dir=_text(sandbox.get("artifact_dir", "")),
+            request_timeout_seconds=_int(sandbox.get("request_timeout_seconds"), 600, 1, 86400),
+            result_ttl_hours=_int(sandbox.get("result_ttl_hours"), 168, 1, 8760),
+            queue_limit=_int(sandbox.get("queue_limit"), 1000, 1, 100000),
+            privacy_mode=_bool(sandbox.get("privacy_mode"), True),
         ),
         zeek=ZeekConfig(
             enabled=_bool(zeek.get("enabled"), False),

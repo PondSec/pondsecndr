@@ -40,6 +40,7 @@ def provider_inventory(config: PondSecConfig, health: dict[str, Any] | None = No
         _zeek_provider(config, sources.get("zeek") or {}, updated_at),
         _netflow_provider(config, sources.get("netflow") or {}, updated_at),
         _zenarmor_provider(config, sources.get("zenarmor") or {}, updated_at),
+        _sandbox_provider(config, detail.get("sandbox") or {}, updated_at),
     ]
     providers.extend(_planned_providers())
     return [provider.as_dict() for provider in providers]
@@ -214,6 +215,42 @@ def _zenarmor_provider(config: PondSecConfig, stats: dict[str, Any], updated_at:
         },
         statistics=_stats(stats),
         last_successful_processing=updated_at if enabled and not last_error and _accepted(stats) else None,
+        last_error=last_error,
+    )
+
+
+def _sandbox_provider(config: PondSecConfig, stats: dict[str, Any], updated_at: str | None) -> DataSourceProvider:
+    enabled = bool(config.sandbox.enabled)
+    errors = int(stats.get("errors") or 0)
+    last_error = stats.get("last_error")
+    return DataSourceProvider(
+        provider_id="file_sandbox",
+        display_name="File sandbox verdicts",
+        description="Consumes file hashes, provider verdicts and external sandbox-result files; it does not execute artifacts locally.",
+        version="1",
+        enabled=enabled,
+        health_status="degraded" if enabled and (last_error or errors) else _health(enabled, last_error, stats, optional=True),
+        input_type="file",
+        event_types=["file", "sandbox_verdict", "malware"],
+        configuration={
+            "mode": config.sandbox.mode,
+            "results_dir": config.sandbox.results_dir or str(config.data_dir / "sandbox" / "results"),
+            "pending_dir": config.sandbox.pending_dir or str(config.data_dir / "sandbox" / "pending"),
+            "request_timeout_seconds": config.sandbox.request_timeout_seconds,
+            "result_ttl_hours": config.sandbox.result_ttl_hours,
+            "privacy_mode": config.sandbox.privacy_mode,
+            "execution": "none",
+        },
+        statistics={
+            "processed_file_events": int(stats.get("processed_file_events") or 0),
+            "matched_results": int(stats.get("matched_results") or 0),
+            "local_static_verdicts": int(stats.get("local_static_verdicts") or 0),
+            "pending_requests": int(stats.get("pending_requests") or 0),
+            "timed_out_requests": int(stats.get("timed_out_requests") or 0),
+            "stale_results_ignored": int(stats.get("stale_results_ignored") or 0),
+            "errors": errors,
+        },
+        last_successful_processing=updated_at if enabled and not last_error and int(stats.get("processed_file_events") or 0) else None,
         last_error=last_error,
     )
 

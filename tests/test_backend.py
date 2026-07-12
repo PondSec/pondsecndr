@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import pwd
 import sqlite3
@@ -22,7 +22,7 @@ from pondsec_ndr.collectors.filterlog import FilterLogCollector, FilterLogStats,
 from pondsec_ndr.collectors.netflow import NETFLOW_V5_HEADER, NETFLOW_V5_RECORD, NetFlowCollector
 from pondsec_ndr.collectors.zeek import ZeekLogCollector, normalize_zeek_row
 from pondsec_ndr.collectors.zenarmor import ZenarmorCollector, ZenarmorSyslogCollector, normalize_zenarmor_event, parse_zenarmor_line
-from pondsec_ndr.config import DetectionConfig, DnsmasqConfig, InterfaceConfig, PondSecConfig, ResponseConfig, ZeekConfig, ZenarmorConfig, load_config
+from pondsec_ndr.config import DetectionConfig, DnsmasqConfig, InterfaceConfig, PondSecConfig, ResponseConfig, SandboxConfig, ThreatIntelConfig, ZeekConfig, ZenarmorConfig, load_config
 from pondsec_ndr.correlation import correlate_detections
 from pondsec_ndr.detection.detectors import (
     AuthServicePressureDetector,
@@ -70,6 +70,7 @@ from pondsec_ndr.response.engine import (
     remove_sinkhole,
 )
 from pondsec_ndr.response.pf import PFTableEnforcer
+from pondsec_ndr.sandbox import enrich_events_with_sandbox
 from pondsec_ndr.sensor import eve_types_from_suricata_yaml, patch_suricata_yaml_text, required_eve_types
 from pondsec_ndr.service import PondSecService
 from pondsec_ndr.storage.database import EventStore
@@ -1582,6 +1583,82 @@ class BackendTests(unittest.TestCase):
         incidents = correlate_detections(detections)
         self.assertEqual(len(incidents), 1)
 
+    def test_sandbox_external_result_enriches_fileinfo_and_case_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            results_dir = data_dir / "sandbox" / "results"
+            results_dir.mkdir(parents=True)
+            sha256 = "1" * 64
+            (results_dir / "analysis-result.json").write_text(json.dumps({
+                "sha256": sha256,
+                "verdict": "malicious",
+                "confidence": 0.97,
+                "source": "validation-sandbox",
+                "analysis_id": "sandbox-validation-1",
+                "findings": ["safe validation marker"],
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+            }), encoding="utf-8")
+            event = normalize_eve({
+                "timestamp": "2026-07-05T12:32:10+00:00",
+                "event_type": "fileinfo",
+                "src_ip": "198.51.100.57",
+                "src_port": 443,
+                "dest_ip": "192.168.10.37",
+                "dest_port": 52037,
+                "proto": "TCP",
+                "fileinfo": {
+                    "filename": "payload.bin",
+                    "sha256": sha256,
+                },
+            })
+
+            enriched, stats = enrich_events_with_sandbox([event], data_dir, SandboxConfig(enabled=True, mode="external_result"))
+            detections = FileSandboxVerdictDetector().detect(enriched, [])
+            incidents = correlate_detections(detections)
+            analysis = _incident_analysis(incidents[0]) if incidents else {}
+
+            self.assertEqual(stats.matched_results, 1)
+            self.assertEqual(enriched[0]["metadata"]["sandbox_verdict"], "malicious")
+            self.assertEqual(enriched[0]["metadata"]["sandbox_source"], "validation-sandbox")
+            self.assertEqual(len(detections), 1)
+            self.assertEqual(detections[0]["evidence"]["sandbox_source"], "validation-sandbox")
+            self.assertEqual(analysis["file_sandbox_evidence"][0]["sandbox_analysis_id"], "sandbox-validation-1")
+
+    def test_sandbox_pending_request_times_out_without_detection(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            pending_dir = data_dir / "sandbox" / "pending"
+            pending_dir.mkdir(parents=True)
+            sha256 = "2" * 64
+            old_request = datetime.now(timezone.utc) - timedelta(minutes=10)
+            (pending_dir / f"{sha256}.json").write_text(json.dumps({
+                "sha256": sha256,
+                "requested_at": old_request.isoformat(),
+            }), encoding="utf-8")
+            event = normalize_eve({
+                "timestamp": "2026-07-05T12:32:20+00:00",
+                "event_type": "fileinfo",
+                "src_ip": "198.51.100.58",
+                "src_port": 443,
+                "dest_ip": "192.168.10.38",
+                "dest_port": 52038,
+                "proto": "TCP",
+                "fileinfo": {
+                    "filename": "report.pdf",
+                    "sha256": sha256,
+                },
+            })
+
+            enriched, stats = enrich_events_with_sandbox(
+                [event],
+                data_dir,
+                SandboxConfig(enabled=True, mode="external_result", request_timeout_seconds=60),
+            )
+
+            self.assertEqual(stats.timed_out_requests, 1)
+            self.assertEqual(enriched[0]["metadata"]["sandbox_status"], "timeout")
+            self.assertEqual(FileSandboxVerdictDetector().detect(enriched, []), [])
+
     def test_dns_sinkhole_detector_labels_blocked_domain_lookup(self) -> None:
         event = {
             "schema_version": "1",
@@ -1716,6 +1793,69 @@ class BackendTests(unittest.TestCase):
 
             self.assertNotIn("ioc_match", enriched[0]["metadata"])
             self.assertEqual(ThreatIntelIndicatorDetector().detect(enriched, []), [])
+
+    def test_local_ioc_feed_ttl_and_override_suppress_false_positive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            intel_dir = data_dir / "intel"
+            intel_dir.mkdir()
+            now = datetime.now(timezone.utc)
+            old = now - timedelta(days=30)
+            (intel_dir / "local_iocs.json").write_text(json.dumps({
+                "domains": [
+                    {
+                        "value": "old.validation.pondsec.test",
+                        "updated_at": old.isoformat(),
+                        "confidence": 0.99,
+                    },
+                    {
+                        "value": "fresh.validation.pondsec.test",
+                        "updated_at": now.isoformat(),
+                        "confidence": 0.98,
+                    },
+                    {
+                        "value": "suppressed.validation.pondsec.test",
+                        "updated_at": now.isoformat(),
+                        "confidence": 0.99,
+                    },
+                ]
+            }), encoding="utf-8")
+            (intel_dir / "local_ioc_overrides.json").write_text(json.dumps({
+                "domains": [{
+                    "value": "suppressed.validation.pondsec.test",
+                    "reputation": "false_positive",
+                    "action": "suppress",
+                    "updated_at": now.isoformat(),
+                }]
+            }), encoding="utf-8")
+            config = ThreatIntelConfig(feed_ttl_hours=24 * 7)
+            indicators = load_local_indicators(data_dir, config=config, now=now)
+
+            self.assertEqual({item.value for item in indicators}, {"fresh.validation.pondsec.test"})
+
+            def tls_event(hostname: str) -> dict:
+                event = normalize_eve({
+                    "timestamp": "2026-07-05T12:36:30+00:00",
+                    "event_type": "tls",
+                    "src_ip": "192.168.10.39",
+                    "src_port": 52039,
+                    "dest_ip": "203.0.113.39",
+                    "dest_port": 443,
+                    "proto": "TCP",
+                    "tls": {"sni": hostname, "version": "TLSv1.3"},
+                })
+                assert event is not None
+                return event
+
+            enriched = enrich_events_with_local_iocs([
+                tls_event("old.validation.pondsec.test"),
+                tls_event("fresh.validation.pondsec.test"),
+                tls_event("suppressed.validation.pondsec.test"),
+            ], data_dir, config=config)
+
+            self.assertNotIn("ioc_match", enriched[0]["metadata"])
+            self.assertEqual(enriched[1]["metadata"]["ioc_match"], "fresh.validation.pondsec.test")
+            self.assertNotIn("ioc_match", enriched[2]["metadata"])
 
     def test_store_migration_inserts_events_and_dashboard_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2164,6 +2304,97 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(providers["zenarmor"]["configuration"]["format"], "json")
             self.assertTrue(providers["zenarmor"]["configuration"]["imports"]["tls_metadata"])
             self.assertIn("flow", providers["netflow"]["event_types"])
+            self.assertIn("file_sandbox", providers)
+            self.assertEqual(providers["file_sandbox"]["configuration"]["mode"], "external_result")
+
+    def test_diagnostics_exposes_provider_telemetry_coverage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = EventStore(root / "pondsec-ndr.db")
+            store.migrate()
+            now = datetime.now(timezone.utc).isoformat()
+            store.insert_events([
+                {
+                    "schema_version": "1",
+                    "event_id": "coverage-dns",
+                    "event_type": "dns",
+                    "timestamp": now,
+                    "source": {"ip": "192.168.10.41", "port": 53000, "interface": None},
+                    "destination": {"ip": "192.168.10.5", "port": 53},
+                    "protocol": "UDP",
+                    "direction": "internal",
+                    "metadata": {"rrname": "coverage.validation.pondsec.test", "rcode": "NOERROR"},
+                    "raw_source": "zeek",
+                },
+                {
+                    "schema_version": "1",
+                    "event_id": "coverage-tls",
+                    "event_type": "tls",
+                    "timestamp": now,
+                    "source": {"ip": "192.168.10.41", "port": 52041, "interface": None},
+                    "destination": {"ip": "203.0.113.41", "port": 443},
+                    "protocol": "TCP",
+                    "direction": "outbound",
+                    "metadata": {"sni": "coverage.validation.pondsec.test", "tls_inspected": True},
+                    "raw_source": "zenarmor",
+                },
+                {
+                    "schema_version": "1",
+                    "event_id": "coverage-file",
+                    "event_type": "fileinfo",
+                    "timestamp": now,
+                    "source": {"ip": "203.0.113.42", "port": 443, "interface": None},
+                    "destination": {"ip": "192.168.10.42", "port": 52042},
+                    "protocol": "TCP",
+                    "direction": "inbound",
+                    "metadata": {
+                        "filename": "payload.bin",
+                        "sha256": "3" * 64,
+                        "sandbox_verdict": "malicious",
+                        "sandbox_status": "complete",
+                    },
+                    "raw_source": "zenarmor",
+                },
+                {
+                    "schema_version": "1",
+                    "event_id": "coverage-incomplete-dns",
+                    "event_type": "dns",
+                    "timestamp": now,
+                    "source": {"ip": "192.168.10.43", "port": 53043, "interface": None},
+                    "destination": {"ip": "192.168.10.5", "port": 53},
+                    "protocol": "UDP",
+                    "direction": "internal",
+                    "metadata": {},
+                    "raw_source": "dnsmasq",
+                },
+            ])
+            store.set_health("healthy", 123, {
+                "collector_sources": {
+                    "zeek": {"accepted_events": 1, "parser_errors": 0, "normalization_errors": 0, "queue_drops": 0},
+                    "zenarmor": {"accepted_events": 2, "parser_errors": 1, "normalization_errors": 0, "queue_drops": 0},
+                    "dnsmasq": {"accepted_events": 1, "parser_errors": 0, "normalization_errors": 0, "queue_drops": 0},
+                },
+                "sandbox": {
+                    "processed_file_events": 1,
+                    "matched_results": 1,
+                    "pending_requests": 0,
+                    "errors": 0,
+                },
+            })
+
+            payload = diagnostics_payload(PondSecConfig(data_dir=root), store)
+            coverage = payload["telemetry_coverage"]
+
+            self.assertEqual(coverage["by_provider"]["zeek"]["windows"]["24h"]["dns"], 1)
+            self.assertEqual(coverage["by_provider"]["zenarmor"]["windows"]["24h"]["tls"], 1)
+            self.assertEqual(coverage["by_provider"]["zenarmor"]["windows"]["24h"]["fileinfo"], 1)
+            self.assertEqual(coverage["by_provider"]["zenarmor"]["windows"]["24h"]["sandbox_verdict"], 1)
+            self.assertEqual(coverage["by_provider"]["dnsmasq"]["windows"]["24h"]["incomplete"], 1)
+            self.assertTrue(coverage["email_url_file_ready"]["dns_metadata"])
+            self.assertTrue(coverage["email_url_file_ready"]["tls_metadata"])
+            self.assertTrue(coverage["email_url_file_ready"]["file_metadata"])
+            self.assertTrue(coverage["email_url_file_ready"]["sandbox_verdict_metadata"])
+            self.assertEqual(coverage["collector_runtime"]["file_sandbox"]["matched_results"], 1)
 
     def test_config_loads_extended_zenarmor_settings(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2192,6 +2423,21 @@ class BackendTests(unittest.TestCase):
                     "import_device_context": "0",
                     "import_security_events": "1",
                 },
+                "threat_intel": {
+                    "local_iocs": "1",
+                    "feed_ttl_hours": "72"
+                },
+                "sandbox": {
+                    "enabled": "1",
+                    "mode": "local_static",
+                    "results_dir": "/tmp/sandbox-results",
+                    "pending_dir": "/tmp/sandbox-pending",
+                    "artifact_dir": "/tmp/sandbox-artifacts",
+                    "request_timeout_seconds": "120",
+                    "result_ttl_hours": "48",
+                    "queue_limit": "50",
+                    "privacy_mode": "0"
+                },
                 "response": {
                     "auto_arm_after_learning": "0"
                 }
@@ -2210,6 +2456,17 @@ class BackendTests(unittest.TestCase):
             self.assertFalse(config.zenarmor.import_applications)
             self.assertFalse(config.zenarmor.import_session_context)
             self.assertFalse(config.zenarmor.import_device_context)
+            self.assertTrue(config.threat_intel.local_iocs)
+            self.assertEqual(config.threat_intel.feed_ttl_hours, 72)
+            self.assertTrue(config.sandbox.enabled)
+            self.assertEqual(config.sandbox.mode, "local_static")
+            self.assertEqual(config.sandbox.results_dir, "/tmp/sandbox-results")
+            self.assertEqual(config.sandbox.pending_dir, "/tmp/sandbox-pending")
+            self.assertEqual(config.sandbox.artifact_dir, "/tmp/sandbox-artifacts")
+            self.assertEqual(config.sandbox.request_timeout_seconds, 120)
+            self.assertEqual(config.sandbox.result_ttl_hours, 48)
+            self.assertEqual(config.sandbox.queue_limit, 50)
+            self.assertFalse(config.sandbox.privacy_mode)
             self.assertFalse(config.response.auto_arm_after_learning)
             self.assertEqual(config.validate(), [])
 

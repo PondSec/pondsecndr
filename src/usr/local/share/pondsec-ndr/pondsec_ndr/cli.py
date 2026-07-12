@@ -1288,6 +1288,7 @@ def _incident_analysis(
         "timeline": sorted(timeline, key=lambda item: str(item.get("timestamp") or "")),
         "visual_timeline": visual_timeline,
         "notable_features": notable_features[:20],
+        "file_sandbox_evidence": _case_file_sandbox_evidence(detections),
         "administrator_guidance": admin_guidance[:12],
         "risk_factors": incident_risk_factors,
         "correlation": evidence.get("correlation", {}),
@@ -1307,6 +1308,64 @@ def _incident_promotion_context(incident: dict[str, Any], detections: list[dict[
         if isinstance(promotion, dict):
             return promotion
     return {}
+
+
+def _case_file_sandbox_evidence(detections: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    interesting_keys = {
+        "filename", "md5", "sha1", "sha256", "file_verdict", "sandbox_verdict", "av_verdict",
+        "sandbox_status", "sandbox_source", "sandbox_confidence", "sandbox_analysis_id",
+        "sandbox_findings", "threat_name", "mime_type", "email_context", "safe_test_file",
+    }
+    for detection in detections:
+        if not isinstance(detection, dict):
+            continue
+        evidence = detection.get("evidence") if isinstance(detection.get("evidence"), dict) else {}
+        detector_id = str(detection.get("detector_id") or "")
+        has_file_evidence = detector_id in {"pondsec.file_sandbox_verdict", "pondsec.suspicious_file_transfer", "pondsec.email_threat"}
+        has_file_evidence = has_file_evidence or any(evidence.get(key) for key in interesting_keys)
+        if not has_file_evidence:
+            continue
+        key = (
+            detector_id,
+            str(evidence.get("filename") or ""),
+            str(evidence.get("sha256") or evidence.get("sha1") or evidence.get("md5") or ""),
+            str(evidence.get("sandbox_verdict") or evidence.get("file_verdict") or evidence.get("av_verdict") or ""),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append({
+            "detector_id": detector_id,
+            "title": detection.get("title"),
+            "timestamp": detection.get("timestamp"),
+            "category": detection.get("category"),
+            "confidence": detection.get("confidence"),
+            "severity": detection.get("severity"),
+            "source_ip": detection.get("source_ip"),
+            "destination_ip": detection.get("destination_ip"),
+            "provider_id": evidence.get("provider_id") or evidence.get("event_source"),
+            "filename": evidence.get("filename"),
+            "mime_type": evidence.get("mime_type"),
+            "file_size": evidence.get("file_size"),
+            "md5": evidence.get("md5"),
+            "sha1": evidence.get("sha1"),
+            "sha256": evidence.get("sha256"),
+            "file_verdict": evidence.get("file_verdict"),
+            "sandbox_status": evidence.get("sandbox_status"),
+            "sandbox_verdict": evidence.get("sandbox_verdict"),
+            "sandbox_confidence": evidence.get("sandbox_confidence"),
+            "sandbox_source": evidence.get("sandbox_source"),
+            "sandbox_analysis_id": evidence.get("sandbox_analysis_id"),
+            "sandbox_findings": evidence.get("sandbox_findings"),
+            "av_verdict": evidence.get("av_verdict"),
+            "threat_name": evidence.get("threat_name"),
+            "suspicious_extension": evidence.get("suspicious_extension"),
+            "email_context": evidence.get("email_context"),
+            "safe_test_file": evidence.get("safe_test_file"),
+        })
+    return rows[:20]
 
 
 def _empty_attack_stages() -> dict[str, dict[str, Any]]:

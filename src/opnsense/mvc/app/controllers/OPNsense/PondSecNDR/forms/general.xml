@@ -268,6 +268,12 @@
         <help>Extract CVE references from local Suricata metadata and enrich them from the local cache.</help>
     </field>
     <field>
+        <id>pondsecndr.threat_intel.local_iocs</id>
+        <label>Local IOC enrichment</label>
+        <type>checkbox</type>
+        <help>Local IOC files are loaded from the PondSec data directory. Overrides can suppress known false positives without changing global detector logic.</help>
+    </field>
+    <field>
         <id>pondsecndr.threat_intel.external_lookup</id>
         <label>External CVE lookups</label>
         <type>checkbox</type>
@@ -282,6 +288,70 @@
         <id>pondsecndr.threat_intel.api_timeout_seconds</id>
         <label>Threat intel API timeout</label>
         <type>text</type>
+    </field>
+    <field>
+        <id>pondsecndr.threat_intel.feed_ttl_hours</id>
+        <label>IOC feed TTL hours</label>
+        <type>text</type>
+        <help>How long local IOC rows without explicit expires_at remain trusted after updated_at/last_seen.</help>
+    </field>
+    <field>
+        <type>header</type>
+        <label>File sandbox</label>
+    </field>
+    <field>
+        <id>pondsecndr.sandbox.enabled</id>
+        <label>File sandbox enrichment</label>
+        <type>checkbox</type>
+        <help>Consumes fileinfo hashes, Zenarmor/Zeek/Suricata verdict metadata and external sandbox-result JSON. PondSec does not execute files locally.</help>
+    </field>
+    <field>
+        <id>pondsecndr.sandbox.mode</id>
+        <label>Sandbox mode</label>
+        <type>dropdown</type>
+        <help>Metadata only records missing verdicts, Local static checks identify safe known test files and risky file types, External result import waits for JSON verdict files.</help>
+    </field>
+    <field>
+        <id>pondsecndr.sandbox.results_dir</id>
+        <label>Sandbox results directory</label>
+        <type>text</type>
+        <help>Leave empty for the default data-dir sandbox/results path.</help>
+    </field>
+    <field>
+        <id>pondsecndr.sandbox.pending_dir</id>
+        <label>Sandbox pending directory</label>
+        <type>text</type>
+        <help>Leave empty for the default data-dir sandbox/pending path. Pending requests contain hashes and metadata, not file payloads.</help>
+    </field>
+    <field>
+        <id>pondsecndr.sandbox.artifact_dir</id>
+        <label>Sandbox artifact directory</label>
+        <type>text</type>
+        <help>Reserved path label for controlled external workflows. PondSec does not copy packet payloads into this directory.</help>
+    </field>
+    <field>
+        <id>pondsecndr.sandbox.request_timeout_seconds</id>
+        <label>Sandbox request timeout</label>
+        <type>text</type>
+        <help>Pending sandbox requests older than this become timeout evidence.</help>
+    </field>
+    <field>
+        <id>pondsecndr.sandbox.result_ttl_hours</id>
+        <label>Sandbox result TTL</label>
+        <type>text</type>
+        <help>Sandbox verdict JSON older than this is ignored unless expires_at is provided.</help>
+    </field>
+    <field>
+        <id>pondsecndr.sandbox.queue_limit</id>
+        <label>Sandbox queue limit</label>
+        <type>text</type>
+        <help>Maximum pending sandbox request files created per service run.</help>
+    </field>
+    <field>
+        <id>pondsecndr.sandbox.privacy_mode</id>
+        <label>Sandbox privacy mode</label>
+        <type>checkbox</type>
+        <help>When enabled, pending sandbox requests omit filenames and event IDs where possible.</help>
     </field>
     <field>
         <type>header</type>

@@ -56,6 +56,8 @@ def diagnostics(config: PondSecConfig, store: EventStore) -> dict[str, Any]:
     detail = health.get("detail") or {}
     eve_access = eve_access_status(config)
     telemetry_counts = store.telemetry_type_counts()
+    telemetry_coverage = store.telemetry_provider_matrix()
+    telemetry_coverage["collector_runtime"] = _collector_runtime_matrix(detail)
     ml_runtime = _ml_runtime_status(config)
     pf_blocking = _pf_blocking_status()
     tls_inspection = _tls_inspection_status(telemetry_counts)
@@ -104,6 +106,7 @@ def diagnostics(config: PondSecConfig, store: EventStore) -> dict[str, Any]:
         "ml_runtime": ml_runtime,
         "host_baselines": store.baseline_summary(),
         "tls_inspection": tls_inspection,
+        "telemetry_coverage": telemetry_coverage,
         "providers": providers,
     }
 
@@ -139,6 +142,42 @@ def self_test(config: PondSecConfig, store: EventStore) -> dict[str, Any]:
         "host_baselines": host_baselines,
         "errors": errors,
     }
+
+
+def _collector_runtime_matrix(detail: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    sources = detail.get("collector_sources") if isinstance(detail.get("collector_sources"), dict) else {}
+    result: dict[str, dict[str, Any]] = {}
+    for name, stats in sources.items():
+        if not isinstance(stats, dict):
+            continue
+        result[str(name)] = {
+            "read_lines": int(stats.get("read_lines") or 0),
+            "read_datagrams": int(stats.get("read_datagrams") or 0),
+            "accepted_events": int(stats.get("accepted_events") or 0),
+            "parser_errors": int(stats.get("parser_errors") or 0),
+            "normalization_errors": int(stats.get("normalization_errors") or 0),
+            "queue_drops": int(stats.get("queue_drops") or 0),
+            "duplicates": int(stats.get("duplicates") or 0),
+            "last_error": stats.get("last_error"),
+            "rotation_detected": bool(stats.get("rotation_detected")),
+        }
+    sandbox = detail.get("sandbox") if isinstance(detail.get("sandbox"), dict) else {}
+    if sandbox:
+        result["file_sandbox"] = {
+            "read_lines": 0,
+            "read_datagrams": 0,
+            "accepted_events": int(sandbox.get("processed_file_events") or 0),
+            "parser_errors": int(sandbox.get("errors") or 0),
+            "normalization_errors": 0,
+            "queue_drops": 0,
+            "duplicates": 0,
+            "pending_requests": int(sandbox.get("pending_requests") or 0),
+            "timed_out_requests": int(sandbox.get("timed_out_requests") or 0),
+            "matched_results": int(sandbox.get("matched_results") or 0),
+            "last_error": sandbox.get("last_error"),
+            "rotation_detected": False,
+        }
+    return result
 
 
 def diagnostic_archive(config: PondSecConfig, store: EventStore, output_path: Path) -> dict[str, Any]:

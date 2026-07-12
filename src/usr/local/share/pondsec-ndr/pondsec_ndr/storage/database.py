@@ -182,6 +182,51 @@ def _safe_json_dict(value: Any) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _empty_telemetry_counts() -> dict[str, int]:
+    return {
+        "total": 0,
+        "flow": 0,
+        "dns": 0,
+        "tls": 0,
+        "http": 0,
+        "fileinfo": 0,
+        "authentication": 0,
+        "sandbox_verdict": 0,
+        "alert_or_drop": 0,
+        "incomplete": 0,
+    }
+
+
+def _telemetry_classes(event_type: str, destination_port: int, metadata: dict[str, Any]) -> set[str]:
+    classes: set[str] = set()
+    normalized = str(event_type or "").lower()
+    if normalized in {"flow", "dns", "tls", "http", "fileinfo"}:
+        classes.add(normalized)
+    if normalized in {"alert", "drop"}:
+        classes.add("alert_or_drop")
+    if normalized == "authentication" or destination_port in {22, 25, 88, 110, 143, 389, 445, 465, 587, 636, 993, 995, 3389, 5985, 5986}:
+        if any(metadata.get(key) for key in ("auth_result", "user", "username")) or normalized in {"http", "flow", "authentication"}:
+            classes.add("authentication")
+    if any(metadata.get(key) for key in ("sandbox_verdict", "sandbox_status", "sandbox_confidence", "file_verdict", "av_verdict")):
+        classes.add("sandbox_verdict")
+    return classes
+
+
+def _incomplete_telemetry_event(event_type: str, source_ip: str | None, destination_ip: str | None, metadata: dict[str, Any]) -> bool:
+    if not source_ip and not destination_ip:
+        return True
+    normalized = str(event_type or "").lower()
+    if normalized == "dns":
+        return not any(metadata.get(key) for key in ("rrname", "query", "domain"))
+    if normalized == "tls":
+        return not any(metadata.get(key) for key in ("sni", "tls_sni", "server_name", "hostname"))
+    if normalized == "http":
+        return not any(metadata.get(key) for key in ("url_path", "url", "hostname", "status", "http_method", "method"))
+    if normalized == "fileinfo":
+        return not any(metadata.get(key) for key in ("filename", "md5", "sha1", "sha256", "file_verdict", "sandbox_verdict"))
+    return False
+
+
 def _baseline_status(observations: int, minimum_observations: int = BASELINE_MINIMUM_OBSERVATIONS, drift_score: float = 0.0) -> str:
     minimum = max(1, int(minimum_observations or BASELINE_MINIMUM_OBSERVATIONS))
     if observations < max(1, minimum // 2):
@@ -3003,7 +3048,7 @@ class EventStore:
         }
 
     def telemetry_type_counts(self, hours: int = 24) -> dict[str, int]:
-        cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=max(1, int(hours)))).isoformat()
         with self.connect() as conn:
             rows = conn.execute(
                 """
@@ -3015,6 +3060,72 @@ class EventStore:
                 (cutoff,),
             ).fetchall()
         return {row["event_type"]: int(row["count"]) for row in rows}
+
+    def telemetry_provider_matrix(self, hours: int = 24) -> dict[str, Any]:
+        window = max(24, int(hours))
+        now = datetime.now(timezone.utc)
+        cutoff = (now - timedelta(hours=window)).isoformat()
+        window_cutoffs = {
+            "1h": now - timedelta(hours=1),
+            "6h": now - timedelta(hours=6),
+            "24h": now - timedelta(hours=24),
+        }
+        matrix: dict[str, dict[str, Any]] = {}
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT raw_source, event_type, timestamp, source_ip, destination_ip,
+                       destination_port, metadata_json
+                FROM events
+                WHERE timestamp >= ?
+                """,
+                (cutoff,),
+            ).fetchall()
+        for row in rows:
+            source = str(row["raw_source"] or "unknown")
+            event_type = str(row["event_type"] or "unknown")
+            entry = matrix.setdefault(source, {
+                "last_event_at": None,
+                "windows": {name: _empty_telemetry_counts() for name in window_cutoffs},
+            })
+            timestamp = _parse_time(row["timestamp"])
+            if entry["last_event_at"] is None or timestamp.isoformat() > entry["last_event_at"]:
+                entry["last_event_at"] = timestamp.isoformat()
+            metadata = _safe_json_dict(row["metadata_json"])
+            classes = _telemetry_classes(event_type, int(row["destination_port"] or 0), metadata)
+            incomplete = _incomplete_telemetry_event(
+                event_type,
+                row["source_ip"],
+                row["destination_ip"],
+                metadata,
+            )
+            for name, cutoff_time in window_cutoffs.items():
+                if timestamp < cutoff_time:
+                    continue
+                counts = entry["windows"][name]
+                counts["total"] += 1
+                for item in classes:
+                    counts[item] += 1
+                if incomplete:
+                    counts["incomplete"] += 1
+        coverage = _empty_telemetry_counts()
+        for entry in matrix.values():
+            for key, value in entry["windows"]["24h"].items():
+                coverage[key] += int(value)
+        return {
+            "hours": window,
+            "windows": [1, 6, 24],
+            "by_provider": matrix,
+            "coverage": coverage,
+            "email_url_file_ready": {
+                "dns_metadata": coverage["dns"] > 0,
+                "tls_metadata": coverage["tls"] > 0,
+                "http_metadata": coverage["http"] > 0,
+                "file_metadata": coverage["fileinfo"] > 0,
+                "signature_or_drop_metadata": coverage["alert_or_drop"] > 0,
+                "sandbox_verdict_metadata": coverage["sandbox_verdict"] > 0,
+            },
+        }
 
     def baseline_summary(self) -> dict[str, Any]:
         with self.connect() as conn:
