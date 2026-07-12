@@ -10,7 +10,7 @@ from pondsec_ndr.detection.base import Detector, make_detection
 from pondsec_ndr.features.aggregator import shannon_entropy
 from pondsec_ndr.models.runtime import MODEL_ID, ModelRuntimeUnavailable, SaidimnIdsCnnRuntime
 from pondsec_ndr.schema import is_private_ip
-from pondsec_ndr.traffic import is_infrastructure_response_event
+from pondsec_ndr.traffic import is_infrastructure_response_event, is_threat_intel_lookup_event
 
 
 def _normalised_indicator_text(*values: Any) -> str:
@@ -87,6 +87,8 @@ BENIGN_WEB_TERMS = (
     "cdn",
     "cloudflare",
     "akamai",
+    "amazon",
+    "aws",
     "apple",
     "microsoft",
     "google",
@@ -95,6 +97,7 @@ BENIGN_WEB_TERMS = (
     "push",
 )
 BLOCK_DECISIONS = {"block", "blocked", "deny", "denied", "drop", "dropped", "sinkhole", "quarantine"}
+ALLOW_DECISIONS = {"allow", "allowed", "pass", "passed", "permit", "permitted"}
 MALICIOUS_VERDICTS = {"malicious", "infected", "malware", "blocked", "quarantine", "quarantined", "denied", "high"}
 SUSPICIOUS_FILE_EXTENSIONS = (
     ".ps1",
@@ -179,6 +182,14 @@ def _provider_id(event: dict[str, Any]) -> str:
 
 def _is_zenarmor_event(event: dict[str, Any]) -> bool:
     return _provider_id(event) == "zenarmor" or str(event.get("raw_source") or "") == "zenarmor"
+
+
+def _decision(metadata: dict[str, Any]) -> str:
+    return str(_first_metadata(metadata, "decision", "action", "policy_action") or "").strip().lower()
+
+
+def _has_explicit_provider_verdict(metadata: dict[str, Any]) -> bool:
+    return bool(metadata.get("threat_name") or metadata.get("security_category"))
 
 
 def _boolish(value: Any) -> bool:
@@ -810,7 +821,16 @@ class DataExfiltrationDetector(Detector):
         for item in features:
             ratio = float(item.get("upload_download_ratio") or 0)
             bytes_out = int(item.get("bytes_out") or 0)
-            if bytes_out >= 50_000_000 and ratio >= 8:
+            non_dns_bytes_out = int(item.get("non_dns_bytes_out") or 0)
+            external_non_dns_bytes_out = int(item.get("external_non_dns_bytes_out") or 0)
+            external_destinations = int(item.get("external_destination_count") or 0)
+            if (
+                bytes_out >= 50_000_000
+                and ratio >= 8
+                and non_dns_bytes_out >= 50_000_000
+                and external_non_dns_bytes_out >= 50_000_000
+                and external_destinations >= 1
+            ):
                 detections.append(make_detection(
                     self.detector_id,
                     "exfiltration",
@@ -823,9 +843,15 @@ class DataExfiltrationDetector(Detector):
                     min(1.0, ratio / 50),
                     {
                         "bytes_out": bytes_out,
+                        "non_dns_bytes_out": non_dns_bytes_out,
+                        "external_non_dns_bytes_out": external_non_dns_bytes_out,
+                        "external_destination_count": external_destinations,
                         "upload_download_ratio": ratio,
                         "thresholds": [
                             {"feature": "bytes_out", "operator": ">=", "threshold": 50_000_000, "observed": bytes_out},
+                            {"feature": "non_dns_bytes_out", "operator": ">=", "threshold": 50_000_000, "observed": non_dns_bytes_out},
+                            {"feature": "external_non_dns_bytes_out", "operator": ">=", "threshold": 50_000_000, "observed": external_non_dns_bytes_out},
+                            {"feature": "external_destination_count", "operator": ">=", "threshold": 1, "observed": external_destinations},
                             {"feature": "upload_download_ratio", "operator": ">=", "threshold": 8, "observed": ratio},
                         ],
                     },
@@ -1066,13 +1092,15 @@ class ZenarmorSecurityEventDetector(Detector):
             if not _is_zenarmor_event(event):
                 continue
             metadata = _metadata(event)
-            decision = str(metadata.get("decision") or "").lower()
+            decision = _decision(metadata)
             text = _event_indicator_text(event)
+            explicit_provider_verdict = _has_explicit_provider_verdict(metadata)
             has_security_context = bool(
-                metadata.get("threat_name")
-                or metadata.get("security_category")
+                explicit_provider_verdict
                 or _text_contains_any(text, HIGH_RISK_URL_TERMS)
             )
+            if decision in ALLOW_DECISIONS and not explicit_provider_verdict and not _has_validation_marker(text):
+                continue
             if not has_security_context:
                 continue
             category, threat_kind = _threat_category_from_text(text)
@@ -1134,9 +1162,11 @@ class UrlThreatDetector(Detector):
             if not domain and not url_path:
                 continue
             text = _event_indicator_text(event)
+            explicit_provider_verdict = bool(metadata.get("threat_name") or metadata.get("security_category"))
+            if is_threat_intel_lookup_event(event) and not (explicit_provider_verdict or _has_validation_marker(text)):
+                continue
             has_high_risk_context = bool(
-                metadata.get("threat_name")
-                or metadata.get("security_category")
+                explicit_provider_verdict
                 or _text_contains_any(text, HIGH_RISK_URL_TERMS)
                 or _has_validation_marker(text)
             )

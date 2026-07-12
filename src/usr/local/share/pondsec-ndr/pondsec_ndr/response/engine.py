@@ -552,7 +552,7 @@ def sync_active_blocks(
     pf = enforcer or PFTableEnforcer()
     expired_sources = store.expired_active_block_sources()
     expired = store.expire_block_entries(actor=actor)
-    active_sources = store.active_block_sources()
+    active_sources = sorted(store.active_block_sources())
     active_set = set(active_sources)
     removed = []
     added = []

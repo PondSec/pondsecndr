@@ -28,6 +28,8 @@ from pondsec_ndr.logging_json import configure_logging
 from pondsec_ndr.response.engine import ResponseDenied, activate_block, propose_block_for_incident, sync_active_blocks
 from pondsec_ndr.sandbox import enrich_events_with_sandbox
 from pondsec_ndr.storage.database import EventStore
+from pondsec_ndr.system import discover_local_interface_ips
+from pondsec_ndr.traffic import filter_analysis_events
 
 
 class PondSecService:
@@ -40,6 +42,8 @@ class PondSecService:
         self._ensure_learning_started_at()
         self.netflow_collector: NetFlowCollector | None = None
         self.zenarmor_syslog_collector: ZenarmorSyslogCollector | None = None
+        self._local_interface_ips: set[str] = set()
+        self._local_interface_ips_seen_at = 0.0
         self.stop_requested = False
         self.started_at = time.time()
         self.counters: dict[str, Any] = {
@@ -308,9 +312,11 @@ class PondSecService:
                     "cleanup_deleted": cleaned,
                 }
 
+        excluded_hosts, excluded_networks = self._analysis_exclusions()
+        filtered_current_events = filter_analysis_events(events, excluded_hosts, excluded_networks)
         inserted_events = self.store.insert_events(events)
         current_features = self.store.score_features_against_baselines(
-            aggregate_features(events),
+            aggregate_features(filtered_current_events, excluded_hosts, excluded_networks),
             minimum_observations=self.config.detection.minimum_observations,
             minimum_peer_members=self.config.detection.peer_group_minimum_members,
         )
@@ -324,8 +330,9 @@ class PondSecService:
                 cutoff,
                 limit=analysis_limit,
             )
+        analysis_events = filter_analysis_events(analysis_events, excluded_hosts, excluded_networks)
         features = self.store.score_features_against_baselines(
-            aggregate_features(analysis_events),
+            aggregate_features(analysis_events, excluded_hosts, excluded_networks),
             minimum_observations=self.config.detection.minimum_observations,
             minimum_peer_members=self.config.detection.peer_group_minimum_members,
         )
@@ -341,6 +348,11 @@ class PondSecService:
 
         incidents = correlate_detections(detections, window_seconds=self.config.detection.correlation_window_minutes * 60)
         inserted_detections = self.store.insert_detections(detections)
+        incidents, feedback_suppressed_incidents = self.store.suppress_false_positive_incidents(
+            incidents,
+            self.config.detection.false_positive_feedback_days,
+        )
+        incidents, active_block_suppressed_incidents = self.store.suppress_active_block_incidents(incidents)
         incidents, suppressed_incidents = self._limit_rate(
             incidents,
             "incident_rate_timestamps",
@@ -470,6 +482,10 @@ class PondSecService:
             "learning_ai_suppressed": bool(learning_status.get("active")),
             "learning_suppressed_detectors": learning_suppressed_detectors,
             "optional_collector_warnings": self.counters["last_optional_collector_errors"],
+            "analysis_excluded_sources": sorted(excluded_hosts),
+            "analysis_excluded_networks": excluded_networks,
+            "false_positive_suppressed_incidents": len(feedback_suppressed_incidents),
+            "active_block_suppressed_incidents": len(active_block_suppressed_incidents),
         }
 
     def _effective_runtime_config(self, learning_status: dict[str, Any]) -> PondSecConfig:
@@ -504,6 +520,16 @@ class PondSecService:
                 continue
             enabled.append(detector)
         return enabled, suppressed
+
+    def _analysis_exclusions(self) -> tuple[set[str], list[str]]:
+        now = time.time()
+        if now - self._local_interface_ips_seen_at > 60:
+            self._local_interface_ips = discover_local_interface_ips()
+            self._local_interface_ips_seen_at = now
+        hosts = set(self.config.interfaces.excluded_hosts)
+        hosts.update(self._local_interface_ips)
+        networks = list(self.config.interfaces.excluded_networks)
+        return hosts, networks
 
     def _apply_queue_backpressure(self, events: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
         limit = max(1, self.config.max_queue_length)

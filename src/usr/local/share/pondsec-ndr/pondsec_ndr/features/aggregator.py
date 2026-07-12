@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from datetime import datetime
+import ipaddress
 import math
 from statistics import mean, pstdev
 from typing import Any
 
 from pondsec_ndr.schema import FEATURE_SCHEMA_VERSION, is_private_ip
-from pondsec_ndr.traffic import is_infrastructure_response_event
+from pondsec_ndr.traffic import is_infrastructure_response_event, source_is_excluded
 
 
 def _parse_time(value: str) -> float:
@@ -37,6 +38,10 @@ def _base_feature(source_ip: str) -> dict[str, Any]:
         "byte_count": 0,
         "bytes_in": 0,
         "bytes_out": 0,
+        "dns_bytes_out": 0,
+        "non_dns_bytes_out": 0,
+        "external_bytes_out": 0,
+        "external_non_dns_bytes_out": 0,
         "dominant_destination_port": 0,
         "upload_download_ratio": 0.0,
         "connections_10s": 0,
@@ -59,6 +64,8 @@ def _base_feature(source_ip: str) -> dict[str, Any]:
         "dns_events_10s": 0,
         "dns_events_60s": 0,
         "dns_destination_count": 0,
+        "non_dns_destination_count": 0,
+        "external_destination_count": 0,
         "dominant_dns_destination_port": 0,
         "dns_nxdomain_rate": 0.0,
         "dns_name_length": 0,
@@ -80,12 +87,25 @@ def _base_feature(source_ip: str) -> dict[str, Any]:
     }
 
 
-def aggregate_features(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def aggregate_features(
+    events: list[dict[str, Any]],
+    excluded_source_hosts: set[str] | list[str] | tuple[str, ...] | None = None,
+    excluded_source_networks: list[str] | tuple[str, ...] | None = None,
+) -> list[dict[str, Any]]:
+    excluded_hosts = {str(item).strip() for item in (excluded_source_hosts or []) if str(item).strip()}
+    excluded_networks = []
+    for value in excluded_source_networks or []:
+        try:
+            excluded_networks.append(ipaddress.ip_network(str(value), strict=False))
+        except ValueError:
+            continue
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for event in events:
         if is_infrastructure_response_event(event):
             continue
         src = event.get("source", {}).get("ip")
+        if src and source_is_excluded(str(src), excluded_hosts, excluded_networks):
+            continue
         if src:
             grouped[src].append(event)
 
@@ -101,6 +121,8 @@ def aggregate_features(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         dns_port_counter: Counter[int] = Counter()
         dns_names: list[str] = []
         dns_destinations = set()
+        non_dns_destinations = set()
+        external_destinations = set()
         dns_timestamps: list[float] = []
         nxdomain = 0
         http_methods: dict[str, int] = defaultdict(int)
@@ -126,7 +148,8 @@ def aggregate_features(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
             item["packets_in"] += int(metadata.get("packets_in") or 0)
             item["packets_out"] += int(metadata.get("packets_out") or 0)
             item["bytes_in"] += int(metadata.get("bytes_in") or 0)
-            item["bytes_out"] += int(metadata.get("bytes_out") or 0)
+            bytes_out = int(metadata.get("bytes_out") or 0)
+            item["bytes_out"] += bytes_out
             item["byte_count"] += int(metadata.get("byte_count") or 0)
             item["packet_count"] += int(metadata.get("packet_count") or 0)
             item["flow_duration"] += float(metadata.get("duration") or 0)
@@ -136,7 +159,10 @@ def aggregate_features(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 item["internal_connections"] += 1
             elif dst:
                 item["external_connections"] += 1
+                external_destinations.add(dst)
+                item["external_bytes_out"] += bytes_out
             if event.get("event_type") == "dns":
+                item["dns_bytes_out"] += bytes_out
                 item["dns_event_count"] += 1
                 dns_timestamps.append(_parse_time(event["timestamp"]))
                 if dst:
@@ -148,6 +174,12 @@ def aggregate_features(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     dns_names.append(str(name))
                 if str(metadata.get("rcode", "")).upper() == "NXDOMAIN":
                     nxdomain += 1
+            else:
+                item["non_dns_bytes_out"] += bytes_out
+                if dst:
+                    non_dns_destinations.add(dst)
+                if dst and not is_private_ip(dst):
+                    item["external_non_dns_bytes_out"] += bytes_out
             if event.get("event_type") == "http":
                 method = str(metadata.get("http_method") or "unknown")
                 status = str(metadata.get("status") or "unknown")
@@ -172,6 +204,8 @@ def aggregate_features(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if dns_port_counter:
             item["dominant_dns_destination_port"] = dns_port_counter.most_common(1)[0][0]
         item["dns_destination_count"] = len(dns_destinations)
+        item["non_dns_destination_count"] = len(non_dns_destinations)
+        item["external_destination_count"] = len(external_destinations)
         item["upload_download_ratio"] = round(item["bytes_out"] / max(item["bytes_in"], 1), 4)
         item["dns_query_rate"] = round(item["dns_event_count"] / duration, 4)
         if dns_timestamps:

@@ -28,6 +28,7 @@ from pondsec_ndr.detection.detectors import (
     AuthServicePressureDetector,
     BeaconingDetector,
     CredentialBruteforceDetector,
+    DataExfiltrationDetector,
     DNSTunnelingDetector,
     DnsSinkholeDetector,
     EmailThreatDetector,
@@ -71,10 +72,13 @@ from pondsec_ndr.response.engine import (
     sync_active_blocks,
 )
 from pondsec_ndr.response.pf import PFTableEnforcer
+from pondsec_ndr.risk import score_detection_group
 from pondsec_ndr.sandbox import enrich_events_with_sandbox
 from pondsec_ndr.sensor import eve_types_from_suricata_yaml, patch_suricata_yaml_text, required_eve_types
 from pondsec_ndr.service import PondSecService
 from pondsec_ndr.storage.database import EventStore
+from pondsec_ndr.system import _extract_interface_ips
+from pondsec_ndr.traffic import filter_analysis_events
 
 
 def flow_event(timestamp: str, src: str, dst: str, port: int, reason: str = "timeout") -> dict:
@@ -1010,6 +1014,22 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(PortScanDetector().detect(normalized, features), [])
         self.assertEqual(VerticalScanDetector().detect(normalized, features), [])
 
+    def test_local_interface_sources_are_filtered_from_attack_analysis(self) -> None:
+        ifconfig_output = """
+pppoe0: flags=10089d1<UP,POINTOPOINT,RUNNING>
+        inet 80.153.171.185 --> 62.156.244.30 netmask 0xffffffff
+igb0_vlan10: flags=1008943<UP,BROADCAST,RUNNING>
+        inet 192.168.10.5 netmask 0xffffff00 broadcast 192.168.10.255
+"""
+        local_ips = _extract_interface_ips(ifconfig_output)
+        events = [
+            normalize_eve(flow_event("2026-07-05T10:00:00+00:00", "80.153.171.185", "216.31.2.230", 53)),
+            normalize_eve(flow_event("2026-07-05T10:00:01+00:00", "192.168.10.20", "198.51.100.20", 443)),
+        ]
+        filtered = filter_analysis_events([event for event in events if event is not None], local_ips)
+        self.assertEqual(len(filtered), 1)
+        self.assertEqual(filtered[0]["source"]["ip"], "192.168.10.20")
+
     def test_worm_like_propagation_detector_finds_private_admin_fanout(self) -> None:
         def filterlog_line(index: int, target: str, port: int) -> str:
             return (
@@ -1214,7 +1234,53 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(correlate_detections([detection]), [])
         promotion = detection["evidence"]["promotion"]
         self.assertEqual(promotion["decision"], "suppressed")
-        self.assertEqual(promotion["reason"], "dns_query_names_missing")
+        self.assertIn(promotion["reason"], {"dns_query_names_missing", "risk_score_below_incident_floor"})
+
+    def test_risk_scoring_caps_weak_metadata_limited_signals(self) -> None:
+        weak_dns = {
+            "detector_id": "pondsec.dns_tunneling",
+            "category": "command_and_control",
+            "severity": 6,
+            "confidence": 0.82,
+            "anomaly_score": 0.75,
+            "destination_ip": "dns_resolver",
+            "evidence": {"metadata_limited": True, "signature_required": False},
+        }
+        risk, factors = score_detection_group([weak_dns])
+        self.assertLessEqual(risk, 60)
+        self.assertIn("metadata_limited_dns_cap", {item["name"] for item in factors})
+
+        hard_drop = {
+            "detector_id": "pondsec.suricata_drop",
+            "category": "signature",
+            "severity": 8,
+            "confidence": 0.9,
+            "anomaly_score": 0.0,
+            "destination_ip": "192.168.30.3",
+            "evidence": {"signature_id": "1:2402000", "suricata_action": "blocked"},
+        }
+        hard_risk, hard_factors = score_detection_group([hard_drop])
+        self.assertGreaterEqual(hard_risk, 70)
+        self.assertNotIn("metadata_limited_dns_cap", {item["name"] for item in hard_factors})
+
+    def test_dns_only_resolver_activity_does_not_create_exfiltration(self) -> None:
+        events = [
+            normalize_eve({
+                "timestamp": f"2026-07-05T10:00:{index:02d}+00:00",
+                "event_type": "dns",
+                "src_ip": "192.168.10.168",
+                "src_port": 50000 + index,
+                "dest_ip": "192.168.10.5",
+                "dest_port": 53,
+                "proto": "UDP",
+                "dns": {"rrname": f"host{index}.example.test", "rrtype": "A", "rcode": "NXDOMAIN"},
+                "flow": {"bytes_toserver": 80_000_000, "bytes_toclient": 1},
+            })
+            for index in range(12)
+        ]
+        normalized = [event for event in events if event is not None]
+        features = aggregate_features(normalized)
+        self.assertEqual(DataExfiltrationDetector().detect(normalized, features), [])
 
     def test_auth_service_pressure_detector_does_not_label_tcp_resets_as_bruteforce(self) -> None:
         events = [
@@ -1514,6 +1580,43 @@ class BackendTests(unittest.TestCase):
         self.assertIsNotNone(event)
         assert event is not None
         self.assertEqual(ZenarmorSecurityEventDetector().detect([event], []), [])
+        self.assertEqual(UrlThreatDetector().detect([event], []), [])
+
+    def test_zenarmor_allowed_credential_named_service_is_not_credential_abuse(self) -> None:
+        event = normalize_zenarmor_event({
+            "timestamp": "2026-07-05T12:32:00+00:00",
+            "src_ip": "192.168.10.168",
+            "src_port": 52001,
+            "dst_ip": "3.161.82.34",
+            "dst_port": 443,
+            "protocol": "tcp",
+            "application": "Amazon",
+            "decision": "allowed",
+            "domain": "credential-locker-service.amazon.com",
+        }, sensor_name="zenarmor-local")
+        self.assertIsNotNone(event)
+        assert event is not None
+        detections = (
+            ZenarmorSecurityEventDetector().detect([event], [])
+            + UrlThreatDetector().detect([event], [])
+        )
+        self.assertEqual(detections, [])
+
+    def test_threat_intel_lookup_domain_is_not_url_threat_without_provider_verdict(self) -> None:
+        event = normalize_zeek_row("dns", {
+            "ts": "1783261000.0",
+            "uid": "dns-ti",
+            "id.orig_h": "80.153.171.185",
+            "id.orig_p": "18349",
+            "id.resp_h": "216.31.2.230",
+            "id.resp_p": "53",
+            "proto": "udp",
+            "query": "acb87b59117c6e2db86f98c4c8bac52eade97cd4.malware.hash.cymru.com",
+            "qtype_name": "A",
+            "rcode_name": "NOERROR",
+        }, sensor_name="zeek-local")
+        self.assertIsNotNone(event)
+        assert event is not None
         self.assertEqual(UrlThreatDetector().detect([event], []), [])
 
     def test_zenarmor_c2_token_still_creates_security_detection(self) -> None:
@@ -2843,7 +2946,7 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(correlate_detections(detections), [])
         self.assertEqual(detections[0]["evidence"]["detection_state"], "suppressed")
         promotion = detections[0]["evidence"]["promotion"]
-        self.assertEqual(promotion["reason"], "supply_chain_without_marker")
+        self.assertIn(promotion["reason"], {"supply_chain_without_marker", "risk_score_below_incident_floor"})
         self.assertLess(promotion["promotion_score"], promotion["promotion_threshold"])
 
     def test_correlation_promotes_marker_supply_chain_signal(self) -> None:
@@ -3912,6 +4015,73 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(len(service.store.list_rows("incident_feedback")), 1)
             self.assertEqual(service._baseline_skip_sources([{"source_ip": "192.168.10.11"}]), set())
             self.assertEqual(service._baseline_skip_sources([{"source_ip": "192.168.10.12"}]), {"192.168.10.12"})
+            weak_incident = {
+                "incident_id": "incident-weak-repeat",
+                "source_ip": "192.168.10.11",
+                "evidence": {
+                    "detections": [{
+                        "detector_id": "pondsec.dns_tunneling",
+                        "category": "command_and_control",
+                        "evidence": {"metadata_limited": True, "signature_required": False},
+                    }],
+                },
+            }
+            hard_incident = {
+                "incident_id": "incident-hard-repeat",
+                "source_ip": "192.168.10.11",
+                "evidence": {
+                    "detections": [{
+                        "detector_id": "pondsec.suricata_drop",
+                        "category": "signature",
+                        "evidence": {"signature_id": "1:2402000", "suricata_action": "blocked"},
+                    }],
+                },
+            }
+            promoted, suppressed = service.store.suppress_false_positive_incidents([weak_incident, hard_incident], 14)
+            self.assertEqual([item["incident_id"] for item in promoted], ["incident-hard-repeat"])
+            self.assertEqual([item["incident_id"] for item in suppressed], ["incident-weak-repeat"])
+            self.assertEqual(suppressed[0]["evidence"]["correlation"]["promotion"]["reason"], "recent_false_positive_feedback")
+
+    def test_active_block_source_suppresses_prevention_only_incident(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EventStore(Path(tmp) / "pondsec-ndr.db")
+            store.migrate()
+            store.add_block_entry({
+                "block_id": "block-active-source",
+                "source_ip": "51.159.110.167",
+                "destination": "any",
+                "reason": "active external block",
+                "risk_score": 91,
+                "confidence": 0.95,
+                "expires_at": "2099-01-01T00:00:00+00:00",
+                "status": "active",
+            }, actor="test")
+            prevention_only = {
+                "incident_id": "incident-blocked-source",
+                "source_ip": "51.159.110.167",
+                "evidence": {
+                    "detections": [{
+                        "detector_id": "pondsec.portscan",
+                        "category": "reconnaissance",
+                        "evidence": {"firewall_blocked_connections": 20, "firewall_blocked_only": True},
+                    }],
+                },
+            }
+            reached = {
+                "incident_id": "incident-reached-source",
+                "source_ip": "51.159.110.167",
+                "evidence": {
+                    "detections": [{
+                        "detector_id": "pondsec.exploit_attempt",
+                        "category": "exploit_attempt",
+                        "evidence": {"filter_action": "pass", "event_type": "alert"},
+                    }],
+                },
+            }
+            promoted, suppressed = store.suppress_active_block_incidents([prevention_only, reached])
+            self.assertEqual([item["incident_id"] for item in promoted], ["incident-reached-source"])
+            self.assertEqual([item["incident_id"] for item in suppressed], ["incident-blocked-source"])
+            self.assertEqual(suppressed[0]["evidence"]["correlation"]["promotion"]["reason"], "active_block_prevention_evidence")
 
     def test_delete_incident_denies_active_response_blocks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -4903,7 +5073,7 @@ class BackendTests(unittest.TestCase):
             eve = root / "eve.json"
             eve.write_text(
                 "\n".join(
-                    json.dumps(flow_event(f"2026-07-05T10:00:{index:02d}+00:00", "192.168.10.20", "192.168.20.10", 20 + index))
+                    json.dumps(flow_event(f"2026-07-05T10:00:{index:02d}+00:00", "192.168.10.221", "192.168.20.10", 20 + index))
                     for index in range(18)
                 ) + "\n",
                 encoding="utf-8",

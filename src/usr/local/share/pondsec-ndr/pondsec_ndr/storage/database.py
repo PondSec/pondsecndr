@@ -2790,6 +2790,166 @@ class EventStore:
             ).fetchall()
         return {str(row["source_ip"]) for row in rows if row["source_ip"]}
 
+    def suppress_false_positive_incidents(self, incidents: list[dict[str, Any]], since_days: int = 14) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        if not incidents:
+            return [], []
+        feedback = self.false_positive_feedback_sources(since_days)
+        promoted: list[dict[str, Any]] = []
+        suppressed: list[dict[str, Any]] = []
+        for incident in incidents:
+            source = str(incident.get("source_ip") or "")
+            if source in feedback and self._incident_is_feedback_suppressible(incident):
+                self._annotate_feedback_suppression(incident)
+                suppressed.append(incident)
+                continue
+            promoted.append(incident)
+        return promoted, suppressed
+
+    def suppress_active_block_incidents(self, incidents: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        if not incidents:
+            return [], []
+        active_sources = self.active_block_sources()
+        if not active_sources:
+            return incidents, []
+        promoted: list[dict[str, Any]] = []
+        suppressed: list[dict[str, Any]] = []
+        for incident in incidents:
+            source = str(incident.get("source_ip") or "")
+            if source in active_sources and not self._incident_has_reach_evidence(incident):
+                self._annotate_active_block_suppression(incident)
+                suppressed.append(incident)
+                continue
+            promoted.append(incident)
+        return promoted, suppressed
+
+    def active_block_sources(self) -> set[str]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT source_ip
+                FROM block_entries
+                WHERE status = 'active'
+                  AND source_ip IS NOT NULL
+                  AND (expires_at IS NULL OR expires_at > ?)
+                """,
+                (now_iso(),),
+            ).fetchall()
+        return {str(row["source_ip"]) for row in rows if row["source_ip"]}
+
+    @staticmethod
+    def _incident_is_feedback_suppressible(incident: dict[str, Any]) -> bool:
+        evidence = incident.get("evidence") if isinstance(incident.get("evidence"), dict) else {}
+        detections = evidence.get("detections") if isinstance(evidence.get("detections"), list) else []
+        if not detections:
+            return True
+        for detection in detections:
+            if not isinstance(detection, dict):
+                continue
+            if EventStore._detection_has_hard_security_evidence(detection):
+                return False
+        return True
+
+    @staticmethod
+    def _detection_has_hard_security_evidence(detection: dict[str, Any]) -> bool:
+        detector_id = str(detection.get("detector_id") or "")
+        category = str(detection.get("category") or "")
+        evidence = detection.get("evidence") if isinstance(detection.get("evidence"), dict) else {}
+        if detector_id in {
+            "pondsec.suricata_alert",
+            "pondsec.suricata_drop",
+            "pondsec.exploit_attempt",
+            "pondsec.exploit_blocked",
+            "pondsec.file_sandbox_verdict",
+            "pondsec.email_threat",
+            "pondsec.threat_intel_indicator",
+            "pondsec.dns_sinkhole_hit",
+        }:
+            return True
+        if category == "signature":
+            return True
+        if evidence.get("signature_id") or evidence.get("signature"):
+            return True
+        if evidence.get("provider_prevented"):
+            return True
+        if evidence.get("threat_intel_confidence") or evidence.get("threat_intel_source") or evidence.get("ioc_type"):
+            return True
+        reputation = str(evidence.get("reputation") or "").lower()
+        if reputation in {"malicious", "known_bad", "bad", "high", "block", "blocked"}:
+            return True
+        verdict = str(evidence.get("sandbox_verdict") or evidence.get("file_verdict") or evidence.get("av_verdict") or "").lower()
+        return verdict in {"malicious", "malware", "infected", "blocked", "quarantine", "quarantined", "denied", "high"}
+
+    @staticmethod
+    def _incident_has_reach_evidence(incident: dict[str, Any]) -> bool:
+        evidence = incident.get("evidence") if isinstance(incident.get("evidence"), dict) else {}
+        detections = evidence.get("detections") if isinstance(evidence.get("detections"), list) else []
+        for detection in detections:
+            if not isinstance(detection, dict):
+                continue
+            det_evidence = detection.get("evidence") if isinstance(detection.get("evidence"), dict) else {}
+            filter_action = str(det_evidence.get("filter_action") or "").lower()
+            decision = str(det_evidence.get("decision") or det_evidence.get("provider_decision") or "").lower()
+            event_type = str(det_evidence.get("event_type") or "").lower()
+            if filter_action == "pass" or decision in {"allow", "allowed", "pass", "passed", "permit", "permitted"}:
+                return True
+            if event_type == "alert" and not det_evidence.get("provider_prevented"):
+                return True
+            if det_evidence.get("suricata_action") and str(det_evidence.get("suricata_action")).lower() not in {"blocked", "drop", "dropped"}:
+                return True
+            if det_evidence.get("post_block_reach_confirmed"):
+                return True
+        return False
+
+    @staticmethod
+    def _annotate_feedback_suppression(incident: dict[str, Any]) -> None:
+        evidence = incident.get("evidence")
+        if not isinstance(evidence, dict):
+            evidence = {}
+            incident["evidence"] = evidence
+        correlation = evidence.get("correlation") if isinstance(evidence.get("correlation"), dict) else {}
+        promotion = correlation.get("promotion") if isinstance(correlation.get("promotion"), dict) else {}
+        promotion.update({
+            "decision": "suppressed",
+            "reason": "recent_false_positive_feedback",
+            "false_positive_feedback_applied": True,
+        })
+        correlation["promotion"] = promotion
+        evidence["correlation"] = correlation
+        detections = evidence.get("detections")
+        if isinstance(detections, list):
+            for detection in detections:
+                if not isinstance(detection, dict):
+                    continue
+                det_evidence = detection.get("evidence") if isinstance(detection.get("evidence"), dict) else {}
+                det_evidence["detection_state"] = "suppressed"
+                det_evidence["suppression_reason"] = "recent_false_positive_feedback"
+                detection["evidence"] = det_evidence
+
+    @staticmethod
+    def _annotate_active_block_suppression(incident: dict[str, Any]) -> None:
+        evidence = incident.get("evidence")
+        if not isinstance(evidence, dict):
+            evidence = {}
+            incident["evidence"] = evidence
+        correlation = evidence.get("correlation") if isinstance(evidence.get("correlation"), dict) else {}
+        promotion = correlation.get("promotion") if isinstance(correlation.get("promotion"), dict) else {}
+        promotion.update({
+            "decision": "suppressed",
+            "reason": "active_block_prevention_evidence",
+            "active_block_suppression_applied": True,
+        })
+        correlation["promotion"] = promotion
+        evidence["correlation"] = correlation
+        detections = evidence.get("detections")
+        if isinstance(detections, list):
+            for detection in detections:
+                if not isinstance(detection, dict):
+                    continue
+                det_evidence = detection.get("evidence") if isinstance(detection.get("evidence"), dict) else {}
+                det_evidence["detection_state"] = "suppressed"
+                det_evidence["suppression_reason"] = "active_block_prevention_evidence"
+                detection["evidence"] = det_evidence
+
     def merge_incidents(self, primary_id: str, secondary_id: str, actor: str = "system") -> dict[str, Any]:
         if primary_id == secondary_id:
             return {"status": "error", "message": "cannot merge an incident into itself"}
