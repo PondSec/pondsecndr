@@ -22,7 +22,7 @@ from pondsec_ndr.collectors.filterlog import FilterLogCollector, FilterLogStats,
 from pondsec_ndr.collectors.netflow import NETFLOW_V5_HEADER, NETFLOW_V5_RECORD, NetFlowCollector
 from pondsec_ndr.collectors.zeek import ZeekLogCollector, normalize_zeek_row
 from pondsec_ndr.collectors.zenarmor import ZenarmorCollector, ZenarmorSyslogCollector, normalize_zenarmor_event, parse_zenarmor_line
-from pondsec_ndr.config import DetectionConfig, DnsmasqConfig, InterfaceConfig, PondSecConfig, ResponseConfig, SandboxConfig, ThreatIntelConfig, ZeekConfig, ZenarmorConfig, load_config
+from pondsec_ndr.config import DetectionConfig, DnsmasqConfig, InterfaceConfig, NetFlowConfig, PondSecConfig, ResponseConfig, SandboxConfig, ThreatIntelConfig, ZeekConfig, ZenarmorConfig, load_config
 from pondsec_ndr.correlation import correlate_detections
 from pondsec_ndr.detection.detectors import (
     AuthServicePressureDetector,
@@ -2634,6 +2634,7 @@ igb0_vlan10: flags=1008943<UP,BROADCAST,RUNNING>
             payload = diagnostics_payload(
                 PondSecConfig(
                     data_dir=root,
+                    netflow=NetFlowConfig(enabled=True),
                     zeek=ZeekConfig(enabled=True, sensor_name="zeek-edge", log_dir="/var/log/zeek/current"),
                     zenarmor=ZenarmorConfig(
                         enabled=True,
@@ -2658,8 +2659,46 @@ igb0_vlan10: flags=1008943<UP,BROADCAST,RUNNING>
             self.assertEqual(providers["zenarmor"]["configuration"]["format"], "json")
             self.assertTrue(providers["zenarmor"]["configuration"]["imports"]["tls_metadata"])
             self.assertIn("flow", providers["netflow"]["event_types"])
+            self.assertEqual(providers["netflow"]["health_status"], "waiting")
             self.assertIn("file_sandbox", providers)
             self.assertEqual(providers["file_sandbox"]["configuration"]["mode"], "external_result")
+
+    def test_diagnostics_provider_health_uses_observed_telemetry_coverage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = EventStore(root / "pondsec-ndr.db")
+            store.migrate()
+            now = datetime.now(timezone.utc).isoformat()
+            store.set_health("healthy", 123, {
+                "collector_sources": {
+                    "netflow": {
+                        "read_datagrams": 0,
+                        "accepted_events": 0,
+                        "parser_errors": 0,
+                        "normalization_errors": 0,
+                        "queue_drops": 0,
+                    },
+                }
+            })
+            payload = diagnostics_payload(PondSecConfig(data_dir=root, netflow=NetFlowConfig(enabled=True)), store)
+            providers = {item["provider_id"]: item for item in payload["providers"]}
+            self.assertEqual(providers["netflow"]["health_status"], "waiting")
+
+            store.insert_events([{
+                "event_id": "netflow-coverage-1",
+                "schema_version": 1,
+                "timestamp": now,
+                "event_type": "flow",
+                "source": {"ip": "192.0.2.10", "port": 52000},
+                "destination": {"ip": "198.51.100.20", "port": 443},
+                "protocol": "TCP",
+                "metadata": {"event_source": "netflow"},
+                "raw_source": "netflow",
+            }])
+            payload = diagnostics_payload(PondSecConfig(data_dir=root, netflow=NetFlowConfig(enabled=True)), store)
+            providers = {item["provider_id"]: item for item in payload["providers"]}
+            self.assertEqual(providers["netflow"]["health_status"], "healthy")
+            self.assertEqual(providers["netflow"]["statistics"]["events_24h"], 1)
 
     def test_diagnostics_exposes_provider_telemetry_coverage(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

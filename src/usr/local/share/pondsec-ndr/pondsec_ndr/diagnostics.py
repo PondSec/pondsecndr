@@ -63,7 +63,7 @@ def diagnostics(config: PondSecConfig, store: EventStore) -> dict[str, Any]:
     tls_inspection = _tls_inspection_status(telemetry_counts)
     resource_usage = detail.get("resource_usage", {})
     learning_status = config.detection.learning_status()
-    providers = provider_inventory(config, health)
+    providers = provider_inventory(config, health, telemetry_coverage)
     return {
         "status": health["status"],
         "pid": health["pid"],

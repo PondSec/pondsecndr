@@ -28,25 +28,30 @@ class DataSourceProvider:
         return asdict(self)
 
 
-def provider_inventory(config: PondSecConfig, health: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+def provider_inventory(
+    config: PondSecConfig,
+    health: dict[str, Any] | None = None,
+    telemetry_coverage: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     health = health or {}
     detail = health.get("detail", {}) if isinstance(health.get("detail"), dict) else {}
     sources = detail.get("collector_sources", {}) if isinstance(detail.get("collector_sources"), dict) else {}
     updated_at = health.get("updated_at")
+    coverage = telemetry_coverage.get("by_provider", {}) if isinstance(telemetry_coverage, dict) else {}
     providers = [
-        _suricata_provider(config, sources.get("suricata_eve") or {}, updated_at),
-        _filterlog_provider(config, sources.get("opnsense_filterlog") or {}, updated_at),
-        _dnsmasq_provider(config, sources.get("dnsmasq") or {}, updated_at),
-        _zeek_provider(config, sources.get("zeek") or {}, updated_at),
-        _netflow_provider(config, sources.get("netflow") or {}, updated_at),
-        _zenarmor_provider(config, sources.get("zenarmor") or {}, updated_at),
+        _suricata_provider(config, sources.get("suricata_eve") or {}, updated_at, coverage.get("suricata") or {}),
+        _filterlog_provider(config, sources.get("opnsense_filterlog") or {}, updated_at, coverage.get("opnsense_filterlog") or {}),
+        _dnsmasq_provider(config, sources.get("dnsmasq") or {}, updated_at, coverage.get("dnsmasq") or {}),
+        _zeek_provider(config, sources.get("zeek") or {}, updated_at, coverage.get("zeek") or {}),
+        _netflow_provider(config, sources.get("netflow") or {}, updated_at, coverage.get("netflow") or {}),
+        _zenarmor_provider(config, sources.get("zenarmor") or {}, updated_at, coverage.get("zenarmor") or {}),
         _sandbox_provider(config, detail.get("sandbox") or {}, updated_at),
     ]
     providers.extend(_planned_providers())
     return [provider.as_dict() for provider in providers]
 
 
-def _suricata_provider(config: PondSecConfig, stats: dict[str, Any], updated_at: str | None) -> DataSourceProvider:
+def _suricata_provider(config: PondSecConfig, stats: dict[str, Any], updated_at: str | None, coverage: dict[str, Any]) -> DataSourceProvider:
     enabled = bool(config.detection.suricata_events)
     last_error = stats.get("last_error")
     return DataSourceProvider(
@@ -55,7 +60,7 @@ def _suricata_provider(config: PondSecConfig, stats: dict[str, Any], updated_at:
         description="Reads normalized Suricata alert, flow, DNS, TLS, HTTP, file and anomaly telemetry.",
         version="1",
         enabled=enabled,
-        health_status=_health(enabled, last_error, stats),
+        health_status=_health(enabled, last_error, stats, coverage=coverage),
         input_type="udp" if config.zenarmor.source == "syslog_udp" else "file",
         event_types=["alert", "drop", "flow", "dns", "tls", "http", "file", "anomaly"],
         configuration={
@@ -63,13 +68,13 @@ def _suricata_provider(config: PondSecConfig, stats: dict[str, Any], updated_at:
             "max_event_rate": config.max_event_rate,
             "queue_limit": min(config.max_event_rate, 100000),
         },
-        statistics=_stats(stats),
-        last_successful_processing=updated_at if enabled and not last_error and _accepted(stats) else None,
+        statistics=_stats(stats, coverage),
+        last_successful_processing=_last_success(enabled, last_error, stats, coverage, updated_at),
         last_error=last_error,
     )
 
 
-def _filterlog_provider(config: PondSecConfig, stats: dict[str, Any], updated_at: str | None) -> DataSourceProvider:
+def _filterlog_provider(config: PondSecConfig, stats: dict[str, Any], updated_at: str | None, coverage: dict[str, Any]) -> DataSourceProvider:
     last_error = stats.get("last_error")
     return DataSourceProvider(
         provider_id="opnsense_filterlog",
@@ -77,7 +82,7 @@ def _filterlog_provider(config: PondSecConfig, stats: dict[str, Any], updated_at
         description="Reads local PF filterlog block events for firewall-enforced traffic visibility.",
         version="1",
         enabled=True,
-        health_status=_health(True, last_error, stats, optional=True),
+        health_status=_health(True, last_error, stats, optional=True, coverage=coverage),
         input_type="udp" if config.zenarmor.source == "syslog_udp" else "file",
         event_types=["firewall", "flow", "response"],
         configuration={
@@ -85,13 +90,13 @@ def _filterlog_provider(config: PondSecConfig, stats: dict[str, Any], updated_at
             "max_event_rate": config.max_event_rate,
             "optional": True,
         },
-        statistics=_stats(stats),
-        last_successful_processing=updated_at if not last_error and _accepted(stats) else None,
+        statistics=_stats(stats, coverage),
+        last_successful_processing=_last_success(True, last_error, stats, coverage, updated_at),
         last_error=last_error,
     )
 
 
-def _dnsmasq_provider(config: PondSecConfig, stats: dict[str, Any], updated_at: str | None) -> DataSourceProvider:
+def _dnsmasq_provider(config: PondSecConfig, stats: dict[str, Any], updated_at: str | None, coverage: dict[str, Any]) -> DataSourceProvider:
     enabled = bool(config.dnsmasq.enabled)
     last_error = stats.get("last_error")
     return DataSourceProvider(
@@ -100,7 +105,7 @@ def _dnsmasq_provider(config: PondSecConfig, stats: dict[str, Any], updated_at: 
         description="Reads dnsmasq DNS query, DHCP event and lease telemetry without changing resolver or DHCP settings.",
         version="1",
         enabled=enabled,
-        health_status=_health(enabled, last_error, stats, optional=True),
+        health_status=_health(enabled, last_error, stats, optional=True, coverage=coverage),
         input_type="file",
         event_types=["dns", "dhcp", "asset"],
         configuration={
@@ -110,13 +115,13 @@ def _dnsmasq_provider(config: PondSecConfig, stats: dict[str, Any], updated_at: 
             "sensor_name": config.dnsmasq.sensor_name,
             "start_at_end": config.dnsmasq.start_at_end,
         },
-        statistics=_stats(stats),
-        last_successful_processing=updated_at if enabled and not last_error and _accepted(stats) else None,
+        statistics=_stats(stats, coverage),
+        last_successful_processing=_last_success(enabled, last_error, stats, coverage, updated_at),
         last_error=last_error,
     )
 
 
-def _zeek_provider(config: PondSecConfig, stats: dict[str, Any], updated_at: str | None) -> DataSourceProvider:
+def _zeek_provider(config: PondSecConfig, stats: dict[str, Any], updated_at: str | None, coverage: dict[str, Any]) -> DataSourceProvider:
     enabled = bool(config.zeek.enabled)
     last_error = stats.get("last_error")
     return DataSourceProvider(
@@ -125,7 +130,7 @@ def _zeek_provider(config: PondSecConfig, stats: dict[str, Any], updated_at: str
         description="Reads configured Zeek TSV logs from a local or external sensor export path.",
         version="1",
         enabled=enabled,
-        health_status=_health(enabled, last_error, stats, optional=True),
+        health_status=_health(enabled, last_error, stats, optional=True, coverage=coverage),
         input_type="file",
         event_types=["flow", "dns", "tls", "http", "file", "notice", "anomaly"],
         configuration={
@@ -143,13 +148,13 @@ def _zeek_provider(config: PondSecConfig, stats: dict[str, Any], updated_at: str
                 "monitoring": "provider_inventory_and_service_health",
             },
         },
-        statistics=_stats(stats),
-        last_successful_processing=updated_at if enabled and not last_error and _accepted(stats) else None,
+        statistics=_stats(stats, coverage),
+        last_successful_processing=_last_success(enabled, last_error, stats, coverage, updated_at),
         last_error=last_error,
     )
 
 
-def _netflow_provider(config: PondSecConfig, stats: dict[str, Any], updated_at: str | None) -> DataSourceProvider:
+def _netflow_provider(config: PondSecConfig, stats: dict[str, Any], updated_at: str | None, coverage: dict[str, Any]) -> DataSourceProvider:
     enabled = bool(config.netflow.enabled)
     last_error = stats.get("last_error")
     return DataSourceProvider(
@@ -158,7 +163,7 @@ def _netflow_provider(config: PondSecConfig, stats: dict[str, Any], updated_at: 
         description="Receives NetFlow v5, NetFlow v9 template health and IPFIX-ready UDP flow telemetry.",
         version="1",
         enabled=enabled,
-        health_status=_health(enabled, last_error, stats, optional=True),
+        health_status=_health(enabled, last_error, stats, optional=True, coverage=coverage),
         input_type="udp",
         event_types=["flow"],
         configuration={
@@ -169,13 +174,13 @@ def _netflow_provider(config: PondSecConfig, stats: dict[str, Any], updated_at: 
             "template_ttl_seconds": config.netflow.template_ttl_seconds,
             "retention_days": config.netflow.retention_days,
         },
-        statistics=_stats(stats),
-        last_successful_processing=updated_at if enabled and not last_error and _accepted(stats) else None,
+        statistics=_stats(stats, coverage),
+        last_successful_processing=_last_success(enabled, last_error, stats, coverage, updated_at),
         last_error=last_error,
     )
 
 
-def _zenarmor_provider(config: PondSecConfig, stats: dict[str, Any], updated_at: str | None) -> DataSourceProvider:
+def _zenarmor_provider(config: PondSecConfig, stats: dict[str, Any], updated_at: str | None, coverage: dict[str, Any]) -> DataSourceProvider:
     enabled = bool(config.zenarmor.enabled)
     last_error = stats.get("last_error")
     return DataSourceProvider(
@@ -184,7 +189,7 @@ def _zenarmor_provider(config: PondSecConfig, stats: dict[str, Any], updated_at:
         description="Reads documented Zenarmor reporting, official-log and API metadata for application, TLS, device, policy and security context.",
         version="1",
         enabled=enabled,
-        health_status=_health(enabled, last_error, stats, optional=True),
+        health_status=_health(enabled, last_error, stats, optional=True, coverage=coverage),
         input_type="udp" if config.zenarmor.source == "syslog_udp" else "file",
         event_types=["flow", "tls", "http", "dns", "application", "security"],
         configuration={
@@ -213,8 +218,8 @@ def _zenarmor_provider(config: PondSecConfig, stats: dict[str, Any], updated_at:
                 "security_events": config.zenarmor.import_security_events,
             },
         },
-        statistics=_stats(stats),
-        last_successful_processing=updated_at if enabled and not last_error and _accepted(stats) else None,
+        statistics=_stats(stats, coverage),
+        last_successful_processing=_last_success(enabled, last_error, stats, coverage, updated_at),
         last_error=last_error,
     )
 
@@ -286,22 +291,57 @@ def _planned_providers() -> list[DataSourceProvider]:
     ]
 
 
-def _health(enabled: bool, last_error: str | None, stats: dict[str, Any], optional: bool = False) -> str:
+def _health(
+    enabled: bool,
+    last_error: str | None,
+    stats: dict[str, Any],
+    optional: bool = False,
+    coverage: dict[str, Any] | None = None,
+) -> str:
     if not enabled:
         return "not_configured" if optional else "disabled"
     if last_error:
         return "warning" if optional else "degraded"
-    if stats:
+    if _coverage_total(coverage, "24h") > 0 or _accepted(stats):
         return "healthy"
+    if stats:
+        return "waiting"
     return "waiting"
 
 
 def _accepted(stats: dict[str, Any]) -> bool:
-    return int(stats.get("accepted_events") or 0) > 0 or int(stats.get("read_lines") or 0) > 0
+    return int(stats.get("accepted_events") or 0) > 0
 
 
-def _stats(stats: dict[str, Any]) -> dict[str, Any]:
-    return {
+def _last_success(
+    enabled: bool,
+    last_error: str | None,
+    stats: dict[str, Any],
+    coverage: dict[str, Any] | None,
+    updated_at: str | None,
+) -> str | None:
+    if not enabled or last_error:
+        return None
+    if _coverage_total(coverage, "24h") > 0:
+        return str(coverage.get("last_event_at") or updated_at or "")
+    if _accepted(stats):
+        return updated_at
+    return None
+
+
+def _coverage_total(coverage: dict[str, Any] | None, window: str) -> int:
+    if not isinstance(coverage, dict):
+        return 0
+    windows = coverage.get("windows") if isinstance(coverage.get("windows"), dict) else {}
+    counts = windows.get(window) if isinstance(windows.get(window), dict) else {}
+    try:
+        return int(counts.get("total") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _stats(stats: dict[str, Any], coverage: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = {
         "read_lines": int(stats.get("read_lines") or 0),
         "read_datagrams": int(stats.get("read_datagrams") or 0),
         "accepted_events": int(stats.get("accepted_events") or 0),
@@ -311,3 +351,11 @@ def _stats(stats: dict[str, Any]) -> dict[str, Any]:
         "duplicates": int(stats.get("duplicates") or 0),
         "rotation_detected": bool(stats.get("rotation_detected")),
     }
+    if isinstance(coverage, dict) and coverage:
+        payload.update({
+            "last_event_at": coverage.get("last_event_at"),
+            "events_1h": _coverage_total(coverage, "1h"),
+            "events_6h": _coverage_total(coverage, "6h"),
+            "events_24h": _coverage_total(coverage, "24h"),
+        })
+    return payload
